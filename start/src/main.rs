@@ -23,16 +23,20 @@ out fn main()
         print("Ноль")
     "#;
 
-    println!("Парсим код:\n{}", source_code);
-
     match RazomyParser::parse(Rule::Program, source_code) {
         Ok(parsed_tree) => {
             println!("✅ УСПЕШНО!\n");
-            // Выведем только верхний уровень, чтобы не захламлять консоль
             for pair in parsed_tree {
-                println!("Разобрано: {:?}", pair.as_rule());
                 for inner in pair.into_inner() {
-                    println!("  -> {:?}", inner.as_rule());
+                    match inner.as_rule() {
+                        Rule::Decl => {
+                            for decl_inner in inner.into_inner() {
+                                println!("Разобрано объявление: {:?}", decl_inner.as_rule());
+                            }
+                        }
+                        Rule::EOI => {}
+                        other => println!("Элемент: {:?}", other),
+                    }
                 }
             }
         }

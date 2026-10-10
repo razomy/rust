@@ -1,23 +1,25 @@
 // --- 1. ИГНОРИРУЕМЫЕ СИМВОЛЫ ---
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ ("#" ~ (!"\n" ~ ANY)*) | ("##" ~ (!"##" ~ ANY)* ~ "##") }
+// "##" обязательно идет перед "#", иначе длинный комментарий перехватывается коротким
+COMMENT    = _{ ("##" ~ (!"##" ~ ANY)* ~ "##") | ("#" ~ (!"\n" ~ ANY)*) }
 
 // --- 2. КЛЮЧЕВЫЕ СЛОВА ---
-K_LET   = _{ "let" ~ !ASCII_ALPHANUMERIC }
-K_MUT   = _{ "mut" ~ !ASCII_ALPHANUMERIC }
-K_FN    = _{ "fn" ~ !ASCII_ALPHANUMERIC }
-K_OUT   = _{ "out" ~ !ASCII_ALPHANUMERIC }
-K_TYPE  = _{ "type" ~ !ASCII_ALPHANUMERIC }
-K_MATCH = _{ "match" ~ !ASCII_ALPHANUMERIC }
-K_IF    = _{ "if" ~ !ASCII_ALPHANUMERIC }
-K_ELSE  = _{ "else" ~ !ASCII_ALPHANUMERIC }
-K_FOR   = _{ "for" ~ !ASCII_ALPHANUMERIC }
-K_IN    = _{ "in" ~ !ASCII_ALPHANUMERIC }
-K_WHILE = _{ "while" ~ !ASCII_ALPHANUMERIC }
-K_NONE  =  { "none" ~ !ASCII_ALPHANUMERIC }
-K_SOME  =  { "Some" ~ !ASCII_ALPHANUMERIC }
-K_OK    =  { "Ok" ~ !ASCII_ALPHANUMERIC }
-K_ERR   =  { "Err" ~ !ASCII_ALPHANUMERIC }
+// Используем @{ ... } (атомарные правила), чтобы Pest не вставлял пробелы перед !
+K_LET   = @{ "let" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_MUT   = @{ "mut" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_FN    = @{ "fn" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_OUT   = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_TYPE  = @{ "type" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_MATCH = @{ "match" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IF    = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_ELSE  = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_FOR   = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IN    = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_WHILE = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_NONE  = @{ "none" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_SOME  = @{ "Some" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_OK    = @{ "Ok" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_ERR   = @{ "Err" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 RESERVED = _{ K_LET | K_MUT | K_FN | K_OUT | K_TYPE | K_MATCH | K_IF | K_ELSE | K_FOR | K_IN | K_WHILE | K_NONE | K_SOME | K_OK | K_ERR }
 
