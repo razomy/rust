@@ -1,0 +1,48 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "handle"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+    - FnArgs
+      - ArgDef
+        - IDENT: "id"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - ArgDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "T"
+      - ArgDef
+        - IDENT: "flag"
+        - Type
+          - BaseType
+            - IDENT: "Bool"
+        - Expr
+          - K_TRUE: "true"
+    - FnBody
+      - ReturnType
+        - Type
+          - BaseType
+            - IDENT: "Result"
+            - TypeArgs
+              - Type
+                - BaseType
+                  - IDENT: "T"
+              - Type
+                - BaseType
+                  - IDENT: "Str"
+      - FnExprBody
+        - Expr
+          - ConstructorCall
+            - K_OK: "Ok"
+            - ArgList
+              - Expr
+                - IDENT: "val"

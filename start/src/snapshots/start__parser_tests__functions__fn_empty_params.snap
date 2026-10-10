@@ -1,0 +1,13 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "run"
+    - FnArgs: "()"
+    - FnBody
+      - FnExprBody
+        - Expr
+          - NUMBER: "1"

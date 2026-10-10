@@ -1,0 +1,26 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "NumberBox"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+        - Type
+          - BaseType
+            - IDENT: "Number"
+    - TypeParams
+      - TypeParamDef
+        - IDENT: "item"
+        - Type
+          - BaseType
+            - IDENT: "T"
+    - RecordDef
+      - FieldDef
+        - IDENT: "item"
+        - Type
+          - BaseType
+            - IDENT: "item"

@@ -1,0 +1,14 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "user"
+    - Type
+      - BaseType
+        - IDENT: "User"
+    - Expr
+      - IDENT: "alice"

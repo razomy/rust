@@ -1,0 +1,21 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "r"
+    - Expr
+      - IDENT: "data"
+      - MethodCall
+        - IDENT: "filter"
+        - ArgList
+          - Expr
+            - IDENT: "is_valid"
+      - MethodCall
+        - IDENT: "iter"
+        - ArgList
+          - Expr
+            - IDENT: "print"

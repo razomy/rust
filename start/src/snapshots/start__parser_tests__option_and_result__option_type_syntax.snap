@@ -1,0 +1,15 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "u"
+    - Type
+      - BaseType
+        - IDENT: "User"
+      - OptionType: "?"
+    - Expr
+      - K_NONE: "none"

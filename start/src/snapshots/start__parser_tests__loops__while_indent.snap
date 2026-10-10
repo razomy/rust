@@ -1,0 +1,58 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - Stmt
+      - WhileStmt
+        - K_WHILE: "while"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "x"
+                          - CmpOp: ">"
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - NUMBER: "0"
+        - Stmt
+          - AssignStmt
+            - IDENT: "x"
+            - AssignOp: "="
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - IDENT: "x"
+                                - AddOp: "-"
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - Literal
+                                          - NUMBER: "1"

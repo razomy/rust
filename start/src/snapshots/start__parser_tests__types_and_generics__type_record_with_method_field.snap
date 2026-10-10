@@ -1,0 +1,16 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Service"
+    - RecordDef
+      - FieldDef
+        - IDENT: "start"
+        - Type
+          - FuncType
+            - Type
+              - BaseType
+                - IDENT: "Unit"

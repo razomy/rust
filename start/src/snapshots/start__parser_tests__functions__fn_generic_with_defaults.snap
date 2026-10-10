@@ -1,0 +1,28 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "make"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+    - FnArgs
+      - ArgDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "T"
+    - FnBody
+      - ReturnType
+        - Type
+          - BaseType
+            - IDENT: "T"
+      - FnExprBody
+        - Expr
+          - IDENT: "val"

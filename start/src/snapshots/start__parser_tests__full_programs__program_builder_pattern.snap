@@ -1,0 +1,44 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Builder"
+    - RecordDef
+      - FieldDef
+        - IDENT: "steps"
+        - Type
+          - ArrayType
+            - Type
+              - BaseType
+                - IDENT: "Str"
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "add_step"
+    - FnArgs
+      - ArgDef
+        - IDENT: "b"
+        - Type
+          - BaseType
+            - IDENT: "Builder"
+      - ArgDef
+        - IDENT: "step"
+        - Type
+          - BaseType
+            - IDENT: "Str"
+    - FnBody
+      - ReturnType
+        - Type
+          - BaseType
+            - IDENT: "Builder"
+      - FnExprBody
+        - Expr
+          - StructInit
+            - StructField
+              - IDENT: "steps"
+              - Expr
+                - IDENT: "b"
+                - FieldAccess
+                  - IDENT: "steps"

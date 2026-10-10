@@ -1,0 +1,12 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "UserId"
+    - TypeAliasDef
+      - Type
+        - BaseType
+          - IDENT: "Int"

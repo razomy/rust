@@ -1,0 +1,19 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - WhileStmt
+    - K_WHILE: "while"
+    - Expr
+      - IDENT: "x"
+      - CmpOp: ">"
+      - NUMBER: "0"
+      - LogicAndOp: "&&"
+      - UnaryOp: "!"
+      - IDENT: "done"
+    - Block
+      - ExprStmt
+        - Expr
+          - IDENT: "run"
+          - CallArgs: "()"

@@ -1,0 +1,20 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "square"
+    - FnArgs
+      - ArgDef
+        - IDENT: "x"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+    - FnBody
+      - FnExprBody
+        - Expr
+          - IDENT: "x"
+          - MulOp: "*"
+          - IDENT: "x"

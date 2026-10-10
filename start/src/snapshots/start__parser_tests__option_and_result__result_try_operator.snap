@@ -1,0 +1,13 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "val"
+    - Expr
+      - IDENT: "fetch_data"
+      - CallArgs: "()"
+      - TryOp: "?"

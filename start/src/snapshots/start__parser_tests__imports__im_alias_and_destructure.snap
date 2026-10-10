@@ -1,0 +1,21 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ImportDecl
+    - K_IM: "im"
+    - ImportTarget
+      - ImportList
+        - IDENT: "read"
+    - ImportPath
+      - STRING
+        - StrText: "fs"
+  - ImportDecl
+    - K_IM: "im"
+    - ImportTarget
+      - DottedIdent
+        - IDENT: "io"
+    - ImportPath
+      - STRING
+        - StrText: "std/io"

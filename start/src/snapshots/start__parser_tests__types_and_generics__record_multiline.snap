@@ -1,0 +1,24 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Config"
+    - RecordDef
+      - FieldDef
+        - IDENT: "host"
+        - Type
+          - BaseType
+            - IDENT: "Str"
+      - FieldDef
+        - IDENT: "port"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "debug"
+        - Type
+          - BaseType
+            - IDENT: "Bool"

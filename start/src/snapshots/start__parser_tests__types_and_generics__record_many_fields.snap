@@ -1,0 +1,34 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Big"
+    - RecordDef
+      - FieldDef
+        - IDENT: "a"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "b"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "c"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "d"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "e"
+        - Type
+          - BaseType
+            - IDENT: "Int"

@@ -1,0 +1,28 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ForStmt
+    - K_FOR: "for"
+    - VariantPat
+      - IDENT: "x"
+    - K_IN: "in"
+    - Expr
+      - IDENT: "rows"
+    - Block
+      - ForStmt
+        - K_FOR: "for"
+        - VariantPat
+          - IDENT: "y"
+        - K_IN: "in"
+        - Expr
+          - IDENT: "cols"
+        - Block
+          - ExprStmt
+            - Expr
+              - IDENT: "print"
+              - CallArgs
+                - ArgList
+                  - Expr
+                    - IDENT: "y"

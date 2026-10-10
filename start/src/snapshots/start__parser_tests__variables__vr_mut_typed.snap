@@ -1,0 +1,15 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - K_MUT: "mut"
+    - VariantPat
+      - IDENT: "count"
+    - Type
+      - BaseType
+        - IDENT: "Int"
+    - Expr
+      - NUMBER: "0"

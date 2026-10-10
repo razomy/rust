@@ -1,0 +1,26 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Tree"
+    - RecordDef
+      - FieldDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "left"
+        - Type
+          - BaseType
+            - IDENT: "Tree"
+          - OptionType: "?"
+      - FieldDef
+        - IDENT: "right"
+        - Type
+          - BaseType
+            - IDENT: "Tree"
+          - OptionType: "?"

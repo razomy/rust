@@ -1,0 +1,170 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Point"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "T"
+          - Type
+            - BaseType
+              - IDENT: "Number"
+          - Type
+            - BaseType
+              - IDENT: "Float"
+      - TypeParams
+        - TypeParamDef
+          - IDENT: "x"
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - TypeParamDef
+          - IDENT: "y"
+          - Type
+            - BaseType
+              - IDENT: "T"
+      - RecordDef
+        - FieldDef
+          - IDENT: "x"
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - FieldDef
+          - IDENT: "y"
+          - Type
+            - BaseType
+              - IDENT: "T"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "distance"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "T"
+          - Type
+            - BaseType
+              - IDENT: "Number"
+      - FnArgs
+        - ArgDef
+          - IDENT: "p1"
+          - Type
+            - BaseType
+              - IDENT: "Point"
+              - TypeArgs
+                - Type
+                  - BaseType
+                    - IDENT: "T"
+        - ArgDef
+          - IDENT: "p2"
+          - Type
+            - BaseType
+              - IDENT: "Point"
+              - TypeArgs
+                - Type
+                  - BaseType
+                    - IDENT: "T"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - FnExprBody
+          - Block
+            - Stmt
+              - VrStmt
+                - K_VR: "vr"
+                - Pattern
+                  - VariantPat
+                    - IDENT: "dx"
+                - Expr
+                  - RangeExpr
+                    - CoalesceExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - BitOrExpr
+                            - BitXorExpr
+                              - BitAndExpr
+                                - CmpExpr
+                                  - MathExpr
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "p1"
+                                          - FieldAccess
+                                            - IDENT: "x"
+                                    - AddOp: "-"
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "p2"
+                                          - FieldAccess
+                                            - IDENT: "x"
+            - Stmt
+              - VrStmt
+                - K_VR: "vr"
+                - Pattern
+                  - VariantPat
+                    - IDENT: "dy"
+                - Expr
+                  - RangeExpr
+                    - CoalesceExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - BitOrExpr
+                            - BitXorExpr
+                              - BitAndExpr
+                                - CmpExpr
+                                  - MathExpr
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "p1"
+                                          - FieldAccess
+                                            - IDENT: "y"
+                                    - AddOp: "-"
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "p2"
+                                          - MethodCall
+                                            - IDENT: "y"
+                                            - ArgList
+                                              - Expr
+                                                - RangeExpr
+                                                  - CoalesceExpr
+                                                    - LogicOrExpr
+                                                      - LogicAndExpr
+                                                        - BitOrExpr
+                                                          - BitXorExpr
+                                                            - BitAndExpr
+                                                              - CmpExpr
+                                                                - MathExpr
+                                                                  - Term
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - IDENT: "dx"
+                                                                    - MulOp: "*"
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - IDENT: "dx"
+                                                                  - AddOp: "+"
+                                                                  - Term
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - IDENT: "dy"
+                                                                    - MulOp: "*"
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - IDENT: "dy"

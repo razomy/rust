@@ -1,0 +1,63 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - Stmt
+      - ForStmt
+        - K_FOR: "for"
+        - Pattern
+          - VariantPat
+            - IDENT: "n"
+        - K_IN: "in"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "names"
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - IDENT: "console"
+                                      - MethodCall
+                                        - IDENT: "print"
+                                        - ArgList
+                                          - Expr
+                                            - RangeExpr
+                                              - CoalesceExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - BitOrExpr
+                                                      - BitXorExpr
+                                                        - BitAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "n"

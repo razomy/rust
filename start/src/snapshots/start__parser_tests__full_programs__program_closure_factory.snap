@@ -1,0 +1,53 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "make_adder"
+    - FnArgs
+      - ArgDef
+        - IDENT: "x"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+    - FnBody
+      - FnExprBody
+        - Expr
+          - Closure
+            - ClosureParamList
+              - IDENT: "y"
+            - Expr
+              - IDENT: "x"
+              - AddOp: "+"
+              - IDENT: "y"
+  - FnDecl
+    - K_OUT: "out"
+    - K_FN: "fn"
+    - IDENT: "main"
+    - FnArgs: "()"
+    - FnBody
+      - Block
+        - VrStmt
+          - K_VR: "vr"
+          - VariantPat
+            - IDENT: "add5"
+          - Expr
+            - IDENT: "make_adder"
+            - CallArgs
+              - ArgList
+                - Expr
+                  - NUMBER: "5"
+        - ExprStmt
+          - Expr
+            - IDENT: "console"
+            - MethodCall
+              - IDENT: "print"
+              - ArgList
+                - Expr
+                  - IDENT: "add5"
+                  - CallArgs
+                    - ArgList
+                      - Expr
+                        - NUMBER: "10"

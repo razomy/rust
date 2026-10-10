@@ -1,0 +1,13 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - AssignStmt
+    - IDENT: "arr"
+    - IndexAccess
+      - Expr
+        - NUMBER: "0"
+    - AssignOp: "="
+    - Expr
+      - NUMBER: "99"

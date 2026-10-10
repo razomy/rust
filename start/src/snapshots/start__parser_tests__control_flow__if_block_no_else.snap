@@ -1,0 +1,19 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ExprStmt
+    - Expr
+      - IfExpr
+        - K_IF: "if"
+        - Expr
+          - IDENT: "flag"
+        - Block
+          - AssignStmt
+            - IDENT: "counter"
+            - AssignOp: "="
+            - Expr
+              - IDENT: "counter"
+              - AddOp: "+"
+              - NUMBER: "1"

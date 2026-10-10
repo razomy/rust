@@ -1,0 +1,24 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ExprStmt
+    - Expr
+      - IDENT: "users"
+      - MethodCall
+        - IDENT: "iter"
+        - ArgList
+          - Expr
+            - Closure
+              - ClosureParamList
+                - IDENT: "u"
+              - Expr
+                - IDENT: "console"
+                - MethodCall
+                  - IDENT: "print"
+                  - ArgList
+                    - Expr
+                      - IDENT: "u"
+                      - FieldAccess
+                        - IDENT: "name"

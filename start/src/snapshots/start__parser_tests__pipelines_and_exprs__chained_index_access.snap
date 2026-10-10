@@ -1,0 +1,17 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "item"
+    - Expr
+      - IDENT: "matrix"
+      - IndexAccess
+        - Expr
+          - NUMBER: "0"
+      - IndexAccess
+        - Expr
+          - NUMBER: "1"

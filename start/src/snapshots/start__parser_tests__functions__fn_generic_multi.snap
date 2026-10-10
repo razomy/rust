@@ -1,0 +1,36 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "pair"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+      - GenericConstraint
+        - IDENT: "U"
+    - FnArgs
+      - ArgDef
+        - IDENT: "a"
+        - Type
+          - BaseType
+            - IDENT: "T"
+      - ArgDef
+        - IDENT: "b"
+        - Type
+          - BaseType
+            - IDENT: "U"
+    - FnBody
+      - FnExprBody
+        - Expr
+          - StructInit
+            - StructField
+              - IDENT: "a"
+              - Expr
+                - IDENT: "a"
+            - StructField
+              - IDENT: "b"
+              - Expr
+                - IDENT: "b"

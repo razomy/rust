@@ -1,0 +1,21 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "r"
+    - Expr
+      - MatchExpr
+        - K_MATCH: "match"
+        - Expr
+          - IDENT: "obj"
+        - MatchArm
+          - StructPat
+            - StructFieldPat
+              - IDENT: "id"
+            - RestPat: ".."
+          - Expr
+            - IDENT: "id"

@@ -1,0 +1,30 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "make_user"
+    - FnArgs
+      - ArgDef
+        - IDENT: "name"
+        - Type
+          - BaseType
+            - IDENT: "Str"
+    - FnBody
+      - ReturnType
+        - Type
+          - BaseType
+            - IDENT: "User"
+      - FnExprBody
+        - Expr
+          - StructInit
+            - StructField
+              - IDENT: "name"
+              - Expr
+                - IDENT: "name"
+            - StructField
+              - IDENT: "age"
+              - Expr
+                - NUMBER: "0"

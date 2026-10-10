@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 pest = "2.9.3"
 pest_derive = "2.9.3"
+
+[dev-dependencies]
+insta = "1.49.0"

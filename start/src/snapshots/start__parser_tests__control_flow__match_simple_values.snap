@@ -1,0 +1,29 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "msg"
+    - Expr
+      - MatchExpr
+        - K_MATCH: "match"
+        - Expr
+          - IDENT: "code"
+        - MatchArm
+          - NUMBER: "200"
+          - Expr
+            - STRING
+              - StrText: "OK"
+        - MatchArm
+          - NUMBER: "404"
+          - Expr
+            - STRING
+              - StrText: "Not Found"
+        - MatchArm
+          - WildcardPat: "_"
+          - Expr
+            - STRING
+              - StrText: "Unknown"

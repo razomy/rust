@@ -1,0 +1,18 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Role"
+    - UnionDef
+      - VariantDef
+        - VariantName
+          - IDENT: "Admin"
+      - VariantDef
+        - VariantName
+          - IDENT: "User"
+      - VariantDef
+        - VariantName
+          - IDENT: "Guest"

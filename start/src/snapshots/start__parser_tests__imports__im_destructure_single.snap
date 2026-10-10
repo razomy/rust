@@ -1,0 +1,13 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ImportDecl
+    - K_IM: "im"
+    - ImportTarget
+      - ImportList
+        - IDENT: "log"
+    - ImportPath
+      - STRING
+        - StrText: "std/logger"

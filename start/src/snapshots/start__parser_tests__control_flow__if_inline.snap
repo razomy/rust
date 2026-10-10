@@ -1,0 +1,22 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "max"
+    - Expr
+      - IfExpr
+        - K_IF: "if"
+        - InlineCond
+          - InlineCmp
+            - IDENT: "a"
+            - CmpOp: ">"
+            - IDENT: "b"
+        - Expr
+          - IDENT: "a"
+        - K_ELSE: "else"
+        - Expr
+          - IDENT: "b"

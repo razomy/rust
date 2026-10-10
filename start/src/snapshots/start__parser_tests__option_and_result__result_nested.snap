@@ -1,0 +1,33 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "res"
+    - Type
+      - BaseType
+        - IDENT: "Result"
+        - TypeArgs
+          - Type
+            - BaseType
+              - IDENT: "Option"
+              - TypeArgs
+                - Type
+                  - BaseType
+                    - IDENT: "Int"
+          - Type
+            - BaseType
+              - IDENT: "Str"
+    - Expr
+      - ConstructorCall
+        - K_OK: "Ok"
+        - ArgList
+          - Expr
+            - ConstructorCall
+              - K_SOME: "Some"
+              - ArgList
+                - Expr
+                  - NUMBER: "10"

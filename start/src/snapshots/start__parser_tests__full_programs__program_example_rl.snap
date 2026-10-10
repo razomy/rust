@@ -1,0 +1,849 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - ImportDecl
+      - K_IM: "im"
+      - ImportTarget
+        - DottedIdent
+          - IDENT: "console"
+  - Item
+    - ImportDecl
+      - K_IM: "im"
+      - ImportTarget
+        - DottedIdent
+          - IDENT: "math"
+      - ImportPath
+        - STRING
+          - StrText: "std/math"
+  - Item
+    - ImportDecl
+      - K_IM: "im"
+      - ImportTarget
+        - ImportList
+          - IDENT: "log"
+          - IDENT: "warn"
+      - ImportPath
+        - STRING
+          - StrText: "std/logger"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "name"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - STRING
+                                        - StrText: "Алиса"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "age"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - NUMBER: "25"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "city"
+        - Type
+          - BaseType
+            - IDENT: "Str"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - STRING
+                                        - StrText: "Киев"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "ab"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - StructInit
+                                      - StructField
+                                        - IDENT: "a"
+                                        - Expr
+                                          - RangeExpr
+                                            - CoalesceExpr
+                                              - LogicOrExpr
+                                                - LogicAndExpr
+                                                  - BitOrExpr
+                                                    - BitXorExpr
+                                                      - BitAndExpr
+                                                        - CmpExpr
+                                                          - MathExpr
+                                                            - Term
+                                                              - Unary
+                                                                - Factor
+                                                                  - Primary
+                                                                    - Literal
+                                                                      - NUMBER: "1"
+                                      - StructField
+                                        - IDENT: "b"
+                                        - Expr
+                                          - RangeExpr
+                                            - CoalesceExpr
+                                              - LogicOrExpr
+                                                - LogicAndExpr
+                                                  - BitOrExpr
+                                                    - BitXorExpr
+                                                      - BitAndExpr
+                                                        - CmpExpr
+                                                          - MathExpr
+                                                            - Term
+                                                              - Unary
+                                                                - Factor
+                                                                  - Primary
+                                                                    - Literal
+                                                                      - NUMBER: "2"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - StructPat
+            - StructFieldPat
+              - IDENT: "a"
+            - StructFieldPat
+              - IDENT: "b"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "ab"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "c"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "ab"
+                                  - FieldAccess
+                                    - IDENT: "a"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - K_MUT: "mut"
+        - Pattern
+          - VariantPat
+            - IDENT: "counter"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - NUMBER: "0"
+  - Item
+    - Stmt
+      - AssignStmt
+        - IDENT: "counter"
+        - AssignOp: "="
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "counter"
+                            - AddOp: "+"
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - Literal
+                                      - NUMBER: "1"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "square"
+      - FnArgs
+        - ArgDef
+          - IDENT: "x"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+      - FnBody
+        - FnExprBody
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "x"
+                                - MulOp: "*"
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "x"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "add"
+      - FnArgs
+        - ArgDef
+          - IDENT: "a"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+        - ArgDef
+          - IDENT: "b"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - Literal
+                                        - NUMBER: "1"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "Int"
+        - FnExprBody
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "a"
+                              - AddOp: "+"
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "b"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "identity"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "T"
+      - FnArgs
+        - ArgDef
+          - IDENT: "val"
+          - Type
+            - BaseType
+              - IDENT: "T"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - FnExprBody
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "val"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "calc"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "T"
+          - Type
+            - BaseType
+              - IDENT: "Number"
+      - FnArgs
+        - ArgDef
+          - IDENT: "x"
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - ArgDef
+          - IDENT: "b"
+          - Type
+            - BaseType
+              - IDENT: "T"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - FnExprBody
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "x"
+                                - MulOp: "*"
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "x"
+  - Item
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "User"
+      - RecordDef
+        - FieldDef
+          - IDENT: "name"
+          - Type
+            - BaseType
+              - IDENT: "Str"
+        - FieldDef
+          - IDENT: "age"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+  - Item
+    - Stmt
+      - VrStmt
+        - K_VR: "vr"
+        - Pattern
+          - VariantPat
+            - IDENT: "alice"
+        - Type
+          - BaseType
+            - IDENT: "User"
+        - Expr
+          - RangeExpr
+            - CoalesceExpr
+              - LogicOrExpr
+                - LogicAndExpr
+                  - BitOrExpr
+                    - BitXorExpr
+                      - BitAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - StructInit
+                                      - StructField
+                                        - IDENT: "name"
+                                        - Expr
+                                          - RangeExpr
+                                            - CoalesceExpr
+                                              - LogicOrExpr
+                                                - LogicAndExpr
+                                                  - BitOrExpr
+                                                    - BitXorExpr
+                                                      - BitAndExpr
+                                                        - CmpExpr
+                                                          - MathExpr
+                                                            - Term
+                                                              - Unary
+                                                                - Factor
+                                                                  - Primary
+                                                                    - Literal
+                                                                      - STRING
+                                                                        - StrText: "Алиса"
+                                      - StructField
+                                        - IDENT: "age"
+                                        - Expr
+                                          - RangeExpr
+                                            - CoalesceExpr
+                                              - LogicOrExpr
+                                                - LogicAndExpr
+                                                  - BitOrExpr
+                                                    - BitXorExpr
+                                                      - BitAndExpr
+                                                        - CmpExpr
+                                                          - MathExpr
+                                                            - Term
+                                                              - Unary
+                                                                - Factor
+                                                                  - Primary
+                                                                    - Literal
+                                                                      - NUMBER: "25"
+  - Item
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Role"
+      - UnionDef
+        - VariantDef
+          - VariantName
+            - IDENT: "Admin"
+        - VariantDef
+          - VariantName
+            - IDENT: "User"
+          - VariantFieldDef
+            - IDENT: "id"
+            - Type
+              - BaseType
+                - IDENT: "Int"
+        - VariantDef
+          - VariantName
+            - IDENT: "Guest"
+  - Item
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Container"
+      - TypeParams
+        - TypeParamDef
+          - IDENT: "T"
+      - RecordDef
+        - FieldDef
+          - IDENT: "value"
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - FieldDef
+          - IDENT: "tag"
+          - Type
+            - BaseType
+              - IDENT: "Str"
+  - Item
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Response"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "TT"
+          - Type
+            - BaseType
+              - IDENT: "Real"
+          - Type
+            - BaseType
+              - IDENT: "Number"
+      - TypeParams
+        - TypeParamDef
+          - IDENT: "T"
+          - Type
+            - BaseType
+              - IDENT: "TT"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+      - UnionDef
+        - VariantDef
+          - VariantName
+            - IDENT: "Data"
+          - VariantFieldDef
+            - Type
+              - BaseType
+                - IDENT: "T"
+        - VariantDef
+          - VariantName
+            - IDENT: "Empty"
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "wrap"
+      - MetaGenerics
+        - GenericConstraint
+          - IDENT: "T"
+      - FnArgs
+        - ArgDef
+          - IDENT: "val"
+          - Type
+            - BaseType
+              - IDENT: "T"
+        - ArgDef
+          - IDENT: "tag"
+          - Type
+            - BaseType
+              - IDENT: "Str"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "Container"
+              - TypeArgs
+                - Type
+                  - BaseType
+                    - IDENT: "T"
+        - FnExprBody
+          - Expr
+            - RangeExpr
+              - CoalesceExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - BitOrExpr
+                      - BitXorExpr
+                        - BitAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - StructInit
+                                        - StructField
+                                          - IDENT: "value"
+                                          - Expr
+                                            - RangeExpr
+                                              - CoalesceExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - BitOrExpr
+                                                      - BitXorExpr
+                                                        - BitAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "val"
+                                        - StructField
+                                          - IDENT: "tag"
+                                          - Expr
+                                            - RangeExpr
+                                              - CoalesceExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - BitOrExpr
+                                                      - BitXorExpr
+                                                        - BitAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "tag"
+  - Item
+    - FnDecl
+      - K_OUT: "out"
+      - K_FN: "fn"
+      - IDENT: "main"
+      - FnArgs: "()"
+      - FnBody
+        - Stmt
+          - VrStmt
+            - K_VR: "vr"
+            - Pattern
+              - VariantPat
+                - IDENT: "users"
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - Literal
+                                          - ArrayInit
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - StructInit
+                                                                          - StructField
+                                                                            - IDENT: "name"
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - Literal
+                                                                                                          - STRING
+                                                                                                            - StrText: "Алиса"
+                                                                          - StructField
+                                                                            - IDENT: "age"
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - Literal
+                                                                                                          - NUMBER: "25"
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - StructInit
+                                                                          - StructField
+                                                                            - IDENT: "name"
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - Literal
+                                                                                                          - STRING
+                                                                                                            - StrText: "Боб"
+                                                                          - StructField
+                                                                            - IDENT: "age"
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - Literal
+                                                                                                          - NUMBER: "16"
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - IDENT: "users"
+                                      - MethodCall
+                                        - IDENT: "iter"
+                                        - ArgList
+                                          - Expr
+                                            - Closure
+                                              - ClosureParamList
+                                                - IDENT: "u"
+                                              - Expr
+                                                - RangeExpr
+                                                  - CoalesceExpr
+                                                    - LogicOrExpr
+                                                      - LogicAndExpr
+                                                        - BitOrExpr
+                                                          - BitXorExpr
+                                                            - BitAndExpr
+                                                              - CmpExpr
+                                                                - MathExpr
+                                                                  - Term
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - IDENT: "console"
+                                                                        - MethodCall
+                                                                          - IDENT: "print"
+                                                                          - ArgList
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - IDENT: "u"
+                                                                                                      - FieldAccess
+                                                                                                        - IDENT: "name"

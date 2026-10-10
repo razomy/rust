@@ -1,0 +1,20 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_OUT: "out"
+    - K_FN: "fn"
+    - IDENT: "main"
+    - FnArgs: "()"
+    - FnBody
+      - FnExprBody
+        - Expr
+          - IDENT: "console"
+          - MethodCall
+            - IDENT: "print"
+            - ArgList
+              - Expr
+                - STRING
+                  - StrText: "hi"

@@ -1,0 +1,24 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "s"
+    - Expr
+      - MatchExpr
+        - K_MATCH: "match"
+        - Expr
+          - IDENT: "flag"
+        - MatchArm
+          - K_TRUE: "true"
+          - Expr
+            - STRING
+              - StrText: "yes"
+        - MatchArm
+          - K_FALSE: "false"
+          - Expr
+            - STRING
+              - StrText: "no"

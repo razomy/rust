@@ -1,0 +1,29 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "State"
+    - UnionDef
+      - VariantDef
+        - VariantName
+          - IDENT: "Idle"
+      - VariantDef
+        - VariantName
+          - IDENT: "Loading"
+      - VariantDef
+        - VariantName
+          - IDENT: "Success"
+        - VariantFieldDef
+          - Type
+            - BaseType
+              - IDENT: "User"
+      - VariantDef
+        - VariantName
+          - IDENT: "Error"
+        - VariantFieldDef
+          - Type
+            - BaseType
+              - IDENT: "Str"

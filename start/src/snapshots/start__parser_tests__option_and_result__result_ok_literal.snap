@@ -1,0 +1,15 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "res"
+    - Expr
+      - ConstructorCall
+        - K_OK: "Ok"
+        - ArgList
+          - Expr
+            - NUMBER: "100"

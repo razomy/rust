@@ -1,0 +1,29 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "res"
+    - Expr
+      - IfExpr
+        - K_IF: "if"
+        - InlineCond
+          - InlineCmp
+            - IDENT: "a"
+            - CmpOp: ">"
+            - NUMBER: "0"
+          - LogicAndOp: "&&"
+          - InlineCmp
+            - IDENT: "b"
+            - CmpOp: "<"
+            - NUMBER: "10"
+        - Expr
+          - STRING
+            - StrText: "ok"
+        - K_ELSE: "else"
+        - Expr
+          - STRING
+            - StrText: "fail"

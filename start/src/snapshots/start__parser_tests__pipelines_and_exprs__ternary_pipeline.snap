@@ -1,0 +1,27 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "r"
+    - Expr
+      - Expr
+        - IfExpr
+          - K_IF: "if"
+          - InlineCond
+            - InlineCmp
+              - IDENT: "ready"
+          - Expr
+            - IDENT: "get_items"
+            - CallArgs: "()"
+          - K_ELSE: "else"
+          - Expr
+            - ArrayInit: "[]"
+      - MethodCall
+        - IDENT: "filter"
+        - ArgList
+          - Expr
+            - IDENT: "pred"

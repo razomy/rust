@@ -1,0 +1,65 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Node"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+    - TypeParams
+      - TypeParamDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "T"
+    - RecordDef
+      - FieldDef
+        - IDENT: "value"
+        - Type
+          - BaseType
+            - IDENT: "T"
+      - FieldDef
+        - IDENT: "next"
+        - Type
+          - BaseType
+            - IDENT: "Node"
+            - TypeArgs
+              - Type
+                - BaseType
+                  - IDENT: "T"
+          - OptionType: "?"
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "create_list"
+    - MetaGenerics
+      - GenericConstraint
+        - IDENT: "T"
+    - FnArgs
+      - ArgDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "T"
+    - FnBody
+      - ReturnType
+        - Type
+          - BaseType
+            - IDENT: "Node"
+            - TypeArgs
+              - Type
+                - BaseType
+                  - IDENT: "T"
+      - FnExprBody
+        - Expr
+          - StructInit
+            - StructField
+              - IDENT: "value"
+              - Expr
+                - IDENT: "val"
+            - StructField
+              - IDENT: "next"
+              - Expr
+                - K_NONE: "none"

@@ -1,0 +1,27 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "calc"
+    - Expr
+      - Closure
+        - ClosureParamList
+          - IDENT: "x"
+        - Block
+          - VrStmt
+            - K_VR: "vr"
+            - VariantPat
+              - IDENT: "y"
+            - Expr
+              - IDENT: "x"
+              - MulOp: "*"
+              - NUMBER: "2"
+          - ExprStmt
+            - Expr
+              - IDENT: "y"
+              - AddOp: "+"
+              - NUMBER: "1"

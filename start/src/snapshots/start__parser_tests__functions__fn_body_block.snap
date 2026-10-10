@@ -1,0 +1,27 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - FnDecl
+    - K_FN: "fn"
+    - IDENT: "test"
+    - FnArgs
+      - ArgDef
+        - IDENT: "x"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+    - FnBody
+      - Block
+        - VrStmt
+          - K_VR: "vr"
+          - VariantPat
+            - IDENT: "y"
+          - Expr
+            - IDENT: "x"
+            - AddOp: "+"
+            - NUMBER: "1"
+        - ExprStmt
+          - Expr
+            - IDENT: "y"

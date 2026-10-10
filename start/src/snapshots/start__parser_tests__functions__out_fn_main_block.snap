@@ -1,0 +1,69 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - FnDecl
+      - K_OUT: "out"
+      - K_FN: "fn"
+      - IDENT: "main"
+      - FnArgs: "()"
+      - FnBody
+        - Stmt
+          - VrStmt
+            - K_VR: "vr"
+            - Pattern
+              - VariantPat
+                - IDENT: "x"
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - Literal
+                                          - NUMBER: "1"
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - IDENT: "console"
+                                      - MethodCall
+                                        - IDENT: "print"
+                                        - ArgList
+                                          - Expr
+                                            - RangeExpr
+                                              - CoalesceExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - BitOrExpr
+                                                      - BitXorExpr
+                                                        - BitAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "x"

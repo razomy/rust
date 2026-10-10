@@ -1,0 +1,14 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - WhileStmt
+    - K_WHILE: "while"
+    - Expr
+      - K_TRUE: "true"
+    - Block
+      - ExprStmt
+        - Expr
+          - IDENT: "work"
+          - CallArgs: "()"

@@ -1,0 +1,20 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Point"
+    - TypeAliasDef
+      - RecordDef
+        - FieldDef
+          - IDENT: "x"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+        - FieldDef
+          - IDENT: "y"
+          - Type
+            - BaseType
+              - IDENT: "Int"

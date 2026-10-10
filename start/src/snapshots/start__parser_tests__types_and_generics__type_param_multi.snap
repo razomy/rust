@@ -1,0 +1,24 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Map"
+    - TypeParams
+      - TypeParamDef
+        - IDENT: "K"
+      - TypeParamDef
+        - IDENT: "V"
+    - RecordDef
+      - FieldDef
+        - IDENT: "key"
+        - Type
+          - BaseType
+            - IDENT: "K"
+      - FieldDef
+        - IDENT: "val"
+        - Type
+          - BaseType
+            - IDENT: "V"

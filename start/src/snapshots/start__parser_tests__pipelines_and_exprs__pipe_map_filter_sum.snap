@@ -1,0 +1,36 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "r"
+    - Expr
+      - IDENT: "numbers"
+      - MethodCall
+        - IDENT: "filter"
+        - ArgList
+          - Expr
+            - Closure
+              - ClosureParamList
+                - IDENT: "n"
+              - Expr
+                - IDENT: "n"
+                - MulOp: "%"
+                - NUMBER: "2"
+                - CmpOp: "=="
+                - NUMBER: "0"
+      - MethodCall
+        - IDENT: "map"
+        - ArgList
+          - Expr
+            - Closure
+              - IDENT: "n"
+              - Expr
+                - IDENT: "n"
+                - MulOp: "*"
+                - NUMBER: "10"
+      - MethodCall
+        - IDENT: "sum"

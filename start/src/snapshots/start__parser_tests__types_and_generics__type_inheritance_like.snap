@@ -1,0 +1,19 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "AdminUser"
+    - RecordDef
+      - FieldDef
+        - IDENT: "base"
+        - Type
+          - BaseType
+            - IDENT: "User"
+      - FieldDef
+        - IDENT: "role"
+        - Type
+          - BaseType
+            - IDENT: "Str"

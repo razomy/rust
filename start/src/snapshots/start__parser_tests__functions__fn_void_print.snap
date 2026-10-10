@@ -1,0 +1,51 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "log_msg"
+      - FnArgs
+        - ArgDef
+          - IDENT: "msg"
+          - Type
+            - BaseType
+              - IDENT: "Str"
+      - FnBody
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - CoalesceExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - BitOrExpr
+                        - BitXorExpr
+                          - BitAndExpr
+                            - CmpExpr
+                              - MathExpr
+                                - Term
+                                  - Unary
+                                    - Factor
+                                      - Primary
+                                        - IDENT: "console"
+                                      - MethodCall
+                                        - IDENT: "print"
+                                        - ArgList
+                                          - Expr
+                                            - RangeExpr
+                                              - CoalesceExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - BitOrExpr
+                                                      - BitXorExpr
+                                                        - BitAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "msg"

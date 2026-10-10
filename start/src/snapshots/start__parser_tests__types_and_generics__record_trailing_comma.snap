@@ -1,0 +1,19 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Item"
+    - RecordDef
+      - FieldDef
+        - IDENT: "id"
+        - Type
+          - BaseType
+            - IDENT: "Int"
+      - FieldDef
+        - IDENT: "title"
+        - Type
+          - BaseType
+            - IDENT: "Str"

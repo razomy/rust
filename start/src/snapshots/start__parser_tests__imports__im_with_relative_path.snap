@@ -1,0 +1,13 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ImportDecl
+    - K_IM: "im"
+    - ImportTarget
+      - DottedIdent
+        - IDENT: "local"
+    - ImportPath
+      - STRING
+        - StrText: "./utils/helper"

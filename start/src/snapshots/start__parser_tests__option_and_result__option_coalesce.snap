@@ -1,0 +1,17 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "def"
+    - Expr
+      - IDENT: "val"
+      - TryOp: "?"
+      - TryOp: "?"
+  - ExprStmt
+    - Expr
+      - STRING
+        - StrText: "default"

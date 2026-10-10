@@ -1,0 +1,22 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - TypeDecl
+    - K_TYPE: "type"
+    - IDENT: "Container"
+    - TypeParams
+      - TypeParamDef
+        - IDENT: "T"
+    - RecordDef
+      - FieldDef
+        - IDENT: "value"
+        - Type
+          - BaseType
+            - IDENT: "T"
+      - FieldDef
+        - IDENT: "tag"
+        - Type
+          - BaseType
+            - IDENT: "Str"

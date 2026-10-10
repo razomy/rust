@@ -1,0 +1,12 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - BlockComment: "## комментарий ##"
+  - VrStmt
+    - K_VR: "vr"
+    - VariantPat
+      - IDENT: "x"
+    - Expr
+      - NUMBER: "1"

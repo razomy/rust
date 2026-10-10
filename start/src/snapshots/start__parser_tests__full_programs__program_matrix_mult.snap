@@ -1,0 +1,135 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "multiply"
+      - FnArgs
+        - ArgDef
+          - IDENT: "a"
+          - Type
+            - ArrayType
+              - Type
+                - ArrayType
+                  - Type
+                    - BaseType
+                      - IDENT: "Int"
+        - ArgDef
+          - IDENT: "b"
+          - Type
+            - ArrayType
+              - Type
+                - ArrayType
+                  - Type
+                    - BaseType
+                      - IDENT: "Int"
+      - FnBody
+        - ReturnType
+          - Type
+            - ArrayType
+              - Type
+                - ArrayType
+                  - Type
+                    - BaseType
+                      - IDENT: "Int"
+        - FnExprBody
+          - Block
+            - Stmt
+              - VrStmt
+                - K_VR: "vr"
+                - Pattern
+                  - VariantPat
+                    - IDENT: "rows"
+                - Expr
+                  - RangeExpr
+                    - CoalesceExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - BitOrExpr
+                            - BitXorExpr
+                              - BitAndExpr
+                                - CmpExpr
+                                  - MathExpr
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "a"
+                                          - MethodCall
+                                            - IDENT: "len"
+            - Stmt
+              - VrStmt
+                - K_VR: "vr"
+                - Pattern
+                  - VariantPat
+                    - IDENT: "cols"
+                - Expr
+                  - RangeExpr
+                    - CoalesceExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - BitOrExpr
+                            - BitXorExpr
+                              - BitAndExpr
+                                - CmpExpr
+                                  - MathExpr
+                                    - Term
+                                      - Unary
+                                        - Factor
+                                          - Primary
+                                            - IDENT: "b"
+                                          - IndexAccess
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - Literal
+                                                                          - NUMBER: "0"
+                                          - MethodCall
+                                            - IDENT: "len"
+                                          - IndexAccess
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - Literal
+                                                                          - ArrayInit
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - CoalesceExpr
+                                                                                  - LogicOrExpr
+                                                                                    - LogicAndExpr
+                                                                                      - BitOrExpr
+                                                                                        - BitXorExpr
+                                                                                          - BitAndExpr
+                                                                                            - CmpExpr
+                                                                                              - MathExpr
+                                                                                                - Term
+                                                                                                  - Unary
+                                                                                                    - Factor
+                                                                                                      - Primary
+                                                                                                        - Literal
+                                                                                                          - NUMBER: "0"

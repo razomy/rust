@@ -259,7 +259,7 @@
   - Item
     - FnDecl
       - K_FN: "fn"
-      - IDENT: "square"
+      - IDENT: "square1"
       - FnArgs
         - ArgDef
           - IDENT: "x"
@@ -291,7 +291,7 @@
   - Item
     - FnDecl
       - K_FN: "fn"
-      - IDENT: "square"
+      - IDENT: "square2"
       - FnArgs
         - ArgDef
           - IDENT: "x"
@@ -328,7 +328,7 @@
   - Item
     - FnDecl
       - K_FN: "fn"
-      - IDENT: "square"
+      - IDENT: "square3"
       - FnArgs
         - ArgDef
           - IDENT: "x"
@@ -369,7 +369,7 @@
   - Item
     - FnDecl
       - K_FN: "fn"
-      - IDENT: "square"
+      - IDENT: "square4"
       - FnArgs
         - ArgDef
           - IDENT: "x"
@@ -382,66 +382,33 @@
             - BaseType
               - IDENT: "Int"
       - FnBody
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "x"
-                                  - MulOp: "*"
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "x"
-  - Item
-    - FnDecl
-      - K_FN: "fn"
-      - IDENT: "square"
-      - FnArgs
-        - ArgDef
-          - IDENT: "x"
+        - ReturnType
           - Type
             - BaseType
               - IDENT: "Int"
-        - ArgDef
-          - IDENT: "b"
-          - Type
-            - BaseType
-              - IDENT: "Int"
-      - FnBody
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "x"
-                                  - MulOp: "*"
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "x"
+        - Block
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "x"
+                                    - MulOp: "*"
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "x"
   - Item
     - FnDecl
       - K_FN: "fn"
@@ -511,41 +478,42 @@
             - BaseType
               - IDENT: "Str"
       - FnBody
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "console"
-                                      - MethodCall
-                                        - IDENT: "print"
-                                        - ArgList
-                                          - Expr
-                                            - RangeExpr
-                                              - CoalesceExpr
-                                                - LogicOrExpr
-                                                  - LogicAndExpr
-                                                    - BitOrExpr
-                                                      - BitXorExpr
-                                                        - BitAndExpr
-                                                          - CmpExpr
-                                                            - MathExpr
-                                                              - Term
-                                                                - Unary
-                                                                  - Factor
-                                                                    - Primary
-                                                                      - IDENT: "msg"
+        - Block
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "console"
+                                        - MethodCall
+                                          - IDENT: "print"
+                                          - ArgList
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - IDENT: "msg"
   - Item
     - FnDecl
       - K_FN: "fn"
@@ -626,7 +594,7 @@
   - Item
     - FnDecl
       - K_FN: "fn"
-      - IDENT: "calc"
+      - IDENT: "calc2"
       - MetaGenerics
         - GenericConstraint
           - IDENT: "T"
@@ -1002,20 +970,6 @@
           - Expr
             - IfExpr
               - K_IF: "if"
-              - InlineCond
-                - InlineCmp
-                  - MathExpr
-                    - Term
-                      - Unary
-                        - Factor
-                          - Primary
-                            - IDENT: "id"
-                  - CmpOp: "=="
-                  - Unary
-                    - Factor
-                      - Primary
-                        - Literal
-                          - NUMBER: "1"
               - Expr
                 - RangeExpr
                   - CoalesceExpr
@@ -1030,78 +984,107 @@
                                     - Unary
                                       - Factor
                                         - Primary
-                                          - ConstructorCall
-                                            - K_SOME: "Some"
-                                            - ArgList
-                                              - Expr
-                                                - RangeExpr
-                                                  - CoalesceExpr
-                                                    - LogicOrExpr
-                                                      - LogicAndExpr
-                                                        - BitOrExpr
-                                                          - BitXorExpr
-                                                            - BitAndExpr
-                                                              - CmpExpr
-                                                                - MathExpr
-                                                                  - Term
-                                                                    - Unary
-                                                                      - Factor
-                                                                        - Primary
-                                                                          - StructInit
-                                                                            - StructField
-                                                                              - IDENT: "name"
-                                                                              - Expr
-                                                                                - RangeExpr
-                                                                                  - CoalesceExpr
-                                                                                    - LogicOrExpr
-                                                                                      - LogicAndExpr
-                                                                                        - BitOrExpr
-                                                                                          - BitXorExpr
-                                                                                            - BitAndExpr
-                                                                                              - CmpExpr
-                                                                                                - MathExpr
-                                                                                                  - Term
-                                                                                                    - Unary
-                                                                                                      - Factor
-                                                                                                        - Primary
-                                                                                                          - Literal
-                                                                                                            - STRING
-                                                                                                              - StrText: "Алиса"
-                                                                            - StructField
-                                                                              - IDENT: "age"
-                                                                              - Expr
-                                                                                - RangeExpr
-                                                                                  - CoalesceExpr
-                                                                                    - LogicOrExpr
-                                                                                      - LogicAndExpr
-                                                                                        - BitOrExpr
-                                                                                          - BitXorExpr
-                                                                                            - BitAndExpr
-                                                                                              - CmpExpr
-                                                                                                - MathExpr
-                                                                                                  - Term
-                                                                                                    - Unary
-                                                                                                      - Factor
-                                                                                                        - Primary
-                                                                                                          - Literal
-                                                                                                            - NUMBER: "25"
-              - K_ELSE: "else"
-              - Expr
-                - RangeExpr
-                  - CoalesceExpr
-                    - LogicOrExpr
-                      - LogicAndExpr
-                        - BitOrExpr
-                          - BitXorExpr
-                            - BitAndExpr
-                              - CmpExpr
+                                          - IDENT: "id"
+                                - CmpOp: "=="
                                 - MathExpr
                                   - Term
                                     - Unary
                                       - Factor
                                         - Primary
                                           - Literal
-                                            - K_NONE: "none"
+                                            - NUMBER: "1"
+              - Block
+                - Stmt
+                  - ExprStmt
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - ConstructorCall
+                                                  - K_SOME: "Some"
+                                                  - ArgList
+                                                    - Expr
+                                                      - RangeExpr
+                                                        - CoalesceExpr
+                                                          - LogicOrExpr
+                                                            - LogicAndExpr
+                                                              - BitOrExpr
+                                                                - BitXorExpr
+                                                                  - BitAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - StructInit
+                                                                                  - StructField
+                                                                                    - IDENT: "name"
+                                                                                    - Expr
+                                                                                      - RangeExpr
+                                                                                        - CoalesceExpr
+                                                                                          - LogicOrExpr
+                                                                                            - LogicAndExpr
+                                                                                              - BitOrExpr
+                                                                                                - BitXorExpr
+                                                                                                  - BitAndExpr
+                                                                                                    - CmpExpr
+                                                                                                      - MathExpr
+                                                                                                        - Term
+                                                                                                          - Unary
+                                                                                                            - Factor
+                                                                                                              - Primary
+                                                                                                                - Literal
+                                                                                                                  - STRING
+                                                                                                                    - StrText: "Алиса"
+                                                                                  - StructField
+                                                                                    - IDENT: "age"
+                                                                                    - Expr
+                                                                                      - RangeExpr
+                                                                                        - CoalesceExpr
+                                                                                          - LogicOrExpr
+                                                                                            - LogicAndExpr
+                                                                                              - BitOrExpr
+                                                                                                - BitXorExpr
+                                                                                                  - BitAndExpr
+                                                                                                    - CmpExpr
+                                                                                                      - MathExpr
+                                                                                                        - Term
+                                                                                                          - Unary
+                                                                                                            - Factor
+                                                                                                              - Primary
+                                                                                                                - Literal
+                                                                                                                  - NUMBER: "25"
+              - K_ELSE: "else"
+              - Block
+                - Stmt
+                  - ExprStmt
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - Literal
+                                                  - K_NONE: "none"
   - Item
     - Stmt
       - VrStmt
@@ -1243,20 +1226,6 @@
           - Expr
             - IfExpr
               - K_IF: "if"
-              - InlineCond
-                - InlineCmp
-                  - MathExpr
-                    - Term
-                      - Unary
-                        - Factor
-                          - Primary
-                            - IDENT: "b"
-                  - CmpOp: "=="
-                  - Unary
-                    - Factor
-                      - Primary
-                        - Literal
-                          - NUMBER: "0"
               - Expr
                 - RangeExpr
                   - CoalesceExpr
@@ -1271,64 +1240,93 @@
                                     - Unary
                                       - Factor
                                         - Primary
-                                          - ConstructorCall
-                                            - K_ERR: "Err"
-                                            - ArgList
-                                              - Expr
-                                                - RangeExpr
-                                                  - CoalesceExpr
-                                                    - LogicOrExpr
-                                                      - LogicAndExpr
-                                                        - BitOrExpr
-                                                          - BitXorExpr
-                                                            - BitAndExpr
-                                                              - CmpExpr
-                                                                - MathExpr
-                                                                  - Term
-                                                                    - Unary
-                                                                      - Factor
-                                                                        - Primary
-                                                                          - Literal
-                                                                            - STRING
-                                                                              - StrText: "Деление на ноль"
+                                          - IDENT: "b"
+                                - CmpOp: "=="
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - Literal
+                                            - NUMBER: "0"
+              - Block
+                - Stmt
+                  - ExprStmt
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - ConstructorCall
+                                                  - K_ERR: "Err"
+                                                  - ArgList
+                                                    - Expr
+                                                      - RangeExpr
+                                                        - CoalesceExpr
+                                                          - LogicOrExpr
+                                                            - LogicAndExpr
+                                                              - BitOrExpr
+                                                                - BitXorExpr
+                                                                  - BitAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - STRING
+                                                                                    - StrText: "Деление на ноль"
               - K_ELSE: "else"
-              - Expr
-                - RangeExpr
-                  - CoalesceExpr
-                    - LogicOrExpr
-                      - LogicAndExpr
-                        - BitOrExpr
-                          - BitXorExpr
-                            - BitAndExpr
-                              - CmpExpr
-                                - MathExpr
-                                  - Term
-                                    - Unary
-                                      - Factor
-                                        - Primary
-                                          - ConstructorCall
-                                            - K_OK: "Ok"
-                                            - ArgList
-                                              - Expr
-                                                - RangeExpr
-                                                  - CoalesceExpr
-                                                    - LogicOrExpr
-                                                      - LogicAndExpr
-                                                        - BitOrExpr
-                                                          - BitXorExpr
-                                                            - BitAndExpr
-                                                              - CmpExpr
-                                                                - MathExpr
-                                                                  - Term
-                                                                    - Unary
-                                                                      - Factor
-                                                                        - Primary
-                                                                          - IDENT: "a"
-                                                                    - MulOp: "/"
-                                                                    - Unary
-                                                                      - Factor
-                                                                        - Primary
-                                                                          - IDENT: "b"
+              - Block
+                - Stmt
+                  - ExprStmt
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - ConstructorCall
+                                                  - K_OK: "Ok"
+                                                  - ArgList
+                                                    - Expr
+                                                      - RangeExpr
+                                                        - CoalesceExpr
+                                                          - LogicOrExpr
+                                                            - LogicAndExpr
+                                                              - BitOrExpr
+                                                                - BitXorExpr
+                                                                  - BitAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "a"
+                                                                          - MulOp: "/"
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "b"
   - Item
     - Stmt
       - VrStmt
@@ -1929,41 +1927,42 @@
                                 - Factor
                                   - Primary
                                     - IDENT: "names"
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "console"
-                                      - MethodCall
-                                        - IDENT: "print"
-                                        - ArgList
-                                          - Expr
-                                            - RangeExpr
-                                              - CoalesceExpr
-                                                - LogicOrExpr
-                                                  - LogicAndExpr
-                                                    - BitOrExpr
-                                                      - BitXorExpr
-                                                        - BitAndExpr
-                                                          - CmpExpr
-                                                            - MathExpr
-                                                              - Term
-                                                                - Unary
-                                                                  - Factor
-                                                                    - Primary
-                                                                      - IDENT: "n"
+        - Block
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "console"
+                                        - MethodCall
+                                          - IDENT: "print"
+                                          - ArgList
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - IDENT: "n"
   - Item
     - Stmt
       - ForStmt
@@ -2662,208 +2661,29 @@
       - IDENT: "main"
       - FnArgs: "()"
       - FnBody
-        - Stmt
-          - VrStmt
-            - K_VR: "vr"
-            - Pattern
-              - VariantPat
-                - IDENT: "users"
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - Literal
-                                          - ArrayInit
-                                            - Expr
-                                              - RangeExpr
-                                                - CoalesceExpr
-                                                  - LogicOrExpr
-                                                    - LogicAndExpr
-                                                      - BitOrExpr
-                                                        - BitXorExpr
-                                                          - BitAndExpr
-                                                            - CmpExpr
-                                                              - MathExpr
-                                                                - Term
-                                                                  - Unary
-                                                                    - Factor
-                                                                      - Primary
-                                                                        - StructInit
-                                                                          - StructField
-                                                                            - IDENT: "name"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - STRING
-                                                                                                            - StrText: "Алиса"
-                                                                          - StructField
-                                                                            - IDENT: "age"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - NUMBER: "25"
-                                            - Expr
-                                              - RangeExpr
-                                                - CoalesceExpr
-                                                  - LogicOrExpr
-                                                    - LogicAndExpr
-                                                      - BitOrExpr
-                                                        - BitXorExpr
-                                                          - BitAndExpr
-                                                            - CmpExpr
-                                                              - MathExpr
-                                                                - Term
-                                                                  - Unary
-                                                                    - Factor
-                                                                      - Primary
-                                                                        - StructInit
-                                                                          - StructField
-                                                                            - IDENT: "name"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - STRING
-                                                                                                            - StrText: "Боб"
-                                                                          - StructField
-                                                                            - IDENT: "age"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - NUMBER: "16"
-                                            - Expr
-                                              - RangeExpr
-                                                - CoalesceExpr
-                                                  - LogicOrExpr
-                                                    - LogicAndExpr
-                                                      - BitOrExpr
-                                                        - BitXorExpr
-                                                          - BitAndExpr
-                                                            - CmpExpr
-                                                              - MathExpr
-                                                                - Term
-                                                                  - Unary
-                                                                    - Factor
-                                                                      - Primary
-                                                                        - StructInit
-                                                                          - StructField
-                                                                            - IDENT: "name"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - STRING
-                                                                                                            - StrText: "Ева"
-                                                                          - StructField
-                                                                            - IDENT: "age"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - Literal
-                                                                                                          - NUMBER: "22"
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "users"
-                                      - MethodCall
-                                        - IDENT: "map"
-                                        - ArgList
-                                          - Expr
-                                            - Closure
-                                              - ClosureParamList
-                                                - IDENT: "u"
+        - Block
+          - Stmt
+            - VrStmt
+              - K_VR: "vr"
+              - Pattern
+                - VariantPat
+                  - IDENT: "users"
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - Literal
+                                            - ArrayInit
                                               - Expr
                                                 - RangeExpr
                                                   - CoalesceExpr
@@ -2878,175 +2698,44 @@
                                                                     - Unary
                                                                       - Factor
                                                                         - Primary
-                                                                          - IDENT: "check_access"
-                                                                        - CallArgs
-                                                                          - ArgList
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - IDENT: "u"
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - IDENT: "Admin"
-                                      - MethodCall
-                                        - IDENT: "map"
-                                        - ArgList
-                                          - Expr
-                                            - Closure
-                                              - ClosureParamList
-                                                - IDENT: "res"
-                                              - Expr
-                                                - MatchExpr
-                                                  - K_MATCH: "match"
-                                                  - Expr
-                                                    - RangeExpr
-                                                      - CoalesceExpr
-                                                        - LogicOrExpr
-                                                          - LogicAndExpr
-                                                            - BitOrExpr
-                                                              - BitXorExpr
-                                                                - BitAndExpr
-                                                                  - CmpExpr
-                                                                    - MathExpr
-                                                                      - Term
-                                                                        - Unary
-                                                                          - Factor
-                                                                            - Primary
-                                                                              - IDENT: "res"
-                                                  - MatchArm
-                                                    - Pattern
-                                                      - VariantPat
-                                                        - K_OK: "Ok"
-                                                        - Pattern
-                                                          - VariantPat
-                                                            - IDENT: "box"
-                                                    - Expr
-                                                      - RangeExpr
-                                                        - CoalesceExpr
-                                                          - LogicOrExpr
-                                                            - LogicAndExpr
-                                                              - BitOrExpr
-                                                                - BitXorExpr
-                                                                  - BitAndExpr
-                                                                    - CmpExpr
-                                                                      - MathExpr
-                                                                        - Term
-                                                                          - Unary
-                                                                            - Factor
-                                                                              - Primary
-                                                                                - Literal
-                                                                                  - STRING
-                                                                                    - StrText: "✅ Доступ:"
-                                                                                    - Interpolation
-                                                                                      - Expr
-                                                                                        - RangeExpr
-                                                                                          - CoalesceExpr
-                                                                                            - LogicOrExpr
-                                                                                              - LogicAndExpr
-                                                                                                - BitOrExpr
-                                                                                                  - BitXorExpr
-                                                                                                    - BitAndExpr
-                                                                                                      - CmpExpr
-                                                                                                        - MathExpr
-                                                                                                          - Term
-                                                                                                            - Unary
-                                                                                                              - Factor
-                                                                                                                - Primary
-                                                                                                                  - IDENT: "box"
-                                                                                                                - FieldAccess
-                                                                                                                  - IDENT: "value"
-                                                                                                                - FieldAccess
-                                                                                                                  - IDENT: "name"
-                                                                                    - StrText: "["
-                                                                                    - Interpolation
-                                                                                      - Expr
-                                                                                        - RangeExpr
-                                                                                          - CoalesceExpr
-                                                                                            - LogicOrExpr
-                                                                                              - LogicAndExpr
-                                                                                                - BitOrExpr
-                                                                                                  - BitXorExpr
-                                                                                                    - BitAndExpr
-                                                                                                      - CmpExpr
-                                                                                                        - MathExpr
-                                                                                                          - Term
-                                                                                                            - Unary
-                                                                                                              - Factor
-                                                                                                                - Primary
-                                                                                                                  - IDENT: "box"
-                                                                                                                - FieldAccess
-                                                                                                                  - IDENT: "tag"
-                                                                                    - StrText: "]"
-                                                  - MatchArm
-                                                    - Pattern
-                                                      - VariantPat
-                                                        - K_ERR: "Err"
-                                                        - Pattern
-                                                          - VariantPat
-                                                            - IDENT: "err"
-                                                    - Expr
-                                                      - RangeExpr
-                                                        - CoalesceExpr
-                                                          - LogicOrExpr
-                                                            - LogicAndExpr
-                                                              - BitOrExpr
-                                                                - BitXorExpr
-                                                                  - BitAndExpr
-                                                                    - CmpExpr
-                                                                      - MathExpr
-                                                                        - Term
-                                                                          - Unary
-                                                                            - Factor
-                                                                              - Primary
-                                                                                - Literal
-                                                                                  - STRING
-                                                                                    - StrText: "❌ Ошибка:"
-                                                                                    - Interpolation
-                                                                                      - Expr
-                                                                                        - RangeExpr
-                                                                                          - CoalesceExpr
-                                                                                            - LogicOrExpr
-                                                                                              - LogicAndExpr
-                                                                                                - BitOrExpr
-                                                                                                  - BitXorExpr
-                                                                                                    - BitAndExpr
-                                                                                                      - CmpExpr
-                                                                                                        - MathExpr
-                                                                                                          - Term
-                                                                                                            - Unary
-                                                                                                              - Factor
-                                                                                                                - Primary
-                                                                                                                  - IDENT: "err"
-                                      - MethodCall
-                                        - IDENT: "iter"
-                                        - ArgList
-                                          - Expr
-                                            - Closure
-                                              - ClosureParamList
-                                                - IDENT: "msg"
+                                                                          - StructInit
+                                                                            - StructField
+                                                                              - IDENT: "name"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - STRING
+                                                                                                              - StrText: "Алиса"
+                                                                            - StructField
+                                                                              - IDENT: "age"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - NUMBER: "25"
                                               - Expr
                                                 - RangeExpr
                                                   - CoalesceExpr
@@ -3061,82 +2750,371 @@
                                                                     - Unary
                                                                       - Factor
                                                                         - Primary
-                                                                          - IDENT: "console"
-                                                                        - MethodCall
-                                                                          - IDENT: "print"
-                                                                          - ArgList
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - IDENT: "msg"
-        - Stmt
-          - VrStmt
-            - K_VR: "vr"
-            - Pattern
-              - VariantPat
-                - IDENT: "config_path"
-            - Type
-              - BaseType
-                - IDENT: "Str"
-              - OptionType: "?"
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - Literal
-                                          - K_NONE: "none"
-        - Stmt
-          - VrStmt
-            - K_VR: "vr"
-            - Pattern
-              - VariantPat
-                - IDENT: "path"
-            - Expr
-              - MatchExpr
-                - K_MATCH: "match"
-                - Expr
-                  - RangeExpr
-                    - CoalesceExpr
-                      - LogicOrExpr
-                        - LogicAndExpr
-                          - BitOrExpr
-                            - BitXorExpr
-                              - BitAndExpr
-                                - CmpExpr
-                                  - MathExpr
-                                    - Term
-                                      - Unary
-                                        - Factor
-                                          - Primary
-                                            - IDENT: "config_path"
-                - MatchArm
-                  - Pattern
-                    - VariantPat
-                      - K_SOME: "Some"
-                      - Pattern
-                        - VariantPat
-                          - IDENT: "p"
+                                                                          - StructInit
+                                                                            - StructField
+                                                                              - IDENT: "name"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - STRING
+                                                                                                              - StrText: "Боб"
+                                                                            - StructField
+                                                                              - IDENT: "age"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - NUMBER: "16"
+                                              - Expr
+                                                - RangeExpr
+                                                  - CoalesceExpr
+                                                    - LogicOrExpr
+                                                      - LogicAndExpr
+                                                        - BitOrExpr
+                                                          - BitXorExpr
+                                                            - BitAndExpr
+                                                              - CmpExpr
+                                                                - MathExpr
+                                                                  - Term
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - StructInit
+                                                                            - StructField
+                                                                              - IDENT: "name"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - STRING
+                                                                                                              - StrText: "Ева"
+                                                                            - StructField
+                                                                              - IDENT: "age"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - Literal
+                                                                                                            - NUMBER: "22"
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "users"
+                                        - MethodCall
+                                          - IDENT: "map"
+                                          - ArgList
+                                            - Expr
+                                              - Closure
+                                                - ClosureParamList
+                                                  - IDENT: "u"
+                                                - Expr
+                                                  - RangeExpr
+                                                    - CoalesceExpr
+                                                      - LogicOrExpr
+                                                        - LogicAndExpr
+                                                          - BitOrExpr
+                                                            - BitXorExpr
+                                                              - BitAndExpr
+                                                                - CmpExpr
+                                                                  - MathExpr
+                                                                    - Term
+                                                                      - Unary
+                                                                        - Factor
+                                                                          - Primary
+                                                                            - IDENT: "check_access"
+                                                                          - CallArgs
+                                                                            - ArgList
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - IDENT: "u"
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - IDENT: "Admin"
+                                        - MethodCall
+                                          - IDENT: "map"
+                                          - ArgList
+                                            - Expr
+                                              - Closure
+                                                - ClosureParamList
+                                                  - IDENT: "res"
+                                                - Expr
+                                                  - MatchExpr
+                                                    - K_MATCH: "match"
+                                                    - Expr
+                                                      - RangeExpr
+                                                        - CoalesceExpr
+                                                          - LogicOrExpr
+                                                            - LogicAndExpr
+                                                              - BitOrExpr
+                                                                - BitXorExpr
+                                                                  - BitAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "res"
+                                                    - MatchArm
+                                                      - Pattern
+                                                        - VariantPat
+                                                          - K_OK: "Ok"
+                                                          - Pattern
+                                                            - VariantPat
+                                                              - IDENT: "box"
+                                                      - Expr
+                                                        - RangeExpr
+                                                          - CoalesceExpr
+                                                            - LogicOrExpr
+                                                              - LogicAndExpr
+                                                                - BitOrExpr
+                                                                  - BitXorExpr
+                                                                    - BitAndExpr
+                                                                      - CmpExpr
+                                                                        - MathExpr
+                                                                          - Term
+                                                                            - Unary
+                                                                              - Factor
+                                                                                - Primary
+                                                                                  - Literal
+                                                                                    - STRING
+                                                                                      - StrText: "✅ Доступ:"
+                                                                                      - Interpolation
+                                                                                        - Expr
+                                                                                          - RangeExpr
+                                                                                            - CoalesceExpr
+                                                                                              - LogicOrExpr
+                                                                                                - LogicAndExpr
+                                                                                                  - BitOrExpr
+                                                                                                    - BitXorExpr
+                                                                                                      - BitAndExpr
+                                                                                                        - CmpExpr
+                                                                                                          - MathExpr
+                                                                                                            - Term
+                                                                                                              - Unary
+                                                                                                                - Factor
+                                                                                                                  - Primary
+                                                                                                                    - IDENT: "box"
+                                                                                                                  - FieldAccess
+                                                                                                                    - IDENT: "value"
+                                                                                                                  - FieldAccess
+                                                                                                                    - IDENT: "name"
+                                                                                      - StrText: "["
+                                                                                      - Interpolation
+                                                                                        - Expr
+                                                                                          - RangeExpr
+                                                                                            - CoalesceExpr
+                                                                                              - LogicOrExpr
+                                                                                                - LogicAndExpr
+                                                                                                  - BitOrExpr
+                                                                                                    - BitXorExpr
+                                                                                                      - BitAndExpr
+                                                                                                        - CmpExpr
+                                                                                                          - MathExpr
+                                                                                                            - Term
+                                                                                                              - Unary
+                                                                                                                - Factor
+                                                                                                                  - Primary
+                                                                                                                    - IDENT: "box"
+                                                                                                                  - FieldAccess
+                                                                                                                    - IDENT: "tag"
+                                                                                      - StrText: "]"
+                                                    - MatchArm
+                                                      - Pattern
+                                                        - VariantPat
+                                                          - K_ERR: "Err"
+                                                          - Pattern
+                                                            - VariantPat
+                                                              - IDENT: "err"
+                                                      - Expr
+                                                        - RangeExpr
+                                                          - CoalesceExpr
+                                                            - LogicOrExpr
+                                                              - LogicAndExpr
+                                                                - BitOrExpr
+                                                                  - BitXorExpr
+                                                                    - BitAndExpr
+                                                                      - CmpExpr
+                                                                        - MathExpr
+                                                                          - Term
+                                                                            - Unary
+                                                                              - Factor
+                                                                                - Primary
+                                                                                  - Literal
+                                                                                    - STRING
+                                                                                      - StrText: "❌ Ошибка:"
+                                                                                      - Interpolation
+                                                                                        - Expr
+                                                                                          - RangeExpr
+                                                                                            - CoalesceExpr
+                                                                                              - LogicOrExpr
+                                                                                                - LogicAndExpr
+                                                                                                  - BitOrExpr
+                                                                                                    - BitXorExpr
+                                                                                                      - BitAndExpr
+                                                                                                        - CmpExpr
+                                                                                                          - MathExpr
+                                                                                                            - Term
+                                                                                                              - Unary
+                                                                                                                - Factor
+                                                                                                                  - Primary
+                                                                                                                    - IDENT: "err"
+                                        - MethodCall
+                                          - IDENT: "iter"
+                                          - ArgList
+                                            - Expr
+                                              - Closure
+                                                - ClosureParamList
+                                                  - IDENT: "msg"
+                                                - Expr
+                                                  - RangeExpr
+                                                    - CoalesceExpr
+                                                      - LogicOrExpr
+                                                        - LogicAndExpr
+                                                          - BitOrExpr
+                                                            - BitXorExpr
+                                                              - BitAndExpr
+                                                                - CmpExpr
+                                                                  - MathExpr
+                                                                    - Term
+                                                                      - Unary
+                                                                        - Factor
+                                                                          - Primary
+                                                                            - IDENT: "console"
+                                                                          - MethodCall
+                                                                            - IDENT: "print"
+                                                                            - ArgList
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - IDENT: "msg"
+          - Stmt
+            - VrStmt
+              - K_VR: "vr"
+              - Pattern
+                - VariantPat
+                  - IDENT: "config_path"
+              - Type
+                - BaseType
+                  - IDENT: "Str"
+                - OptionType: "?"
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - Literal
+                                            - K_NONE: "none"
+          - Stmt
+            - VrStmt
+              - K_VR: "vr"
+              - Pattern
+                - VariantPat
+                  - IDENT: "path"
+              - Expr
+                - MatchExpr
+                  - K_MATCH: "match"
                   - Expr
                     - RangeExpr
                       - CoalesceExpr
@@ -3151,79 +3129,101 @@
                                         - Unary
                                           - Factor
                                             - Primary
-                                              - IDENT: "p"
-                - MatchArm
-                  - Pattern
-                    - Literal
-                      - K_NONE: "none"
-                  - Expr
-                    - RangeExpr
-                      - CoalesceExpr
-                        - LogicOrExpr
-                          - LogicAndExpr
-                            - BitOrExpr
-                              - BitXorExpr
-                                - BitAndExpr
-                                  - CmpExpr
-                                    - MathExpr
-                                      - Term
-                                        - Unary
-                                          - Factor
-                                            - Primary
-                                              - Literal
-                                                - STRING
-                                                  - StrText: "/default/path.conf"
-        - Stmt
-          - ExprStmt
-            - Expr
-              - RangeExpr
-                - CoalesceExpr
-                  - LogicOrExpr
-                    - LogicAndExpr
-                      - BitOrExpr
-                        - BitXorExpr
-                          - BitAndExpr
-                            - CmpExpr
-                              - MathExpr
-                                - Term
-                                  - Unary
-                                    - Factor
-                                      - Primary
-                                        - IDENT: "console"
-                                      - MethodCall
-                                        - IDENT: "print"
-                                        - ArgList
-                                          - Expr
-                                            - RangeExpr
-                                              - CoalesceExpr
-                                                - LogicOrExpr
-                                                  - LogicAndExpr
-                                                    - BitOrExpr
-                                                      - BitXorExpr
-                                                        - BitAndExpr
-                                                          - CmpExpr
-                                                            - MathExpr
-                                                              - Term
-                                                                - Unary
-                                                                  - Factor
-                                                                    - Primary
-                                                                      - Literal
-                                                                        - STRING
-                                                                          - StrText: "Используется путь:"
-                                                                          - Interpolation
-                                                                            - Expr
-                                                                              - RangeExpr
-                                                                                - CoalesceExpr
-                                                                                  - LogicOrExpr
-                                                                                    - LogicAndExpr
-                                                                                      - BitOrExpr
-                                                                                        - BitXorExpr
-                                                                                          - BitAndExpr
-                                                                                            - CmpExpr
-                                                                                              - MathExpr
-                                                                                                - Term
-                                                                                                  - Unary
-                                                                                                    - Factor
-                                                                                                      - Primary
-                                                                                                        - IDENT: "path"
+                                              - IDENT: "config_path"
+                  - MatchArm
+                    - Pattern
+                      - VariantPat
+                        - K_SOME: "Some"
+                        - Pattern
+                          - VariantPat
+                            - IDENT: "p"
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - IDENT: "p"
+                  - MatchArm
+                    - Pattern
+                      - Literal
+                        - K_NONE: "none"
+                    - Expr
+                      - RangeExpr
+                        - CoalesceExpr
+                          - LogicOrExpr
+                            - LogicAndExpr
+                              - BitOrExpr
+                                - BitXorExpr
+                                  - BitAndExpr
+                                    - CmpExpr
+                                      - MathExpr
+                                        - Term
+                                          - Unary
+                                            - Factor
+                                              - Primary
+                                                - Literal
+                                                  - STRING
+                                                    - StrText: "/default/path.conf"
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - IDENT: "console"
+                                        - MethodCall
+                                          - IDENT: "print"
+                                          - ArgList
+                                            - Expr
+                                              - RangeExpr
+                                                - CoalesceExpr
+                                                  - LogicOrExpr
+                                                    - LogicAndExpr
+                                                      - BitOrExpr
+                                                        - BitXorExpr
+                                                          - BitAndExpr
+                                                            - CmpExpr
+                                                              - MathExpr
+                                                                - Term
+                                                                  - Unary
+                                                                    - Factor
+                                                                      - Primary
+                                                                        - Literal
+                                                                          - STRING
+                                                                            - StrText: "Используется путь:"
+                                                                            - Interpolation
+                                                                              - Expr
+                                                                                - RangeExpr
+                                                                                  - CoalesceExpr
+                                                                                    - LogicOrExpr
+                                                                                      - LogicAndExpr
+                                                                                        - BitOrExpr
+                                                                                          - BitXorExpr
+                                                                                            - BitAndExpr
+                                                                                              - CmpExpr
+                                                                                                - MathExpr
+                                                                                                  - Term
+                                                                                                    - Unary
+                                                                                                      - Factor
+                                                                                                        - Primary
+                                                                                                          - IDENT: "path"
   - EOI: ""

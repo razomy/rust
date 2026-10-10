@@ -1,0 +1,164 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - Item
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "validate_age"
+      - FnArgs
+        - ArgDef
+          - IDENT: "age"
+          - Type
+            - BaseType
+              - IDENT: "Int"
+      - FnBody
+        - ReturnType
+          - Type
+            - BaseType
+              - IDENT: "Result"
+              - TypeArgs
+                - Type
+                  - BaseType
+                    - IDENT: "Int"
+                - Type
+                  - BaseType
+                    - IDENT: "Str"
+        - FnExprBody
+          - Expr
+            - IfExpr
+              - K_IF: "if"
+              - InlineCond
+                - InlineCmp
+                  - MathExpr
+                    - Term
+                      - Unary
+                        - Factor
+                          - Primary
+                            - IDENT: "age"
+                  - CmpOp: "<"
+                  - Unary
+                    - Factor
+                      - Primary
+                        - Literal
+                          - NUMBER: "0"
+              - Expr
+                - RangeExpr
+                  - CoalesceExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - BitOrExpr
+                          - BitXorExpr
+                            - BitAndExpr
+                              - CmpExpr
+                                - MathExpr
+                                  - Term
+                                    - Unary
+                                      - Factor
+                                        - Primary
+                                          - ConstructorCall
+                                            - K_ERR: "Err"
+                                            - ArgList
+                                              - Expr
+                                                - RangeExpr
+                                                  - CoalesceExpr
+                                                    - LogicOrExpr
+                                                      - LogicAndExpr
+                                                        - BitOrExpr
+                                                          - BitXorExpr
+                                                            - BitAndExpr
+                                                              - CmpExpr
+                                                                - MathExpr
+                                                                  - Term
+                                                                    - Unary
+                                                                      - Factor
+                                                                        - Primary
+                                                                          - Literal
+                                                                            - STRING
+                                                                              - StrText: "Меньше 0"
+              - K_ELSE: "else"
+              - Expr
+                - IfExpr
+                  - K_IF: "if"
+                  - InlineCond
+                    - InlineCmp
+                      - MathExpr
+                        - Term
+                          - Unary
+                            - Factor
+                              - Primary
+                                - IDENT: "age"
+                      - CmpOp: ">"
+                      - Unary
+                        - Factor
+                          - Primary
+                            - Literal
+                              - NUMBER: "150"
+                  - Expr
+                    - RangeExpr
+                      - CoalesceExpr
+                        - LogicOrExpr
+                          - LogicAndExpr
+                            - BitOrExpr
+                              - BitXorExpr
+                                - BitAndExpr
+                                  - CmpExpr
+                                    - MathExpr
+                                      - Term
+                                        - Unary
+                                          - Factor
+                                            - Primary
+                                              - ConstructorCall
+                                                - K_ERR: "Err"
+                                                - ArgList
+                                                  - Expr
+                                                    - RangeExpr
+                                                      - CoalesceExpr
+                                                        - LogicOrExpr
+                                                          - LogicAndExpr
+                                                            - BitOrExpr
+                                                              - BitXorExpr
+                                                                - BitAndExpr
+                                                                  - CmpExpr
+                                                                    - MathExpr
+                                                                      - Term
+                                                                        - Unary
+                                                                          - Factor
+                                                                            - Primary
+                                                                              - Literal
+                                                                                - STRING
+                                                                                  - StrText: "Слишком стар"
+                  - K_ELSE: "else"
+                  - Expr
+                    - RangeExpr
+                      - CoalesceExpr
+                        - LogicOrExpr
+                          - LogicAndExpr
+                            - BitOrExpr
+                              - BitXorExpr
+                                - BitAndExpr
+                                  - CmpExpr
+                                    - MathExpr
+                                      - Term
+                                        - Unary
+                                          - Factor
+                                            - Primary
+                                              - ConstructorCall
+                                                - K_OK: "Ok"
+                                                - ArgList
+                                                  - Expr
+                                                    - RangeExpr
+                                                      - CoalesceExpr
+                                                        - LogicOrExpr
+                                                          - LogicAndExpr
+                                                            - BitOrExpr
+                                                              - BitXorExpr
+                                                                - BitAndExpr
+                                                                  - CmpExpr
+                                                                    - MathExpr
+                                                                      - Term
+                                                                        - Unary
+                                                                          - Factor
+                                                                            - Primary
+                                                                              - IDENT: "age"

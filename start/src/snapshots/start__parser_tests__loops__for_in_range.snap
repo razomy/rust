@@ -1,0 +1,23 @@
+---
+source: src/parser_tests.rs
+expression: tree
+---
+- Program
+  - ForStmt
+    - K_FOR: "for"
+    - VariantPat
+      - IDENT: "i"
+    - K_IN: "in"
+    - Expr
+      - NUMBER: "1"
+      - RangeOp: ".."
+      - NUMBER: "5"
+    - Block
+      - ExprStmt
+        - Expr
+          - IDENT: "console"
+          - MethodCall
+            - IDENT: "print"
+            - ArgList
+              - Expr
+                - IDENT: "i"
