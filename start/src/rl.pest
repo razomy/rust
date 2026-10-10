@@ -2,13 +2,13 @@
 // 1. ИГНОРИРУЕМЫЕ СИМВОЛЫ
 // ============================================================================
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ ("##" ~ (!"##" ~ ANY)* ~ "##") | ("#" ~ (!"\n" ~ ANY)*) }
+COMMENT    = _{ ("##" ~ (!"##" ~ ANY)* ~ "##") | ("#" ~ !"#" ~ (!"\n" ~ ANY)*) }
 
 // ============================================================================
 // 2. КЛЮЧЕВЫЕ СЛОВА
 // ============================================================================
-K_IMPORT   = @{ "import" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_LET      = @{ "let" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IM       = @{ "im" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_VR       = @{ "vr" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_MUT      = @{ "mut" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_FN       = @{ "fn" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_OUT      = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -30,120 +30,162 @@ K_TRUE     = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_FALSE    = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 RESERVED = _{
-    K_IMPORT
-  | K_LET
-  | K_MUT
-  | K_FN
-  | K_OUT
-  | K_TYPE
-  | K_MATCH
-  | K_IF
-  | K_ELSE
-  | K_FOR
-  | K_IN
-  | K_WHILE
-  | K_RETURN
-  | K_BREAK
-  | K_CONTINUE
-  | K_NONE
-  | K_SOME
-  | K_OK
-  | K_ERR
-  | K_TRUE
-  | K_FALSE
+    K_IM | K_VR | K_MUT | K_FN | K_OUT | K_TYPE | K_MATCH
+  | K_IF | K_ELSE | K_FOR | K_IN | K_WHILE | K_RETURN
+  | K_BREAK | K_CONTINUE | K_NONE | K_SOME | K_OK | K_ERR
+  | K_TRUE | K_FALSE
 }
 
 // ============================================================================
 // 3. БАЗОВЫЕ ТОКЕНЫ
 // ============================================================================
-IDENT         = @{ !RESERVED ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+IDENT         = @{ !RESERVED ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 NUMBER        = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
-STRING        = ${ "\"" ~ (StrChar | Interpolation)* ~ "\"" }
+
+// Исправлено: StrText собирает статические части строки между интерполяциями
+STRING        = ${ "\"" ~ (StrText | Interpolation)* ~ "\"" }
+StrText       = @{ StrChar+ }
 StrChar       = _{ (!("\"" | "${" | "\\") ~ ANY) | ("\\" ~ ANY) }
 Interpolation = !{ "${" ~ Expr ~ "}" }
 
 // ============================================================================
 // 4. СИСТЕМА ТИПОВ
 // ============================================================================
-Type       = { IDENT ~ TypeArgs? ~ OptionType? }
+Type = { (FuncType | ArrayType | BaseType) ~ OptionType? }
+
+BaseType   = { IDENT ~ TypeArgs? }
+ArrayType  = { "[" ~ Type ~ "]" }
+FuncType   = { "(" ~ (Type ~ ("," ~ Type)*)? ~ ")" ~ "->" ~ Type }
 TypeArgs   = { "(" ~ Type ~ ("," ~ Type)* ~ ","? ~ ")" }
 OptionType = { "?" }
 
-GenericParam = { IDENT ~ (":"? ~ Type)? }
-FnGenerics   = { "(" ~ (GenericParam ~ ("," ~ GenericParam)*)? ~ ","? ~ ")" }
+// Ограничения и мета-дженерики: <T>, <T Number>, <TT Real = Number>
+GenericConstraint = { IDENT ~ Type? ~ ("=" ~ Type)? }
+MetaGenerics      = { "<" ~ GenericConstraint ~ ("," ~ GenericConstraint)* ~ ","? ~ ">" }
 
-ExplicitTypeArgs = { "::" ~ TypeArgs }
+// Параметры типа: Container(T), Buffer(Size Int = 1024)
+TypeParamDef = { IDENT ~ Type? ~ ("=" ~ (Literal | Type))? }
+TypeParams   = { "(" ~ TypeParamDef ~ ("," ~ TypeParamDef)* ~ ","? ~ ")" }
 
 // ============================================================================
 // 5. ВЫРАЖЕНИЯ (Expressions)
 // ============================================================================
-Expr = { IfExpr | MatchExpr | Closure | RangeExpr }
+Expr = { IfExpr | MatchExpr | Closure | FlowExpr | RangeExpr }
 
-RangeExpr = { LogicOrExpr ~ (".." ~ LogicOrExpr)? }
+// Flow control в качестве выражений
+FlowExpr     = { ReturnExpr | BreakExpr | ContinueExpr }
+ReturnExpr   = { K_RETURN ~ Expr? }
+BreakExpr    = { K_BREAK }
+ContinueExpr = { K_CONTINUE }
 
-LogicOrExpr  = { LogicAndExpr ~ (("||" | "or") ~ LogicAndExpr)* }
-LogicAndExpr = { CmpExpr ~ (("&&" | "and") ~ CmpExpr)* }
+// Лямбды: (x) = x * 2, x = x * 2
+Closure          = { (ClosureParamList | IDENT) ~ "=" ~ (Block | Expr) }
+ClosureParamList = { "(" ~ (IDENT ~ ("," ~ IDENT)*)? ~ ","? ~ ")" }
 
-CmpExpr  = { MathExpr ~ (("==" | "!=" | ">=" | "<=" | ">" | "<") ~ MathExpr)* }
-MathExpr = { Term ~ (("+" | "-") ~ Term)* }
-Term     = { Unary ~ (("*" | "/" | "%") ~ Unary)* }
+// Операторы выражений (сохраняются в AST)
+RangeOp    = { "..=" | ".." }
+CoalesceOp = { "??" }
+LogicOrOp  = { "||" | "or" }
+LogicAndOp = { "&&" | "and" }
+BitOrOp    = { "|" }
+BitXorOp   = { "^" }
+BitAndOp   = { "&" }
+CmpOp      = { "==" | "!=" | ">=" | "<=" | ">" | "<" }
+AddOp      = { "+" | "-" }
+MulOp      = { "*" | "/" | "%" }
+
+// Диапазоны: 1..5, 1..=5
+RangeExpr = { CoalesceExpr ~ (RangeOp ~ CoalesceExpr)? }
+
+// Null-coalescing: a ?? b
+CoalesceExpr = { LogicOrExpr ~ (CoalesceOp ~ LogicOrExpr)* }
+
+LogicOrExpr  = { LogicAndExpr ~ (LogicOrOp ~ LogicAndExpr)* }
+LogicAndExpr = { BitOrExpr ~ (LogicAndOp ~ BitOrExpr)* }
+
+// Побитовые операции: |, ^, &
+BitOrExpr  = { BitXorExpr ~ (BitOrOp ~ BitXorExpr)* }
+BitXorExpr = { BitAndExpr ~ (BitXorOp ~ BitAndExpr)* }
+BitAndExpr = { CmpExpr ~ (BitAndOp ~ CmpExpr)* }
+
+CmpExpr  = { MathExpr ~ (CmpOp ~ MathExpr)* }
+MathExpr = { Term ~ (AddOp ~ Term)* }
+Term     = { Unary ~ (MulOp ~ Unary)* }
 
 Unary   = { UnaryOp* ~ Factor }
 UnaryOp = { "-" | "!" | "not" }
 
-Factor      =  { Primary ~ ExplicitTypeArgs? ~ Postfix* }
-Postfix     = _{ MethodCall | FieldAccess | CallArgs | IndexAccess }
-MethodCall  =  { "." ~ IDENT ~ ExplicitTypeArgs? ~ "(" ~ ArgList? ~ ")" }
-FieldAccess =  { "." ~ IDENT }
-IndexAccess =  { "[" ~ Expr ~ "]" }
-CallArgs    =  { "(" ~ ArgList? ~ ")" }
-ArgList     =  { Expr ~ ("," ~ Expr)* ~ ","? }
+Factor         =  { Primary ~ Postfix* }
+Postfix        = _{ OptChainMethod | OptChainField | MethodCall | FieldAccess | CallArgs | IndexAccess | TryOp }
+TryOp          =  { "?" }
+OptChainMethod =  { "?." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
+OptChainField  =  { "?." ~ IDENT }
+MethodCall     =  { "." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
+FieldAccess    =  { "." ~ IDENT }
+IndexAccess    =  { "[" ~ Expr ~ "]" }
+CallArgs       =  { "(" ~ ArgList? ~ ")" }
+ArgList        =  { Expr ~ ("," ~ Expr)* ~ ","? }
 
 Primary = {
     ConstructorCall
+  | TupleExpr
   | Literal
   | StructInit
   | IDENT
   | "(" ~ Expr ~ ")"
 }
 
+TupleExpr       = { "(" ~ Expr ~ ("," ~ Expr)+ ~ ","? ~ ")" }
 ConstructorCall = { (K_SOME | K_OK | K_ERR) ~ "(" ~ ArgList? ~ ")" }
 
 Literal   = { NUMBER | STRING | K_TRUE | K_FALSE | ArrayInit | K_NONE }
 ArrayInit = { "[" ~ (Expr ~ ("," ~ Expr)*)? ~ ","? ~ "]" }
 
+Spread      = { ".." ~ Expr? }
 StructInit  = { "{" ~ (StructField ~ ("," ~ StructField)*)? ~ ","? ~ "}" }
-StructField = { IDENT ~ (":"? ~ Expr) | ".." ~ Expr? }
-
-Closure = { "(" ~ (IDENT ~ ("," ~ IDENT)*)? ~ ","? ~ ")" ~ "=" ~ Expr }
+StructField = { Spread | IDENT ~ ":"? ~ Expr }
 
 // ============================================================================
 // 6. БЛОКИ И КОНТРОЛЬ ПОТОКА
 // ============================================================================
-Block = { "{" ~ Stmt* ~ Expr? ~ "}" }
-Body  = { "="? ~ Block | "=" ~ Stmt+ }
+Block = { "{" ~ (FnDecl | Stmt)* ~ Expr? ~ "}" }
 
-IfExpr = { K_IF ~ Expr ~ Block ~ (K_ELSE ~ (IfExpr | Block))? }
+// if: блочный или инлайн (в инлайн else обязателен)
+IfExpr = {
+    (K_IF ~ Expr ~ Block ~ (K_ELSE ~ (IfExpr | Block))?)
+  | (K_IF ~ InlineCond ~ (Block | Expr) ~ K_ELSE ~ (Block | Expr))
+}
 
-MatchExpr = { K_MATCH ~ Expr ~ "{" ~ (MatchArm ~ ","?)* ~ "}" }
+// Исправлено: InlineCond и InlineCmp не скрыты (_), содержат явные CmpOp и LogicOp
+InlineCond = { InlineCmp ~ ((LogicAndOp | LogicOrOp) ~ InlineCmp)* }
+InlineCmp  = { MathExpr ~ (CmpOp ~ Unary)? }
+
+MatchExpr = { K_MATCH ~ Expr ~ "{" ~ (MatchArm ~ ","?)+ ~ "}" }
 MatchArm  = { Pattern ~ (K_IF ~ Expr)? ~ "=" ~ (Block | Expr) }
 
-Pattern        = {
-    VariantPat
+// Паттерны сопоставления
+WildcardPat = { "_" }
+RestPat     = { ".." }
+
+Pattern = {
+    WildcardPat
+  | TuplePat
   | StructPat
+  | VariantPat
   | Literal
-  | "_"
-  | IDENT
+  | VarPat
 }
-VariantPat     = { (K_SOME | K_OK | K_ERR | IDENT) ~ ("(" ~ (Pattern ~ ("," ~ Pattern)*)? ~ ","? ~ ")")? }
-StructPat      = { "{" ~ (StructFieldPat ~ ("," ~ StructFieldPat)*)? ~ (","? ~ "..")? ~ "}" }
-StructFieldPat = { IDENT ~ (":" ~ Pattern)? }
+TuplePat   = { "(" ~ Pattern ~ ("," ~ Pattern)+ ~ ","? ~ ")" }
+VariantPat = { (K_SOME | K_OK | K_ERR | (K_NONE ~ "(") | IDENT) ~ ("(" ~ (Pattern ~ ("," ~ Pattern)*)? ~ ","? ~ ")")? }
+VarPat     = { IDENT }
+StructPat  = { "{" ~ (StructFieldPat ~ ("," ~ StructFieldPat)*)? ~ (","? ~ RestPat)? ~ ","? ~ "}" }
+StructFieldPat = { IDENT ~ (":"? ~ Pattern)? }
 
 // ============================================================================
 // 7. ИНСТРУКЦИИ (Statements)
 // ============================================================================
 Stmt = {
-    LetStmt
+    VrStmt
   | AssignStmt
   | WhileStmt
   | ForStmt
@@ -151,41 +193,49 @@ Stmt = {
   | ExprStmt
 }
 
-LetStmt    = { K_LET ~ K_MUT? ~ IDENT ~ Type? ~ "=" ~ Expr ~ ";"? }
+VrStmt     = { K_VR ~ K_MUT? ~ Pattern ~ Type? ~ "=" ~ Expr ~ ";"? }
 AssignOp   = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" }
 AssignStmt = { (IDENT ~ Postfix*) ~ AssignOp ~ Expr ~ ";"? }
-WhileStmt  = { K_WHILE ~ Expr ~ Block }
-ForStmt    = { K_FOR ~ IDENT ~ K_IN ~ Expr ~ Block }
+WhileStmt  = { K_WHILE ~ Expr ~ (Block | Stmt) }
+ForStmt    = { K_FOR ~ Pattern ~ K_IN ~ Expr ~ (Block | Stmt) }
 
-FlowStmt     = { (ReturnStmt | BreakStmt | ContinueStmt) ~ ";"? }
-ReturnStmt   = { K_RETURN ~ Expr? }
-BreakStmt    = { K_BREAK }
-ContinueStmt = { K_CONTINUE }
-
-ExprStmt = { Expr ~ ";"? }
+FlowStmt   = { FlowExpr ~ ";"? }
+ExprStmt   = { Expr ~ ";"? }
 
 // ============================================================================
 // 8. ДЕКЛАРАЦИИ ВЕРХНЕГО УРОВНЯ
 // ============================================================================
-Program = { SOI ~ Decl* ~ EOI }
-Decl    = { ImportDecl | TypeDecl | FnDecl }
+Program = { SOI ~ Item* ~ EOI }
+Item    = { ImportDecl | TypeDecl | FnDecl | Stmt }
 
-ImportDecl = { K_IMPORT ~ ImportPath }
-ImportPath = { IDENT ~ ("::" ~ (ImportList | "*" | IDENT))* }
-ImportList = { "{" ~ IDENT ~ ("," ~ IDENT)* ~ ","? ~ "}" }
+// im std.io | im _core = "core" | im { log, warn } = "std/logger"
+ImportPath   = { STRING }
+ImportDecl   = { K_IM ~ ImportTarget ~ ("=" ~ ImportPath)? }
+ImportTarget = { ImportList | DottedIdent }
+DottedIdent  = { IDENT ~ ("." ~ IDENT)* }
+ImportList   = { "{" ~ IDENT ~ ("," ~ IDENT)* ~ ","? ~ "}" }
 
-TypeDecl         = { K_TYPE ~ IDENT ~ TypeDeclGenerics? ~ (UnionDef | RecordDef)? }
-TypeDeclGenerics = { "(" ~ (GenericParam ~ ("," ~ GenericParam)*)? ~ ","? ~ ")" }
-
-RecordDef = { "{" ~ (FieldDef ~ ("," ~ FieldDef)*)? ~ ","? ~ "}" | (FieldDef ~ ("," ~ FieldDef)*) }
-FieldDef  = { IDENT ~ ":"? ~ Type }
+// type Declarations: records, unions, aliases
+TypeDecl     = { K_TYPE ~ IDENT ~ MetaGenerics? ~ TypeParams? ~ (TypeAliasDef | UnionDef | RecordDef)? }
+TypeAliasDef = { "=" ~ (RecordDef | Type) }
+RecordDef    = { "{" ~ (FieldDef ~ ("," ~ FieldDef)*)? ~ ","? ~ "}" }
+FieldDef     = { IDENT ~ ":"? ~ Type }
 
 UnionDef        = { "=" ~ "|"? ~ VariantDef ~ ("|" ~ VariantDef)* }
-VariantDef      = { IDENT ~ ("(" ~ (VariantFieldDef ~ ("," ~ VariantFieldDef)*)? ~ ","? ~ ")")? }
-VariantFieldDef = { IDENT ~ ":"? ~ Type | Type }
+VariantDef      = { VariantName ~ ("(" ~ (VariantFieldDef ~ ("," ~ VariantFieldDef)*)? ~ ","? ~ ")")? }
+VariantName     = { K_SOME | K_NONE | IDENT }
+VariantFieldDef = { RecordDef | (IDENT ~ Type) | Type }
 
-FnDecl      = { K_OUT? ~ K_FN ~ IDENT ~ (FnGenerics ~ FnArgsGroup | FnArgs)? ~ ReturnType? ~ Body }
-FnArgsGroup = { "(" ~ (ArgDef ~ ("," ~ ArgDef)*)? ~ ","? ~ ")" }
-FnArgs      = { FnArgsGroup | ArgDef }
-ArgDef      = { IDENT ~ Type? ~ ("=" ~ Expr)? }
-ReturnType  = { ("Return" ~ "(" ~ Type ~ ")") | Type }
+// Функции
+FnDecl     = { K_OUT? ~ K_FN ~ IDENT ~ MetaGenerics? ~ FnArgs? ~ FnBody }
+FnArgs     = { "(" ~ (ArgDef ~ ("," ~ ArgDef)*)? ~ ","? ~ ")" }
+ArgDef     = { IDENT ~ Type? ~ ("=" ~ Expr)? }
+ReturnType = { Type }
+
+FnBody = {
+    (ReturnType ~ "=" ~ FnExprBody)
+  | ("=" ~ FnExprBody)
+  | (ReturnType? ~ Block)
+  | Stmt+
+}
+FnExprBody = { Block | Expr }

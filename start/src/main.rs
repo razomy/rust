@@ -1,3 +1,5 @@
+mod parser_tests;
+
 use std::fs;
 use pest::Parser;
 use pest_derive::Parser;
