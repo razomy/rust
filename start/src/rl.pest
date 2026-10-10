@@ -7,24 +7,27 @@ COMMENT    = _{ ("##" ~ (!"##" ~ ANY)* ~ "##") | ("#" ~ (!"\n" ~ ANY)*) }
 // ============================================================================
 // 2. КЛЮЧЕВЫЕ СЛОВА
 // ============================================================================
-K_IMPORT = @{ "import" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_LET    = @{ "let" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_MUT    = @{ "mut" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FN     = @{ "fn" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_OUT    = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_TYPE   = @{ "type" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_MATCH  = @{ "match" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_IF     = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_ELSE   = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FOR    = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_IN     = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_WHILE  = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_NONE   = @{ "none" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_SOME   = @{ "Some" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_OK     = @{ "Ok" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_ERR    = @{ "Err" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_TRUE   = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FALSE  = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IMPORT   = @{ "import" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_LET      = @{ "let" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_MUT      = @{ "mut" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_FN       = @{ "fn" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_OUT      = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_TYPE     = @{ "type" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_MATCH    = @{ "match" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IF       = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_ELSE     = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_FOR      = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_IN       = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_WHILE    = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_RETURN   = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_BREAK    = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_CONTINUE = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_NONE     = @{ "none" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_SOME     = @{ "Some" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_OK       = @{ "Ok" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_ERR      = @{ "Err" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_TRUE     = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
+K_FALSE    = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
 
 RESERVED = _{
     K_IMPORT
@@ -39,6 +42,9 @@ RESERVED = _{
   | K_FOR
   | K_IN
   | K_WHILE
+  | K_RETURN
+  | K_BREAK
+  | K_CONTINUE
   | K_NONE
   | K_SOME
   | K_OK
@@ -63,36 +69,31 @@ Type       = { IDENT ~ TypeArgs? ~ OptionType? }
 TypeArgs   = { "(" ~ Type ~ ("," ~ Type)* ~ ","? ~ ")" }
 OptionType = { "?" }
 
+GenericParam = { IDENT ~ (":"? ~ Type)? }
 FnGenerics   = { "(" ~ (GenericParam ~ ("," ~ GenericParam)*)? ~ ","? ~ ")" }
-GenericParam = { IDENT ~ Type? }
+
+ExplicitTypeArgs = { "::" ~ TypeArgs }
 
 // ============================================================================
-// 5. ВЫРАЖЕНИЯ (Expressions с полной таблицей приоритетов)
+// 5. ВЫРАЖЕНИЯ (Expressions)
 // ============================================================================
 Expr = { IfExpr | MatchExpr | Closure | RangeExpr }
 
-// Диапазоны: 1..10
 RangeExpr = { LogicOrExpr ~ (".." ~ LogicOrExpr)? }
 
-// Логические операторы (ИЛИ / И)
 LogicOrExpr  = { LogicAndExpr ~ (("||" | "or") ~ LogicAndExpr)* }
 LogicAndExpr = { CmpExpr ~ (("&&" | "and") ~ CmpExpr)* }
 
-// Сравнение
-CmpExpr = { MathExpr ~ (("==" | "!=" | ">=" | "<=" | ">" | "<") ~ MathExpr)* }
-
-// Арифметика
+CmpExpr  = { MathExpr ~ (("==" | "!=" | ">=" | "<=" | ">" | "<") ~ MathExpr)* }
 MathExpr = { Term ~ (("+" | "-") ~ Term)* }
 Term     = { Unary ~ (("*" | "/" | "%") ~ Unary)* }
 
-// Унарные операторы: -x, !cond, not cond
 Unary   = { UnaryOp* ~ Factor }
 UnaryOp = { "-" | "!" | "not" }
 
-// Постфиксные операции (вызовы, поля, индексы)
-Factor      =  { Primary ~ Postfix* }
+Factor      =  { Primary ~ ExplicitTypeArgs? ~ Postfix* }
 Postfix     = _{ MethodCall | FieldAccess | CallArgs | IndexAccess }
-MethodCall  =  { "." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
+MethodCall  =  { "." ~ IDENT ~ ExplicitTypeArgs? ~ "(" ~ ArgList? ~ ")" }
 FieldAccess =  { "." ~ IDENT }
 IndexAccess =  { "[" ~ Expr ~ "]" }
 CallArgs    =  { "(" ~ ArgList? ~ ")" }
@@ -106,13 +107,11 @@ Primary = {
   | "(" ~ Expr ~ ")"
 }
 
-// Конструкторы стандартных монотипов
 ConstructorCall = { (K_SOME | K_OK | K_ERR) ~ "(" ~ ArgList? ~ ")" }
 
 Literal   = { NUMBER | STRING | K_TRUE | K_FALSE | ArrayInit | K_NONE }
 ArrayInit = { "[" ~ (Expr ~ ("," ~ Expr)*)? ~ ","? ~ "]" }
 
-// В инициализации структуры теперь разрешено опциональное ":" (name "Боб" или name: "Боб")
 StructInit  = { "{" ~ (StructField ~ ("," ~ StructField)*)? ~ ","? ~ "}" }
 StructField = { IDENT ~ (":"? ~ Expr) | ".." ~ Expr? }
 
@@ -133,7 +132,6 @@ Pattern        = {
     VariantPat
   | StructPat
   | Literal
-  | K_NONE
   | "_"
   | IDENT
 }
@@ -144,14 +142,27 @@ StructFieldPat = { IDENT ~ (":" ~ Pattern)? }
 // ============================================================================
 // 7. ИНСТРУКЦИИ (Statements)
 // ============================================================================
-// Добавлена опциональная точка с запятой для разделения инструкций
-Stmt = { (LetStmt | AssignStmt | WhileStmt | ForStmt | ExprStmt) ~ ";"? }
+Stmt = {
+    LetStmt
+  | AssignStmt
+  | WhileStmt
+  | ForStmt
+  | FlowStmt
+  | ExprStmt
+}
 
-LetStmt    = { K_LET ~ K_MUT? ~ IDENT ~ Type? ~ "=" ~ Expr }
-AssignStmt = { (IDENT ~ Postfix*) ~ "=" ~ Expr }
+LetStmt    = { K_LET ~ K_MUT? ~ IDENT ~ Type? ~ "=" ~ Expr ~ ";"? }
+AssignOp   = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" }
+AssignStmt = { (IDENT ~ Postfix*) ~ AssignOp ~ Expr ~ ";"? }
 WhileStmt  = { K_WHILE ~ Expr ~ Block }
 ForStmt    = { K_FOR ~ IDENT ~ K_IN ~ Expr ~ Block }
-ExprStmt   = { Expr }
+
+FlowStmt     = { (ReturnStmt | BreakStmt | ContinueStmt) ~ ";"? }
+ReturnStmt   = { K_RETURN ~ Expr? }
+BreakStmt    = { K_BREAK }
+ContinueStmt = { K_CONTINUE }
+
+ExprStmt = { Expr ~ ";"? }
 
 // ============================================================================
 // 8. ДЕКЛАРАЦИИ ВЕРХНЕГО УРОВНЯ
@@ -159,10 +170,12 @@ ExprStmt   = { Expr }
 Program = { SOI ~ Decl* ~ EOI }
 Decl    = { ImportDecl | TypeDecl | FnDecl }
 
-ImportDecl = { K_IMPORT ~ IDENT ~ ("::" ~ IDENT)* }
+ImportDecl = { K_IMPORT ~ ImportPath }
+ImportPath = { IDENT ~ ("::" ~ (ImportList | "*" | IDENT))* }
+ImportList = { "{" ~ IDENT ~ ("," ~ IDENT)* ~ ","? ~ "}" }
 
 TypeDecl         = { K_TYPE ~ IDENT ~ TypeDeclGenerics? ~ (UnionDef | RecordDef)? }
-TypeDeclGenerics = { "(" ~ (IDENT ~ ("," ~ IDENT)*)? ~ ","? ~ ")" }
+TypeDeclGenerics = { "(" ~ (GenericParam ~ ("," ~ GenericParam)*)? ~ ","? ~ ")" }
 
 RecordDef = { "{" ~ (FieldDef ~ ("," ~ FieldDef)*)? ~ ","? ~ "}" | (FieldDef ~ ("," ~ FieldDef)*) }
 FieldDef  = { IDENT ~ ":"? ~ Type }

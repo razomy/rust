@@ -1,0 +1,834 @@
+- Program
+  - Decl
+    - ImportDecl
+      - K_IMPORT: "import"
+      - ImportPath
+        - IDENT: "console"
+  - Decl
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Response"
+      - TypeDeclGenerics
+        - GenericParam
+          - IDENT: "T"
+      - UnionDef
+        - VariantDef
+          - IDENT: "Success"
+          - VariantFieldDef
+            - IDENT: "data"
+            - Type
+              - IDENT: "T"
+        - VariantDef
+          - IDENT: "Failure"
+          - VariantFieldDef
+            - IDENT: "error"
+            - Type
+              - IDENT: "Str"
+  - Decl
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Container"
+      - TypeDeclGenerics
+        - GenericParam
+          - IDENT: "T"
+      - RecordDef
+        - FieldDef
+          - IDENT: "value"
+          - Type
+            - IDENT: "T"
+        - FieldDef
+          - IDENT: "tag"
+          - Type
+            - IDENT: "Str"
+  - Decl
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Role"
+      - UnionDef
+        - VariantDef
+          - IDENT: "Admin"
+        - VariantDef
+          - IDENT: "User"
+          - VariantFieldDef
+            - IDENT: "id"
+            - Type
+              - IDENT: "Int"
+        - VariantDef
+          - IDENT: "Guest"
+  - Decl
+    - TypeDecl
+      - K_TYPE: "type"
+      - IDENT: "Person"
+      - RecordDef
+        - FieldDef
+          - IDENT: "name"
+          - Type
+            - IDENT: "Str"
+        - FieldDef
+          - IDENT: "age"
+          - Type
+            - IDENT: "Int"
+        - FieldDef
+          - IDENT: "role"
+          - Type
+            - IDENT: "Role"
+  - Decl
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "wrap"
+      - FnGenerics
+        - GenericParam
+          - IDENT: "T"
+      - FnArgsGroup
+        - ArgDef
+          - IDENT: "val"
+          - Type
+            - IDENT: "T"
+        - ArgDef
+          - IDENT: "tag"
+          - Type
+            - IDENT: "Str"
+      - ReturnType
+        - Type
+          - IDENT: "Container"
+          - TypeArgs
+            - Type
+              - IDENT: "T"
+      - Body
+        - Block
+          - Stmt
+            - ExprStmt
+              - Expr
+                - RangeExpr
+                  - LogicOrExpr
+                    - LogicAndExpr
+                      - CmpExpr
+                        - MathExpr
+                          - Term
+                            - Unary
+                              - Factor
+                                - Primary
+                                  - StructInit
+                                    - StructField
+                                      - IDENT: "value"
+                                      - Expr
+                                        - RangeExpr
+                                          - LogicOrExpr
+                                            - LogicAndExpr
+                                              - CmpExpr
+                                                - MathExpr
+                                                  - Term
+                                                    - Unary
+                                                      - Factor
+                                                        - Primary
+                                                          - IDENT: "val"
+                                    - StructField
+                                      - IDENT: "tag"
+                                      - Expr
+                                        - RangeExpr
+                                          - LogicOrExpr
+                                            - LogicAndExpr
+                                              - CmpExpr
+                                                - MathExpr
+                                                  - Term
+                                                    - Unary
+                                                      - Factor
+                                                        - Primary
+                                                          - IDENT: "tag"
+  - Decl
+    - FnDecl
+      - K_FN: "fn"
+      - IDENT: "check_access"
+      - FnArgs
+        - FnArgsGroup
+          - ArgDef
+            - IDENT: "person"
+            - Type
+              - IDENT: "Person"
+      - ReturnType
+        - Type
+          - IDENT: "Response"
+          - TypeArgs
+            - Type
+              - IDENT: "Person"
+      - Body
+        - Stmt
+          - ExprStmt
+            - Expr
+              - MatchExpr
+                - K_MATCH: "match"
+                - Expr
+                  - RangeExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "person"
+                                  - FieldAccess
+                                    - IDENT: "role"
+                - MatchArm
+                  - Pattern
+                    - VariantPat
+                      - IDENT: "Admin"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "Success"
+                                    - CallArgs
+                                      - ArgList
+                                        - Expr
+                                          - RangeExpr
+                                            - LogicOrExpr
+                                              - LogicAndExpr
+                                                - CmpExpr
+                                                  - MathExpr
+                                                    - Term
+                                                      - Unary
+                                                        - Factor
+                                                          - Primary
+                                                            - IDENT: "person"
+                - MatchArm
+                  - Pattern
+                    - VariantPat
+                      - IDENT: "User"
+                      - Pattern
+                        - VariantPat
+                          - IDENT: "id"
+                  - K_IF: "if"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "person"
+                                    - FieldAccess
+                                      - IDENT: "age"
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - Literal
+                                        - NUMBER: "18"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "Success"
+                                    - CallArgs
+                                      - ArgList
+                                        - Expr
+                                          - RangeExpr
+                                            - LogicOrExpr
+                                              - LogicAndExpr
+                                                - CmpExpr
+                                                  - MathExpr
+                                                    - Term
+                                                      - Unary
+                                                        - Factor
+                                                          - Primary
+                                                            - IDENT: "person"
+                - MatchArm
+                  - Pattern
+                    - VariantPat
+                      - IDENT: "User"
+                      - Pattern: "_"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "Failure"
+                                    - CallArgs
+                                      - ArgList
+                                        - Expr
+                                          - RangeExpr
+                                            - LogicOrExpr
+                                              - LogicAndExpr
+                                                - CmpExpr
+                                                  - MathExpr
+                                                    - Term
+                                                      - Unary
+                                                        - Factor
+                                                          - Primary
+                                                            - Literal
+                                                              - STRING: "\"Пользователь слишком молод\""
+                - MatchArm
+                  - Pattern
+                    - VariantPat
+                      - IDENT: "Guest"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "Failure"
+                                    - CallArgs
+                                      - ArgList
+                                        - Expr
+                                          - RangeExpr
+                                            - LogicOrExpr
+                                              - LogicAndExpr
+                                                - CmpExpr
+                                                  - MathExpr
+                                                    - Term
+                                                      - Unary
+                                                        - Factor
+                                                          - Primary
+                                                            - Literal
+                                                              - STRING: "\"Гостям вход запрещен\""
+  - Decl
+    - FnDecl
+      - K_OUT: "out"
+      - K_FN: "fn"
+      - IDENT: "main"
+      - FnArgs
+        - FnArgsGroup: "()"
+      - Body
+        - Stmt
+          - LetStmt
+            - K_LET: "let"
+            - IDENT: "users"
+            - Expr
+              - RangeExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - CmpExpr
+                      - MathExpr
+                        - Term
+                          - Unary
+                            - Factor
+                              - Primary
+                                - Literal
+                                  - ArrayInit
+                                    - Expr
+                                      - RangeExpr
+                                        - LogicOrExpr
+                                          - LogicAndExpr
+                                            - CmpExpr
+                                              - MathExpr
+                                                - Term
+                                                  - Unary
+                                                    - Factor
+                                                      - Primary
+                                                        - StructInit
+                                                          - StructField
+                                                            - IDENT: "name"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - STRING: "\"Алиса\""
+                                                          - StructField
+                                                            - IDENT: "age"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - NUMBER: "25"
+                                                          - StructField
+                                                            - IDENT: "role"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "Admin"
+                                    - Expr
+                                      - RangeExpr
+                                        - LogicOrExpr
+                                          - LogicAndExpr
+                                            - CmpExpr
+                                              - MathExpr
+                                                - Term
+                                                  - Unary
+                                                    - Factor
+                                                      - Primary
+                                                        - StructInit
+                                                          - StructField
+                                                            - IDENT: "name"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - STRING: "\"Боб\""
+                                                          - StructField
+                                                            - IDENT: "age"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - NUMBER: "16"
+                                                          - StructField
+                                                            - IDENT: "role"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "User"
+                                                                              - CallArgs
+                                                                                - ArgList
+                                                                                  - Expr
+                                                                                    - RangeExpr
+                                                                                      - LogicOrExpr
+                                                                                        - LogicAndExpr
+                                                                                          - CmpExpr
+                                                                                            - MathExpr
+                                                                                              - Term
+                                                                                                - Unary
+                                                                                                  - Factor
+                                                                                                    - Primary
+                                                                                                      - Literal
+                                                                                                        - NUMBER: "101"
+                                    - Expr
+                                      - RangeExpr
+                                        - LogicOrExpr
+                                          - LogicAndExpr
+                                            - CmpExpr
+                                              - MathExpr
+                                                - Term
+                                                  - Unary
+                                                    - Factor
+                                                      - Primary
+                                                        - StructInit
+                                                          - StructField
+                                                            - IDENT: "name"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - STRING: "\"Ева\""
+                                                          - StructField
+                                                            - IDENT: "age"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - Literal
+                                                                                  - NUMBER: "22"
+                                                          - StructField
+                                                            - IDENT: "role"
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "Guest"
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - CmpExpr
+                      - MathExpr
+                        - Term
+                          - Unary
+                            - Factor
+                              - Primary
+                                - IDENT: "users"
+                              - MethodCall
+                                - IDENT: "map"
+                                - ArgList
+                                  - Expr
+                                    - Closure
+                                      - IDENT: "u"
+                                      - Expr
+                                        - RangeExpr
+                                          - LogicOrExpr
+                                            - LogicAndExpr
+                                              - CmpExpr
+                                                - MathExpr
+                                                  - Term
+                                                    - Unary
+                                                      - Factor
+                                                        - Primary
+                                                          - IDENT: "check_access"
+                                                        - CallArgs
+                                                          - ArgList
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "u"
+                              - MethodCall
+                                - IDENT: "map"
+                                - ArgList
+                                  - Expr
+                                    - Closure
+                                      - IDENT: "res"
+                                      - Expr
+                                        - MatchExpr
+                                          - K_MATCH: "match"
+                                          - Expr
+                                            - RangeExpr
+                                              - LogicOrExpr
+                                                - LogicAndExpr
+                                                  - CmpExpr
+                                                    - MathExpr
+                                                      - Term
+                                                        - Unary
+                                                          - Factor
+                                                            - Primary
+                                                              - IDENT: "res"
+                                          - MatchArm
+                                            - Pattern
+                                              - VariantPat
+                                                - IDENT: "Success"
+                                                - Pattern
+                                                  - VariantPat
+                                                    - IDENT: "person"
+                                            - Block
+                                              - Stmt
+                                                - LetStmt
+                                                  - K_LET: "let"
+                                                  - IDENT: "boxed"
+                                                  - Expr
+                                                    - RangeExpr
+                                                      - LogicOrExpr
+                                                        - LogicAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - IDENT: "wrap"
+                                                                    - CallArgs
+                                                                      - ArgList
+                                                                        - Expr
+                                                                          - RangeExpr
+                                                                            - LogicOrExpr
+                                                                              - LogicAndExpr
+                                                                                - CmpExpr
+                                                                                  - MathExpr
+                                                                                    - Term
+                                                                                      - Unary
+                                                                                        - Factor
+                                                                                          - Primary
+                                                                                            - IDENT: "person"
+                                                                                          - FieldAccess
+                                                                                            - IDENT: "name"
+                                                                        - Expr
+                                                                          - RangeExpr
+                                                                            - LogicOrExpr
+                                                                              - LogicAndExpr
+                                                                                - CmpExpr
+                                                                                  - MathExpr
+                                                                                    - Term
+                                                                                      - Unary
+                                                                                        - Factor
+                                                                                          - Primary
+                                                                                            - Literal
+                                                                                              - STRING: "\"verified_user\""
+                                              - Stmt
+                                                - ExprStmt
+                                                  - Expr
+                                                    - RangeExpr
+                                                      - LogicOrExpr
+                                                        - LogicAndExpr
+                                                          - CmpExpr
+                                                            - MathExpr
+                                                              - Term
+                                                                - Unary
+                                                                  - Factor
+                                                                    - Primary
+                                                                      - Literal
+                                                                        - STRING
+                                                                          - Interpolation
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - LogicOrExpr
+                                                                                  - LogicAndExpr
+                                                                                    - CmpExpr
+                                                                                      - MathExpr
+                                                                                        - Term
+                                                                                          - Unary
+                                                                                            - Factor
+                                                                                              - Primary
+                                                                                                - IDENT: "boxed"
+                                                                                              - FieldAccess
+                                                                                                - IDENT: "value"
+                                                                          - Interpolation
+                                                                            - Expr
+                                                                              - RangeExpr
+                                                                                - LogicOrExpr
+                                                                                  - LogicAndExpr
+                                                                                    - CmpExpr
+                                                                                      - MathExpr
+                                                                                        - Term
+                                                                                          - Unary
+                                                                                            - Factor
+                                                                                              - Primary
+                                                                                                - IDENT: "boxed"
+                                                                                              - FieldAccess
+                                                                                                - IDENT: "tag"
+                                          - MatchArm
+                                            - Pattern
+                                              - VariantPat
+                                                - IDENT: "Failure"
+                                                - Pattern
+                                                  - VariantPat
+                                                    - IDENT: "err"
+                                            - Expr
+                                              - RangeExpr
+                                                - LogicOrExpr
+                                                  - LogicAndExpr
+                                                    - CmpExpr
+                                                      - MathExpr
+                                                        - Term
+                                                          - Unary
+                                                            - Factor
+                                                              - Primary
+                                                                - Literal
+                                                                  - STRING
+                                                                    - Interpolation
+                                                                      - Expr
+                                                                        - RangeExpr
+                                                                          - LogicOrExpr
+                                                                            - LogicAndExpr
+                                                                              - CmpExpr
+                                                                                - MathExpr
+                                                                                  - Term
+                                                                                    - Unary
+                                                                                      - Factor
+                                                                                        - Primary
+                                                                                          - IDENT: "err"
+                              - MethodCall
+                                - IDENT: "iter"
+                                - ArgList
+                                  - Expr
+                                    - Closure
+                                      - IDENT: "log"
+                                      - Expr
+                                        - RangeExpr
+                                          - LogicOrExpr
+                                            - LogicAndExpr
+                                              - CmpExpr
+                                                - MathExpr
+                                                  - Term
+                                                    - Unary
+                                                      - Factor
+                                                        - Primary
+                                                          - IDENT: "console"
+                                                        - MethodCall
+                                                          - IDENT: "print"
+                                                          - ArgList
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "log"
+        - Stmt
+          - LetStmt
+            - K_LET: "let"
+            - IDENT: "config_path"
+            - Type
+              - IDENT: "Str"
+              - OptionType: "?"
+            - Expr
+              - RangeExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - CmpExpr
+                      - MathExpr
+                        - Term
+                          - Unary
+                            - Factor
+                              - Primary
+                                - Literal
+                                  - K_NONE: "none"
+        - Stmt
+          - LetStmt
+            - K_LET: "let"
+            - IDENT: "path"
+            - Expr
+              - MatchExpr
+                - K_MATCH: "match"
+                - Expr
+                  - RangeExpr
+                    - LogicOrExpr
+                      - LogicAndExpr
+                        - CmpExpr
+                          - MathExpr
+                            - Term
+                              - Unary
+                                - Factor
+                                  - Primary
+                                    - IDENT: "config_path"
+                - MatchArm
+                  - Pattern
+                    - VariantPat
+                      - K_SOME: "Some"
+                      - Pattern
+                        - VariantPat
+                          - IDENT: "p"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - IDENT: "p"
+                - MatchArm
+                  - Pattern
+                    - Literal
+                      - K_NONE: "none"
+                  - Expr
+                    - RangeExpr
+                      - LogicOrExpr
+                        - LogicAndExpr
+                          - CmpExpr
+                            - MathExpr
+                              - Term
+                                - Unary
+                                  - Factor
+                                    - Primary
+                                      - Literal
+                                        - STRING: "\"/default/path.conf\""
+        - Stmt
+          - ExprStmt
+            - Expr
+              - RangeExpr
+                - LogicOrExpr
+                  - LogicAndExpr
+                    - CmpExpr
+                      - MathExpr
+                        - Term
+                          - Unary
+                            - Factor
+                              - Primary
+                                - IDENT: "console"
+                              - MethodCall
+                                - IDENT: "print"
+                                - ArgList
+                                  - Expr
+                                    - RangeExpr
+                                      - LogicOrExpr
+                                        - LogicAndExpr
+                                          - CmpExpr
+                                            - MathExpr
+                                              - Term
+                                                - Unary
+                                                  - Factor
+                                                    - Primary
+                                                      - Literal
+                                                        - STRING
+                                                          - Interpolation
+                                                            - Expr
+                                                              - RangeExpr
+                                                                - LogicOrExpr
+                                                                  - LogicAndExpr
+                                                                    - CmpExpr
+                                                                      - MathExpr
+                                                                        - Term
+                                                                          - Unary
+                                                                            - Factor
+                                                                              - Primary
+                                                                                - IDENT: "path"
+  - EOI: ""
