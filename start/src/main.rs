@@ -7,35 +7,57 @@ pub struct RazomyParser;
 
 fn main() {
     let source_code = r#"
-# Объявляем тип как в Python (без скобок и запятых)
-type User
-    name Str
-    age Int
+import console
 
-# Объявляем функцию (знак = опционален, тело идет отступами)
-out fn main()
-    let mut counter = 0
-    counter = counter + 1
+type Role = Admin | User(id Int) | Guest
+type Person { name Str, age Int, role Role }
 
-    if counter > 0
-        print("Счетчик больше нуля!")
-    else
-        print("Ноль")
+fn check_access(person Person) Result(Str, Str) =
+    match person.role {
+        Admin = Ok("Полный доступ")
+        User(id) if person.age >= 18 = Ok("Доступ для ID: ${id}")
+        User(_) = Err("Пользователь слишком молод")
+        Guest = Err("Гостям вход запрещен")
+    }
+
+out fn main() =
+    let users = [
+        { name "Алиса", age 25, role Admin },
+        { name "Боб",  age 16, role User(101) },
+        { name "Ева",  age 22, role Guest }
+    ]
+
+    # Обработка данных через чейнинг
+    users
+        .map((u) = check_access(u))
+        .map((res) = match res {
+            Ok(msg)  = "✅ ${msg}"
+            Err(err) = "❌ Отказ: ${err}"
+        })
+        .iter((log) = console.print(log))
+
+    # Пример работы с отсутствующим значением (none)
+    let config_path Str? = none
+
+    let path = match config_path {
+        Some(p) = p
+        none = "/default/path.conf"
+    }
+
+    console.print("Используется путь: ${path}")
     "#;
+
+    println!("Парсим комплексный код спецификации...");
 
     match RazomyParser::parse(Rule::Program, source_code) {
         Ok(parsed_tree) => {
             println!("✅ УСПЕШНО!\n");
             for pair in parsed_tree {
                 for inner in pair.into_inner() {
-                    match inner.as_rule() {
-                        Rule::Decl => {
-                            for decl_inner in inner.into_inner() {
-                                println!("Разобрано объявление: {:?}", decl_inner.as_rule());
-                            }
+                    if inner.as_rule() == Rule::Decl {
+                        for decl in inner.into_inner() {
+                            println!("Объявление: {:?}", decl.as_rule());
                         }
-                        Rule::EOI => {}
-                        other => println!("Элемент: {:?}", other),
                     }
                 }
             }

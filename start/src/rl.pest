@@ -21,63 +21,90 @@ K_SOME  = @{ "Some" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_OK    = @{ "Ok" ~ !(ASCII_ALPHANUMERIC | "_") }
 K_ERR   = @{ "Err" ~ !(ASCII_ALPHANUMERIC | "_") }
 
-RESERVED = _{ K_LET | K_MUT | K_FN | K_OUT | K_TYPE | K_MATCH | K_IF | K_ELSE | K_FOR | K_IN | K_WHILE | K_NONE | K_SOME | K_OK | K_ERR }
+RESERVED = _{
+    K_LET | K_MUT | K_FN | K_OUT | K_TYPE | K_MATCH |
+    K_IF | K_ELSE | K_FOR | K_IN | K_WHILE |
+    K_NONE | K_SOME | K_OK | K_ERR
+}
 
 // --- 3. БАЗОВЫЕ ТОКЕНЫ ---
 IDENT   = @{ !RESERVED ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 NUMBER  = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 STRING  = ${ "\"" ~ (StrChar | Interpolation)* ~ "\"" }
-StrChar = _{ !("\"" | "${") ~ ANY }
+StrChar = _{ (!("\"" | "${" | "\\") ~ ANY) | ("\\" ~ ANY) }
 Interpolation = !{ "${" ~ Expr ~ "}" }
 
 // --- 4. СИСТЕМА ТИПОВ ---
-Type        = { IDENT ~ TypeGen? ~ OptionType? }
-TypeGen     = { "(" ~ Type ~ (","? ~ Type)* ~ ")" }
+Type        = { IDENT ~ TypeArgs? ~ OptionType? }
+TypeArgs    = { "(" ~ Type ~ (","? ~ Type)* ~ ")" }
 OptionType  = { "?" }
-FnTypeGen   = { "(" ~ IDENT ~ Type ~ ")" }
+
+// Обобщения функций: fn add(T Int)(a T, b T) или fn id(T)(x T)
+FnGenerics   = { "(" ~ (GenericParam ~ ","?)* ~ ")" }
+GenericParam = { IDENT ~ Type? }
 
 // --- 5. ВЫРАЖЕНИЯ (Expressions) ---
-Expr        = { IfExpr | MatchExpr | Closure | Pipeline }
-
-// Пайплайны (.map)
-Pipeline    = { RangeExpr ~ ("." ~ CallExpr)* }
-// Вызовы функций (print("hi") или map((x) = x))
-CallExpr    = { IDENT ~ "(" ~ (Expr ~ (","? ~ Expr)*)? ~ ")" }
+Expr        = { IfExpr | MatchExpr | Closure | RangeExpr }
 
 RangeExpr   = { LogicExpr ~ (".." ~ LogicExpr)? }
-LogicExpr   = { MathExpr ~ (("==" | "!=" | ">" | "<" | ">=" | "<=") ~ MathExpr)* }
+LogicExpr   = { MathExpr ~ (("==" | "!=" | ">=" | "<=" | ">" | "<") ~ MathExpr)* }
 MathExpr    = { Term ~ (("+" | "-") ~ Term)* }
-Term        = { Factor ~ (("*" | "/") ~ Factor)* }
+Term        = { Factor ~ (("*" | "/" | "%") ~ Factor)* }
 
-// Базовые элементы
-Factor      = { Literal | StructInit | CallExpr | IDENT | "(" ~ Expr ~ ")" }
+// Первичные элементы с постфиксным чейнингом: u.name, obj.method(), arr.map()
+Factor      = { Primary ~ Postfix* }
+
+Postfix     = _{ MethodCall | FieldAccess | CallArgs }
+MethodCall  = { "." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
+FieldAccess = { "." ~ IDENT }
+CallArgs    = { "(" ~ ArgList? ~ ")" }
+ArgList     = { Expr ~ ("," ~ Expr)* ~ ","? }
+
+Primary     = {
+    ConstructorCall
+    | Literal
+    | StructInit
+    | IDENT
+    | "(" ~ Expr ~ ")"
+}
+
+// Конструкторы стандартных Result/Option и вариантов
+ConstructorCall = { (K_SOME | K_OK | K_ERR) ~ "(" ~ ArgList? ~ ")" }
+
 Literal     = { NUMBER | STRING | ArrayInit | K_NONE }
-ArrayInit   = { "[" ~ Expr ~ (","? ~ Expr)* ~ "]" }
+ArrayInit   = { "[" ~ (Expr ~ (","? ~ Expr)*)? ~ "]" }
 
 StructInit  = { "{" ~ (StructField ~ ","?)* ~ "}" }
 StructField = { IDENT ~ Expr | ".." }
 
+Closure     = { "(" ~ (IDENT ~ (","? ~ IDENT)*)? ~ ")" ~ "=" ~ Expr }
+
 // --- 6. БЛОКИ И КОНТРОЛЬ ПОТОКА ---
-// Блок: либо в { }, либо просто набор инструкций (для Python-стиля)
-Block       = { "{" ~ Stmt* ~ Expr? ~ "}" | Stmt+ }
-Body        = { "="? ~ Block }
+Block       = { "{" ~ Stmt* ~ Expr? ~ "}" }
+Body        = { "="? ~ Block | "=" ~ Stmt+ }
 
 IfExpr      = { K_IF ~ Expr ~ Block ~ (K_ELSE ~ Block)? }
 
-MatchExpr   = { K_MATCH ~ Expr ~ "{"? ~ MatchArm* ~ "}"? }
-MatchArm    = { Pattern ~ (K_IF ~ Expr)? ~ "=" ~ Block }
-Pattern     = { StructPat | VariantPat | K_NONE | "_" | IDENT }
-StructPat   = { "{" ~ (IDENT ~ (","? ~ IDENT)* ~ (","? ~ "..")?)? ~ "}" }
-VariantPat  = { IDENT ~ ("(" ~ IDENT ~ ")")? }
+MatchExpr   = { K_MATCH ~ Expr ~ "{" ~ MatchArm* ~ "}" }
+MatchArm    = { Pattern ~ (K_IF ~ Expr)? ~ "=" ~ (Block | Expr) }
 
-Closure     = { "(" ~ (IDENT ~ (","? ~ IDENT)*)? ~ ")" ~ "=" ~ Expr }
+Pattern     = {
+    VariantPat
+    | StructPat
+    | K_NONE
+    | "_"
+    | IDENT
+    | Literal
+}
+VariantPat  = { (K_SOME | K_OK | K_ERR | IDENT) ~ ("(" ~ (Pattern ~ (","? ~ Pattern)*)? ~ ")")? }
+StructPat   = { "{" ~ (StructFieldPat ~ (","? ~ StructFieldPat)*)? ~ (","? ~ "..")? ~ "}" }
+StructFieldPat = { IDENT ~ (":" ~ Pattern)? }
 
 // --- 7. ИНСТРУКЦИИ (Statements) ---
-// ВАЖНО: Порядок имеет значение. Сначала присваивание, потом выражения.
 Stmt        = { LetStmt | AssignStmt | WhileStmt | ForStmt | ExprStmt }
 
 LetStmt     = { K_LET ~ K_MUT? ~ IDENT ~ Type? ~ "=" ~ Expr }
-AssignStmt  = { IDENT ~ "=" ~ Expr }
+AssignStmt  = { (IDENT ~ Postfix*) ~ "=" ~ Expr }
 WhileStmt   = { K_WHILE ~ Expr ~ Block }
 ForStmt     = { K_FOR ~ IDENT ~ K_IN ~ Expr ~ Block }
 ExprStmt    = { Expr }
@@ -88,16 +115,20 @@ Decl        = { ImportDecl | TypeDecl | FnDecl }
 
 ImportDecl  = { "import" ~ IDENT }
 
-// Объявления структур (запятые и скобки опциональны!)
-TypeDecl    = { K_TYPE ~ IDENT ~ TypeGen? ~ (RecordDef | UnionDef)? }
+// Объявления типов (Records / Unions / Generics)
+TypeDecl    = { K_TYPE ~ IDENT ~ TypeDeclGenerics? ~ (UnionDef | RecordDef)? }
+TypeDeclGenerics = { "(" ~ (IDENT ~ (","? ~ IDENT)*) ~ ")" }
+
 RecordDef   = { "{" ~ (FieldDef ~ ","?)* ~ "}" | (FieldDef ~ ","?)+ }
 FieldDef    = { IDENT ~ Type }
 
-UnionDef    = { "="? ~ ("|" ~ VariantDef)+ }
-VariantDef  = { IDENT ~ ("(" ~ Type ~ ")")? }
+UnionDef    = { "=" ~ "|"? ~ VariantDef ~ ("|" ~ VariantDef)* }
+VariantDef  = { IDENT ~ ("(" ~ (VariantFieldDef ~ (","? ~ VariantFieldDef)*)? ~ ")")? }
+VariantFieldDef = { IDENT ~ Type | Type }
 
-// Функции (аргументы либо в (), либо без если это 1 аргумент)
-FnDecl      = { K_OUT? ~ K_FN ~ IDENT ~ FnTypeGen? ~ FnArgs ~ ReturnType? ~ Body }
-FnArgs      = { "(" ~ (ArgDef ~ ","?)* ~ ")" | IDENT | "" }
-ArgDef      = { IDENT ~ Type ~ ("=" ~ Expr)? }
-ReturnType  = { Type | ("Return" ~ "(" ~ IDENT ~ ")") }
+// Функции
+FnDecl      = { K_OUT? ~ K_FN ~ IDENT ~ (FnGenerics ~ FnArgsGroup | FnArgs)? ~ ReturnType? ~ Body }
+FnArgsGroup = { "(" ~ (ArgDef ~ (","? ~ ArgDef)*)? ~ ")" }
+FnArgs      = { FnArgsGroup | ArgDef }
+ArgDef      = { IDENT ~ Type? ~ ("=" ~ Expr)? }
+ReturnType  = { ("Return" ~ "(" ~ Type ~ ")") | Type }
