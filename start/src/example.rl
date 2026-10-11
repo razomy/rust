@@ -1,17 +1,30 @@
 # ==============================================================================
 # ОБЩИЕ ПРАВИЛА И СИСТЕМНАЯ МОДЕЛЬ (GLOBAL RULES & CORE MODEL)
 # ==============================================================================
-# • Синтаксическая основа: лаконичный синтаксис на выражениях (Python, Rust, Kotlin, TypeScript, Clojure, Haskell, F#).
+# • Синтаксическая основа: лаконичный синтаксис на выражениях (Rust, Python, Kotlin, TS, Haskell).
+# • Максимальная симметрия и ортогональность:
+#   - Отсутствует оператор '=>'.
+#   - Условия 'if' и циклы 'while' всегда заключаются в скобки: 'if (cond) { ... }'.
+#   - Ветвления Match разделяются двоеточием: `Pattern: { body }`.
+#   - Любая функция начинается со слова `fn`: именованная `fn name(x) { ... }`,
+#     анонимная `fn (x) { ... }` или замыкание с плейсхолдером `fn { _.field }`.
+#   - Тип функции симметричен ее объявлению: `fn (A, B): R`.
+# • Унификация импортов: импорт — это вызов синглтон-модуля по пути `import(path)`.
+#   Каждый модуль кэшируется по уникальному пути `self.__path`, что автоматически
+#   разрешает циклические зависимости через ссылки на синглтоны.
+# • Модель памяти: высокоуровневые объекты с автоматическим управлением памятью (GC),
+#   значения по умолчанию немутабельны, мутация выражается через `mut` и `with`.
 # • Унификация концепций: `type` объединяет структуры, классы и тайпклассы.
 #   Любой тип может иметь поля, конструкторы, трейтоподобные контракты и быть функцией.
 # • Унификация функций: функция — это синтаксический сахар над синглтон-типом
 #   с оператором вызова `operator ()`.
-# • Конструкторы и тайпклассы: `Monad` — это класс; `Monad {}` — вызов конструктора;
+# • Конструкторы и тайпклассы: `Monad` — это класс; `Monad<M>` предоставляет доступ к методам;
 #   `monad(...)` — вызов оператора скобок `operator ()`.
 # • Литералы vs Блоки:
 #   - { k: v } / { a, b } — запись (структура данных);
-#   - { a; b; } — блок кода (инструкции завершаются точкой с запятой);
-#   - { x, } — запись из одного поля.
+#   - { a; b } — блок кода (инструкции разделяются ';', последнее выражение возвращается);
+#   - { x, } — запись из одного поля;
+#   - Разделитель ':' в match четко отделяет деструктурируемый шаблон от вычисляемого тела.
 # • Обновление записей: `obj with { field: new_val }` (F#, OCaml, C#).
 # • Логические операторы: строго словами `and`, `or`, `not` (Python).
 # • Null-Safety & Ошибки: Option/Result, операторы '?', '?.', '??' (Rust, Kotlin, TS).
@@ -22,14 +35,16 @@
 
 # ==============================================================================
 # 1. МОДУЛИ, ИМПОРТ И ВИДИМОСТЬ
+# Импорт симметричен обычным объявлениям переменных и деструктуризации записей.
+# Модули разрешаются как синглтоны через внутренний идентификатор пути self.__path.
 # ==============================================================================
 
-use console;                                 # Простой импорт модуля — Based on: Rust, Python
-use math = std.math;                         # Импорт с локальным алиасом — Based on: Rust, Python
-use { log, warn } = std.logger;              # Селективный импорт символов — Based on: TS, Rust
+let console = import(std.console);           # Простой импорт модуля как объекта
+let math = import(std.math);                 # Импорт с присвоением имени
+let { log, warn } = import(std.logger);      # Селективная деструктуризация символов
 
-pub use std.fs;                              # Публичный реэкспорт всего модуля — Based on: Rust
-pub use { info, error } = std.logger;        # Публичный реэкспорт выбранных сущностей — Based on: TS, Rust
+pub let fs = import(std.fs);                 # Публичный реэкспорт всего модуля
+pub let { info, error } = import(std.logger);# Публичный реэкспорт выбранных сущностей
 
 # ==============================================================================
 # 2. ПЕРЕМЕННЫЕ, КОНСТАНТЫ И БАЗОВЫЕ ТИПЫ
@@ -53,10 +68,10 @@ let mut counter: Int = 0;                    # Изменяемая переме
 counter = counter + 1;                       # Переприсваивание
 counter += 1;                                # Составное присваивание
 
-# Условные конструкции (условия без скобок, операторы словами)
-if enabled and not (counter > 10) {
+# Условные конструкции (условия в круглых скобках, операторы словами)
+if (enabled and not (counter > 10)) {
     console.print("Система в норме");
-} else if enabled or counter == 0 {
+} else if (enabled or counter == 0) {
     console.print("Резервный режим");
 }
 
@@ -79,20 +94,23 @@ type Multiplier {
     pub factor: Int;                         # Состояние объекта
 
     # Первичный именованный конструктор с валидацией
-    fn new(factor: Int): Multiplier =>
-        Multiplier { factor: factor };
+    fn new(factor: Int): Multiplier {
+        Multiplier { factor: factor }
+    }
 
     # Фабрика/умный конструктор с защитой (Result)
-    fn safe_new(factor: Int): Result<Multiplier, Str> =>
-        if factor <= 0 {
+    fn safe_new(factor: Int): Result<Multiplier, Str> {
+        if (factor <= 0) {
             Err("Множитель должен быть положительным")
         } else {
             Ok(Multiplier { factor: factor })
-        };
+        }
+    }
 
     # Оператор вызова: делает экземпляр функцией: `instance(x)`
-    pub operator ()(self, x: Int): Int =>
-        self.factor * x;
+    pub operator ()(self, x: Int): Int {
+        self.factor * x
+    }
 }
 
 let tripler: Multiplier = Multiplier.new(3);
@@ -104,33 +122,33 @@ type Validator {
     max_len: Int;
 
     # Конструктор со значениями по умолчанию
-    fn new(min_len: Int = 3, max_len: Int = 20): Validator =>
-        Validator { min_len: min_len, max_len: max_len };
+    fn new(min_len: Int = 3, max_len: Int = 20): Validator {
+        Validator { min_len: min_len, max_len: max_len }
+    }
 
     # Тело вызова валидатора
     pub operator ()(self, input: Str): Bool {
         let len: Int = input.len();
-        len >= self.min_len and len <= self.max_len;
-    };
+        len >= self.min_len and len <= self.max_len
+    }
 }
 
 let is_valid_name: Validator = Validator.new(3, 15);
 let check: Bool = is_valid_name("Алиса");     # true
 
 # 3.3. Традиционный синтаксис функций (Синтаксический сахар над синглтон-типом)
-# Однострочники через '=>'
-fn square(x: Int): Int => x * x;
-fn add(a: Int, b: Int = 1): Int => a + b;
+fn square(x: Int): Int { x * x }
+fn add(a: Int, b: Int = 1): Int { a + b }
 
-# Многострочное блочное тело через '{ ...; }'
+# Многострочное блочное тело через '{ ...; expr }'
 fn clamp(val: Int, min_val: Int, max_val: Int): Int {
-    if val < min_val {
+    if (val < min_val) {
         return min_val;                      # Ранний возврат через return
     };
-    if val > max_val {
+    if (val > max_val) {
         return max_val;
     };
-    val;                                     # Хвостовое выражение возвращается неявно
+    val                                      # Хвостовое выражение возвращается неявно
 }
 
 # Функция без возврата (None по умолчанию)
@@ -138,9 +156,11 @@ fn notify(msg: Str): None {
     console.print(msg);
 }
 
-# 3.4. Лямбды и замыкания
-let double: (Int) { Int } = (x: Int): Int { x * 2 };   # Явная лямбда
-let double_short = x => x * 2;                       # Короткая форма с выводом типа
+# 3.4. Лямбды, замыкания и сигнатуры типов функций
+# Тип функции симметричен сигнатуре: fn(Params): Return
+let double: fn (Int): Int = fn (x: Int): Int { x * 2 };
+let double_short = fn (x) { x * 2 };                 # Короткая форма с выводом типа
+let get_user_name = fn { _.name };                   # Замыкание над авто-плейсхолдером '_'
 let add_ten = add(10, _);                            # Частичное применение через плейсхолдер '_'
 
 # ==============================================================================
@@ -192,11 +212,13 @@ type Shape =
     | { kind: "rect", width: Float, height: Float }
     | { kind: "square", size: Float };
 
-fn area(s: Shape): Float => match s {
-    { kind: "circle", radius } => 3.14159 * radius * radius,
-    { kind: "rect", width, height } => width * height,
-    { kind: "square", size } => size * size
-};
+fn area(s: Shape): Float {
+    match s {
+        { kind: "circle", radius }: { 3.14159 * radius * radius }
+        { kind: "rect", width, height }: { width * height }
+        { kind: "square", size }: { size * size }
+    }
+}
 
 # 5.3. Пересечения (Intersection Types '&')
 type Identifiable = { id: Str };
@@ -258,23 +280,24 @@ type Addable<Rhs = Self> {
 
 # Реализация методов для структуры
 impl User {
-    fn is_adult(self): Bool => self.age >= 18;
+    fn is_adult(self): Bool { self.age >= 18 }
 
-    fn rename(self, new_name: Str): User =>
-        self with { name: new_name };
+    fn rename(self, new_name: Str): User {
+        self with { name: new_name }
+    }
 
-    fn to_str(self): Str => "${self.name} (${self.age})";
+    fn to_str(self): Str { "${self.name} (${self.age})" }
 }
 
 # Реализация ассоциированного типа и контракта Addable для Int
 impl Addable for Int {
     type Output = Int;
-    fn add(self, rhs: Int): Int => self + rhs;
+    fn add(self, rhs: Int): Int { self + rhs }
 }
 
 # Extension-методы: добавление функционала к внешним типам
 impl Str {
-    fn shouted(self): Str => "${self.upper()}!";
+    fn shouted(self): Str { "${self.upper()}!" }
 }
 
 # ==============================================================================
@@ -285,24 +308,28 @@ type Vector2 {
     x: Float;
     y: Float;
 
-    fn new(x: Float, y: Float): Vector2 => Vector2 { x: x, y: y };
+    fn new(x: Float, y: Float): Vector2 { Vector2 { x: x, y: y } }
 }
 
 impl Vector2 {
     # Перегрузка бинарного плюса '+'
-    pub operator +(self, other: Vector2): Vector2 =>
-        Vector2 { x: self.x + other.x, y: self.y + other.y };
+    pub operator +(self, other: Vector2): Vector2 {
+        Vector2 { x: self.x + other.x, y: self.y + other.y }
+    }
 
     # Перегрузка унарного минуса '-'
-    pub operator -(self): Vector2 =>
-        Vector2 { x: -self.x, y: -self.y };
+    pub operator -(self): Vector2 {
+        Vector2 { x: -self.x, y: -self.y }
+    }
 
     # Индексация массивом '[idx]'
-    pub operator [](self, index: Int): Float => match index {
-        0 => self.x,
-        1 => self.y,
-        _ => panic("Индекс за пределами диапазона")
-    };
+    pub operator [](self, index: Int): Float {
+        match index {
+            0: { self.x }
+            1: { self.y }
+            _: { panic("Индекс за пределами диапазона") }
+        }
+    }
 }
 
 let v1: Vector2 = Vector2.new(1.0, 2.0);
@@ -316,12 +343,13 @@ let v1_x: Float = v1[0];                              # 1.0
 # ==============================================================================
 
 # Option: тип T? эквивалентен Option<T>
-fn find_user(id: Int): User? =>
-    if id == 1 {
+fn find_user(id: Int): User? {
+    if (id == 1) {
         Some(alice)
     } else {
         None
-    };
+    }
+}
 
 # Safe access '?.' и Coalescing '??'
 let target: User? = find_user(1);
@@ -330,21 +358,22 @@ let user_name: Str = target?.name ?? "Гость";
 # Ранний выход из Option через '?'
 fn get_user_name_len(id: Int): Int? {
     let user: User = find_user(id)?;
-    Some(user.name.len());
+    Some(user.name.len())
 }
 
 # Result: строгая типизация исключений и ошибок
-fn parse_port(str_val: Str): Result<Int, Str> =>
-    if str_val.is_empty() {
+fn parse_port(str_val: Str): Result<Int, Str> {
+    if (str_val.is_empty()) {
         Err("Порт не указан")
     } else {
         Ok(Int.parse(str_val))
-    };
+    }
+}
 
 # Преобразование Option в Result через ok_or и проброс через '?'
 fn load_user_id(id: Int): Result<Int, Str> {
     let user: User = find_user(id).ok_or("Пользователь не найден")?;
-    Ok(user.id);
+    Ok(user.id)
 }
 
 # ==============================================================================
@@ -352,32 +381,33 @@ fn load_user_id(id: Int): Result<Int, Str> {
 # ==============================================================================
 
 # 10.1. Тернарные и блочные if-выражения
-let max_age: Int = if alice.age > bob.age { alice.age; } else { bob.age; };
+let max_age: Int = if (alice.age > bob.age) { alice.age } else { bob.age };
 
-# Скобки `(...)` для структур в условиях исключают коллизию тела блока
-if alice == (User { id: 1, name: "Алиса", age: 25, password: None }) {
+# Круглые скобки вокруг условий исключают любую коллизию литералов структур
+if (alice == User { id: 1, name: "Алиса", age: 25, password: None }) {
     console.print("Данные профиля совпадают");
 }
 
-# 10.2. Match с guards, rest '..' и деструктуризацией
+# 10.2. Match с guards, rest '..' и деструктуризацией.
+# Шаблон отделяется от тела двоеточием 'Pattern: { body }'.
 let state: State<User> = Success(alice);
 
 let description: Str = match state {
-    Idle => "Система спит",
-    Loading => "Загрузка...",
-    Success(User { name, age, .. }) if age >= 18 => "Взрослый: ${name}",
-    Success(User { name, .. }) => "Пользователь: ${name}",
-    Failure { code: 404, .. } => "Ресурс не найден",
-    Failure { message, .. } => "Ошибка: ${message}"
+    Idle: { "Система спит" }
+    Loading: { "Загрузка..." }
+    Success(User { name, age, .. }) if (age >= 18): { "Взрослый: ${name}" }
+    Success(User { name, .. }): { "Пользователь: ${name}" }
+    Failure { code: 404, .. }: { "Ресурс не найден" }
+    Failure { message, .. }: { "Ошибка: ${message}" }
 };
 
 # 10.3. Альтернативы '|' и wildcard '_'
 let http_status: Int = 404;
 let status_msg: Str = match http_status {
-    200 | 201 => "Успешно",
-    400 | 404 => "Ошибка клиента",
-    code if code >= 500 => "Ошибка сервера: ${code}",
-    _ => "Неизвестный статус"
+    200 | 201: { "Успешно" }
+    400 | 404: { "Ошибка клиента" }
+    code if (code >= 500): { "Ошибка сервера: ${code}" }
+    _: { "Неизвестный статус" }
 };
 
 # ==============================================================================
@@ -398,30 +428,30 @@ let mid_slice: List<Int> = numbers[2..4];               # Срез [2, 4) -> [3,
 let tail_slice: List<Int> = numbers[3..];               # Срез от 3 до конца -> [4, 5, 6]
 let full_copy: List<Int> = numbers[..];                 # Полная копия
 
-# Паттерн-матчинг списков
+# Паттерн-матчинг списков с разделителем ':'
 let list_view: Str = match numbers {
-    [] => "пусто",
-    [one] => "один элемент: ${one}",
-    [head, ..tail] => "голова: ${head}, элементов в хвосте: ${tail.len()}"
+    []: { "пусто" }
+    [one]: { "один элемент: ${one}" }
+    [head, ..tail]: { "голова: ${head}, элементов в хвосте: ${tail.len()}" }
 };
 
 # Итерация for-in
-for item in numbers {
+for (item in numbers) {
     console.print(item);
 }
 
 # Диапазонные циклы: полуоткрытый '..' и замкнутый '..='
-for i in 0..5 {                             # 0, 1, 2, 3, 4
+for (i in 0..5) {                                       # 0, 1, 2, 3, 4
     console.print(i);
 }
 
-for i in 1..=5 {                            # 1, 2, 3, 4, 5
+for (i in 1..=5) {                                      # 1, 2, 3, 4, 5
     console.print(i);
 }
 
 # Цикл while
 let mut counter_loop: Int = 3;
-while counter_loop > 0 {
+while (counter_loop > 0) {
     counter_loop -= 1;
 }
 
@@ -429,9 +459,9 @@ while counter_loop > 0 {
 # 12. ПАЙПЛАЙНЫ (PIPES), КОМПОЗИЦИЯ И ПОТОКОВАЯ ОБРАБОТКА
 # ==============================================================================
 
-fn trim(s: Str): Str => s.trim();
-fn to_upper(s: Str): Str => s.upper();
-fn wrap_tag(s: Str, tag: Str): Str => "<${tag}>${s}</${tag}>";
+fn trim(s: Str): Str { s.trim() }
+fn to_upper(s: Str): Str { s.upper() }
+fn wrap_tag(s: Str, tag: Str): Str { "<${tag}>${s}</${tag}>" }
 
 # Композиция функций вперед через '>>'
 let format_header = trim >> to_upper;
@@ -442,12 +472,12 @@ let rendered: Str = raw_input
     .> format_header
     .> wrap_tag(_, "h1");                   # Подстановка в позицию '_'
 
-# Обработка коллекций через конвейер и подстановку свойства `_.name`
+# Обработка коллекций через конвейер и лямбду fn { _.field }
 let users: List<User> = [alice, bob];
 
 let names_of_adults: List<Str> = users
-    .> filter(_.is_adult())
-    .> map(_.name);                         # '_' представляет текущий элемент
+    .> filter(fn { _.is_adult() })
+    .> map(fn { _.name });
 
 # ==============================================================================
 # 13. ТОЧКА ВХОДА И ПРИМЕР СИСТЕМНОГО СЦЕНАРИЯ
@@ -472,60 +502,61 @@ pub fn main(): None {
 # ==============================================================================
 # Обозначение кайндов (Kinds / мета-типов типов):
 # • Обычный тип (Kind *): Int, Str, User
-# • Конструктор типа 1-го порядка (Kind * -> *): List<_>, Option<_>
-# • Конструктор типа 2-го порядка (Kind (* -> *) -> *): Functor<F<_>>, Monad<M<_>>
-# • Конструктор 3-го порядка (Kind ((* -> *) -> * -> *) -> *): MonadTrans<T<_, _>>
-#
-# СЕМАНТИКА МОНАД И ТАЙПКЛАССОВ:
-# • `Monad` — это вызываемый класс/тип.
-# • `Monad<M> {}` — создание экземпляра класса тайпкласса (словаря инстансов).
-# • `Monad(...)` — вызов оператора скобок `operator ()`.
+# • Конструктор типа 1-го порядка (Kind * -> *): List<T>, Option<T>
+# • Конструктор типа 2-го порядка (Kind (* -> *) -> *): Functor<F<T>>, Monad<M<T>>
+# • Конструктор 3-го порядка (Kind ((* -> *) -> * -> *) -> *): MonadTrans<T<M<X>, Y>>
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
 # 1. ДЖЕНЕРИКИ 2-ГО ПОРЯДКА (HIGHER-KINDED TYPES: KIND (* -> *))
-# Параметризация целым контейнером/эффектом F<_>, а не только типом значения T.
+# Параметризация целым контейнером/эффектом F<T>, а не только типом значения T.
 # ------------------------------------------------------------------------------
 
 # 1.1. Классический Functor (Маппинг содержимого любого контейнера F)
-type Functor<F<_>> {
-    # Метод принимает F<A> и отображает в F<B> с помощью функции (A) => B
-    fn map<A, B>(fa: F<A>, f: (A) => B): F<B>;
+type Functor<F<T>> {
+    # Метод принимает F<A> и отображает в F<B> с помощью функции fn (A): B
+    fn map<A, B>(fa: F<A>, f: fn (A): B): F<B>;
 }
 
-# Реализация Functor для List<_>
+# Реализация Functor для List
 impl Functor for List {
-    fn map<A, B>(fa: List<A>, f: (A) => B): List<B> => match fa {
-        [] => [],
-        [head, ..tail] => [f(head), ..Functor<List> {}.map(tail, f)]
-    };
+    fn map<A, B>(fa: List<A>, f: fn (A): B): List<B> {
+        match fa {
+            []: { [] }
+            [head, ..tail]: { [f(head), ..Functor<List>.map(tail, f)] }
+        }
+    }
 }
 
-# Реализация Functor для Option<_>
+# Реализация Functor для Option
 impl Functor for Option {
-    fn map<A, B>(fa: Option<A>, f: (A) => B): Option<B> => match fa {
-        Some(val) => Some(f(val)),
-        None => None
-    };
+    fn map<A, B>(fa: Option<A>, f: fn (A): B): Option<B> {
+        match fa {
+            Some(val): { Some(f(val)) }
+            None: { None }
+        }
+    }
 }
 
 # 1.2. Монада: абстракция последовательных цепочек вычислений (FlatMap)
-type Monad<M<_>> : Functor<M> {
+type Monad<M<T>> : Functor<M> {
     # Упаковка чистого значения в эффект M
     fn pure<A>(value: A): M<A>;
 
     # Связывание / FlatMap
-    fn flat_map<A, B>(ma: M<A>, f: (A) => M<B>): M<B>;
+    fn flat_map<A, B>(ma: M<A>, f: fn (A): M<B>): M<B>;
 
     # Дефолтная реализация map через flat_map и pure
-    fn map<A, B>(ma: M<A>, f: (A) => B): M<B> =>
-        self.flat_map(ma, (a: A) => self.pure(f(a)));
+    fn map<A, B>(ma: M<A>, f: fn (A): B): M<B> {
+        self.flat_map(ma, fn (a: A) { self.pure(f(a)) })
+    }
 }
 
 # 1.3. Полиморфная функция, абстрагированная от конкретного контейнера/эффекта
-# Инстанс `Functor<C> {}` создается вызовом конструктора структуры тайпкласса
-fn increment_all<C<_> : Functor<C>>(container: C<Int>): C<Int> =>
-    Functor<C> {}.map(container, (n: Int): Int => n + 1);
+# Обращение к методам тайпкласса идет напрямую через синглтон-тип Functor<C>
+fn increment_all<C<T> : Functor<C>>(container: C<Int>): C<Int> {
+    Functor<C>.map(container, fn (n: Int): Int { n + 1 })
+}
 
 let list_res: List<Int> = increment_all([1, 2, 3]);             # List: [2, 3, 4]
 let opt_res: Option<Int> = increment_all(Some(41));             # Option: Some(42)
@@ -533,17 +564,19 @@ let opt_res: Option<Int> = increment_all(Some(41));             # Option: Some(4
 
 # 1.4. Естественное преобразование (Natural Transformation: F ~> G)
 # Морфизм между двумя контейнерами 1-го порядка без распаковки типов значений
-type Transform<F<_>, G<_>> {
+type Transform<F<T>, G<T>> {
     # Конвертирует структуру F в структуру G для любого произвольного T
     fn apply<T>(source: F<T>): G<T>;
 }
 
 # Реализация преобразования Option<T> -> List<T>
 type OptionToList : Transform<Option, List> {
-    fn apply<T>(source: Option<T>): List<T> => match source {
-        Some(val) => [val],
-        None => []
-    };
+    fn apply<T>(source: Option<T>): List<T> {
+        match source {
+            Some(val): { [val] }
+            None: { [] }
+        }
+    }
 }
 
 let opt_to_list: OptionToList = OptionToList {};
@@ -559,8 +592,9 @@ let converted: List<Int> = opt_to_list.apply(Some(100));        # [100]
 type Comparable<SelfType : Comparable<SelfType>> {
     fn compare(self, other: SelfType): Int;
 
-    fn is_greater(self, other: SelfType): Bool =>
-        self.compare(other) > 0;
+    fn is_greater(self, other: SelfType): Bool {
+        self.compare(other) > 0
+    }
 }
 
 # Реализация: Money указывает самого себя в качестве типового аргумента
@@ -568,20 +602,23 @@ type Money : Comparable<Money> {
     pub amount: Int;
     pub currency: Str;
 
-    fn compare(self, other: Money): Int =>
-        self.amount - other.amount;
+    fn compare(self, other: Money): Int {
+        self.amount - other.amount
+    }
 }
 
 # Обобщенная функция поиска максимума над любым F-Bounded типом
-fn max_item<T : Comparable<T>>(a: T, b: T): T =>
-    if a.is_greater(b) { a; } else { b; };
+fn max_item<T : Comparable<T>>(a: T, b: T): T {
+    if (a.is_greater(b)) { a } else { b }
+}
 
 
 # 2. Рекурсивные структуры данных (Деревья, Графы, Связные списки)
-# Рекурсивный дженерик-список (Cons-ячейка / Nil)
+# Благодаря автоматическому управлению памятью (GC), рекурсивные типы
+# ссылаются на себя напрямую без необходимости низкоуровневых оберток вроде Box.
 enum LinkedList<T> {
     Nil,
-    Cons(T, Box<LinkedList<T>>)               # Рекурсивная ссылка через Box/кучу
+    Cons(T, LinkedList<T>)
 }
 
 # Рекурсивное бинарное дерево поиска (BST)
@@ -590,16 +627,21 @@ type TreeNode<T : Comparable<T>> {
     pub left: TreeNode<T>?;                   # Рекурсивная ссылка через опционал
     pub right: TreeNode<T>?;
 
-    fn new(value: T): TreeNode<T> =>
-        TreeNode { value: value, left: None, right: None };
+    fn new(value: T): TreeNode<T> {
+        TreeNode { value: value, left: None, right: None }
+    }
 
     # Рекурсивный метод вставки
-    fn insert(self, new_val: T): TreeNode<T> => match self {
-        node if new_val.compare(node.value) < 0 =>
-            node with { left: Some(node.left?.insert(new_val) ?? TreeNode.new(new_val)) },
-        node =>
-            node with { right: Some(node.right?.insert(new_val) ?? TreeNode.new(new_val)) }
-    };
+    fn insert(self, new_val: T): TreeNode<T> {
+        match self {
+            node if (new_val.compare(node.value) < 0): {
+                node with { left: Some(node.left?.insert(new_val) ?? TreeNode.new(new_val)) }
+            }
+            node: {
+                node with { right: Some(node.right?.insert(new_val) ?? TreeNode.new(new_val)) }
+            }
+        }
+    }
 }
 
 
@@ -610,15 +652,17 @@ type QueryBuilder<SelfType : QueryBuilder<SelfType>> {
     filters: List<Str>;
 
     # Возврат конкретного финального типа через F-bound
-    fn where_clause(self, condition: Str): SelfType =>
-        (self with { filters: self.filters.append(condition) }) as SelfType;
+    fn where_clause(self, condition: Str): SelfType {
+        (self with { filters: self.filters.append(condition) }) as SelfType
+    }
 }
 
 type UserQueryBuilder : QueryBuilder<UserQueryBuilder> {
     include_deleted: Bool;
 
-    fn with_deleted(self): UserQueryBuilder =>
-        self with { include_deleted: true };
+    fn with_deleted(self): UserQueryBuilder {
+        self with { include_deleted: true }
+    }
 }
 
 # Цепочка сохраняет доступ к специфичным методам UserQueryBuilder
@@ -640,9 +684,9 @@ type JsonValue =
 
 # Рекурсивный мета-тип DeepReadonly (по аналогии с TypeScript conditional types)
 type DeepReadonly<T> = match T {
-    List<infer U> => ReadonlyList<DeepReadonly<U>>,
-    Record<Str, infer U> => ReadonlyRecord<Str, DeepReadonly<U>>,
-    infer Primitive => Primitive
+    List<infer U>: { ReadonlyList<DeepReadonly<U>> }
+    Record<Str, infer U>: { ReadonlyRecord<Str, DeepReadonly<U>> }
+    infer Primitive: { Primitive }
 };
 
 
@@ -660,8 +704,9 @@ type FixedVector<T, N> {
     data: List<T>;
 
     # Добавление элемента увеличивает счетчик N -> Succ<N> на этапе проверки типов
-    fn push(self, item: T): FixedVector<T, Succ<N>> =>
-        FixedVector { data: self.data.append(item) };
+    fn push(self, item: T): FixedVector<T, Succ<N>> {
+        FixedVector { data: self.data.append(item) }
+    }
 }
 
 let empty_vec: FixedVector<Int, Zero> = FixedVector { data: [] };
@@ -675,57 +720,60 @@ let vec_two: FixedVector<Int, Two> = vec_one.push(20);              # Тип: Fi
 # ------------------------------------------------------------------------------
 
 # 2.1. Монадный трансформатор (Monad Transformer)
-# Trans<_<_, _>> — это конструктор 3-го порядка.
+# Trans<M<X>, Y> — это конструктор 3-го порядка.
 # Он принимает:
-#   1) Базовую монаду M<_> (конструктор 1-го порядка)
+#   1) Базовую монаду M<X> (конструктор 1-го порядка)
 #   2) Тип значения A
 # И производит объединенный стек вычислений Trans<M, A>
-type MonadTrans<Trans<M<_>, _>> {
+type MonadTrans<Trans<M<X>, Y>> {
     # Функция "lift": поднимает эффект из внутренней монады M в трансформер Trans<M>
-    fn lift<M<_> : Monad<M>, A>(base_effect: M<A>): Trans<M, A>;
+    fn lift<M<T> : Monad<M>, A>(base_effect: M<A>): Trans<M, A>;
 }
 
 # Конкретный трансформер OptionT: добавляет возможность отсутствия значения (Option)
-# поверх любой произвольной базовой монады M<_> (например, Task<Option<A>> или List<Option<A>>)
-type OptionT<M<_>, A> {
+# поверх любой произвольной базовой монады M<T> (например, Task<Option<A>> или List<Option<A>>)
+type OptionT<M<T>, A> {
     pub run: M<Option<A>>;                           # Вложенный стек эффектов
 
-    fn new(run: M<Option<A>>): OptionT<M, A> =>
-        OptionT { run: run };
+    fn new(run: M<Option<A>>): OptionT<M, A> {
+        OptionT { run: run }
+    }
 
     # FlatMap через внутреннюю композицию
-    fn flat_map<B>(self, f: (A) => OptionT<M, B>, monad: Monad<M>): OptionT<M, B> =>
+    fn flat_map<B>(self, f: fn (A): OptionT<M, B>): OptionT<M, B> {
         OptionT.new(
-            monad.flat_map(self.run, (opt_a: Option<A>) => match opt_a {
-                Some(a) => f(a).run,
-                None => monad.pure(None)
+            Monad<M>.flat_map(self.run, fn (opt_a: Option<A>) {
+                match opt_a {
+                    Some(a): { f(a).run }
+                    None: { Monad<M>.pure(None) }
+                }
             })
-        );
+        )
+    }
 }
 
 # Реализация MonadTrans 3-го порядка для OptionT
 impl MonadTrans for OptionT {
-    fn lift<M<_> : Monad<M>, A>(base_effect: M<A>): OptionT<M, A> => {
-        # Monad<M> {} создает инстанс/словарь методов тайпкласса для монады M
-        let monad: Monad<M> = Monad<M> {};
+    fn lift<M<T> : Monad<M>, A>(base_effect: M<A>): OptionT<M, A> {
         # Оборачиваем чистый результат M<A> в M<Option<A>> через Some
-        let lifted_run: M<Option<A>> = monad.map(base_effect, (a: A): Option<A> => Some(a));
-        OptionT.new(lifted_run);
-    };
+        let lifted_run: M<Option<A>> = Monad<M>.map(base_effect, fn (a: A): Option<A> { Some(a) });
+        OptionT.new(lifted_run)
+    }
 }
 
 
 # 2.2. Мета-абстракция 3-го порядка над вычислительными движками (Tagless Final Algebra)
-# Конструктор Interpreter<_<_>> принимает абстрактный вычислительный контекст F<_>
-type LanguageAlgebra<F<_>> {
+# Конструктор Interpreter<F<T>> принимает абстрактный вычислительный контекст F<T>
+type LanguageAlgebra<F<T>> {
     fn number(val: Int): F<Int>;
     fn add(left: F<Int>, right: F<Int>): F<Int>;
     fn text(val: Str): F<Str>;
 }
 
 # Мета-компилятор 3-го порядка: умеет транслировать любую программу из
-# одного интерпретатора F<_> в другой G<_>, используя естественное преобразование T<F, G>
-type PipelineCompiler<F<_>, G<_>, Trans : Transform<F, G>> {
-    fn compile<A>(expr: F<A>, transformer: Trans): G<A> =>
-        transformer.apply(expr);
+# одного интерпретатора F<T> в другой G<T>, используя естественное преобразование T<F, G>
+type PipelineCompiler<F<T>, G<T>, Trans : Transform<F, G>> {
+    fn compile<A>(expr: F<A>, transformer: Trans): G<A> {
+        transformer.apply(expr)
+    }
 }
