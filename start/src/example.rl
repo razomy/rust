@@ -1,535 +1,708 @@
 # ==============================================================================
-# ОБЩИЕ ПРАВИЛА ЯЗЫКА (GLOBAL RULES)
+# ОБЩИЕ ПРАВИЛА И СИСТЕМНАЯ МОДЕЛЬ (GLOBAL RULES & CORE MODEL)
 # ==============================================================================
-# • Синтаксическая основа: лаконичный синтаксис на базе выражений без ключевых слов end/точек с запятой (Rust, Kotlin, F#).
-# • Литералы vs Блоки: { k: v } / { a, b } — запись; { a; b } — блок; { x, } — запись из одного поля; { x } — блок (JS, Rust, Python).
-# • Обновление записей: obj with { field: new_val } без мутации оригинала (OCaml, F#, C#).
-# • Функции: однострочники через '=' (Kotlin, Scala); многострочные через '{ }' (Rust, Swift); '=>' — только в типах, лямбдах и match.
+# • Синтаксическая основа: лаконичный синтаксис на выражениях (Rust, Kotlin, F#).
+# • Унификация функций и типов: функция — это синтаксический сахар над синглтон-
+#   типом с оператором вызова `operator ()`. Любой тип может иметь состояние и
+#   одновременно быть функцией (Callable Class/Object).
+# • Литералы vs Блоки: { k: v } / { a, b } — запись; { a; b } — блок; { x, } — запись.
+# • Обновление записей: `obj with { field: new_val }` (F#, OCaml, C#).
 # • Логические операторы: строго словами `and`, `or`, `not` (Python).
-# • Null-safety & Ошибки: Option/Result, операторы '?', '?.', '??' (Rust, Kotlin, Swift, TypeScript).
-# • Конвейеры: явный pipe '.>'(e.g |>), композиция '>>', плейсхолдер '_' и member accessor '.field' (F#, Elixir, Scala, Swift).
-# • Скобки в заголовках: литералы записей внутри if/while/for/match берутся в скобки: (Type { ... }) во избежание неоднозначности блока (Rust).
+# • Null-Safety & Ошибки: Option/Result, операторы '?', '?.', '??' (Rust, Kotlin, TS).
+# • Конвейеры: конвейер '.>' с плейсхолдером '_', композиция '>>', геттер '.field'.
+# • Система типов: номинативные типы + структурные объединения/пересечения (TS + Rust).
 # ==============================================================================
 
-# 1. Импорты и видимость
+# ==============================================================================
+# 1. МОДУЛИ, ИМПОРТ И ВИДИМОСТЬ
+# ==============================================================================
+
 use console                                 # Простой импорт модуля — Based on: Rust, Python
-use math = std.math                         # Импорт модуля с алиасом — Based on: Rust (as), Python
-use { log, warn } = std.logger              # Деструктурирующий селективный импорт — Based on: JS/TypeScript, Rust
+use math = std.math                         # Импорт с локальным алиасом — Based on: Rust, Python
+use { log, warn } = std.logger              # Селективный импорт символов — Based on: TS, Rust
 
-pub use std.fs                              # Реэкспорт всего модуля — Based on: Rust (pub use)
-pub use { info, error } = std.logger        # Публичный реэкспорт конкретных символов — Based on: Rust, TypeScript
+pub use std.fs                              # Публичный реэкспорт всего модуля — Based on: Rust
+pub use { info, error } = std.logger        # Публичный реэкспорт выбранных сущностей — Based on: TS, Rust
 
-# 2. Константы, переменные, Bool, комментарии
+# ==============================================================================
+# 2. ПЕРЕМЕННЫЕ, КОНСТАНТЫ И БАЗОВЫЕ ТИПЫ
+# ==============================================================================
+
 ##
-  Многострочный
-  комментарий
-##                                          # Многострочный блочный комментарий — Based on: Julia (##), Dylan
+  Многострочный блочный комментарий
+  для документации и заметок
+##
 
-pub const VERSION = "1.0.0"                 # Публичная константа уровня модуля — Based on: Rust, Zig
-const DEFAULT_LIMIT Int = 10                # Типизированная константа — Based on: Go, Rust
-const PI = 3.14159                          # Константа с выводом типа — Based on: Go, Rust, Swift
+pub const VERSION = "1.0.0"                 # Публичная константа уровня модуля
+const DEFAULT_LIMIT Int = 10                # Константа с явным типом
+const PI = 3.14159                          # Константа с выводом типа (Float)
 
-let name = "Алиса"                          # Неизменяемая переменная (вывод типа) — Based on: Rust, Swift
-let age = 25                                # Целочисленная неизменяемая переменная — Based on: Rust, Kotlin
-let city Str = "Киев"                       # Переменная с явным типом после имени — Based on: Go, Kotlin, Scala
+let name = "Алиса"                          # Неизменяемая переменная (вывод Str)
+let age = 25                                # Неизменяемое целое число (Int)
+let city Str = "Киев"                       # Переменная с явным указанием типа
+let enabled Bool = true                     # Булево значение true/false
 
-let enabled Bool = true                     # Булев тип со значением true — Based on: Go, Rust
-let disabled = false                        # Булев литерал со значением false — Based on: Python, Rust
+let mut counter = 0                         # Изменяемая переменная (mut)
+counter = counter + 1                       # Переприсваивание
+counter += 1                                # Составное присваивание
 
-# Условный оператор с логическим and и not — Based on: Python, Rust (условие без скобок)
-if enabled and not disabled {
-    console.print("Система активна")
+# Условные конструкции (условия без скобок, операторы словами)
+if enabled and not (counter > 10) {
+    console.print("Система в норме")
+} else if enabled or counter == 0 {
+    console.print("Резервный режим")
 }
 
-# Условный оператор с логическим or — Based on: Python, Rust
-if enabled or disabled {
-    console.print("Хотя бы один флаг установлен")
-}
-
-# Объекты, деструктуризация и чтение полей
-let ab = { a: 1, b: 2 }                     # Литерал анонимной записи (структуры) — Based on: TypeScript, OCaml
-let { a, b } = ab                           # Деструктуризация полей записи в переменные — Based on: JS/TypeScript
-let c = ab.a                                # Доступ к полю через точку — Based on: JS, Python, Rust
-
-# Мутабельность (mut)
-let mut counter = 0                         # Явное объявление изменяемой переменной — Based on: Rust
-counter = counter + 1                       # Переприсваивание переменной — Based on: Rust, C
-counter += 1                                # Составное присваивание с инкрементом — Based on: C, Python, Rust
-
-# 3. Варианты объявления функций, return, None и лямбды
-fn square1(x Int) => x * x                   # Однострочная функция с выводом типа возврата — Based on: Kotlin, Scala
-fn square2(x Int, b Int) => x * b            # Однострочная функция с двумя аргументами — Based on: Kotlin
-fn square3(x Int, b Int) Int => x * b        # Однострочник с явным возвращаемым типом — Based on: Scala, Kotlin
-
-# Функция с блочным телом и неявным возвратом последнего выражения — Based on: Rust
-fn square4(x Int, b Int) Int {
-    x * b
-}
-
-# Функция с ветвлением и ранним выходом через return — Based on: Rust, Go
-fn abs(x Int) Int {
-    if x < 0 {
-        return -x                           # Досрочный возврат значения — Based on: Rust, C
-    }
-
-    x                                       # Неявный возврат хвостового выражения — Based on: Rust, Ruby
-}
-
-fn add(a Int, b Int = 1) Int => a + b        # Параметры со значениями по умолчанию — Based on: Python, Kotlin, TypeScript
-
-# Функция, возвращающая тип None (пустой результат) — Based on: Kotlin, Scala, Rust
-fn log_msg(msg Str) None {
-    console.print(msg)
-}
-
-# Функция без указания возвращаемого типа (None по умолчанию) — Based on: Kotlin, Go
-fn log_msg_short(msg Str) {
-    console.print(msg)
-}
-
-# Обобщенная (generic) функция — Based on: Rust, TypeScript
-fn identity<T>(let T) T => let
-
-# Обобщенная функция с ограничением типа (type constraint) — Based on: Rust, Go, C#
-fn calc<T Number>(x T, b T) => x * b
-fn calc2<T Number>(x T, b T) T => x * b      # Generic-функция с ограничением и явным возвратом — Based on: Rust
-
-# Функция высшего порядка, принимающая функцию как аргумент — Based on: TypeScript, Rust
-fn apply(x Int, f (Int) => Int) Int =>
-    f(x)
-
-# Функция, возвращающая функциональный тип — Based on: Haskell, TypeScript, Kotlin
-fn make_multiplier(k Int) (Int) => Int =>
-    x => x * k                              # Возврат лямбда-функции — Based on: JS/TypeScript, Python
-
-# Лямбды
-let double = (x) => x * 2                   # Лямбда с аргументом в скобках — Based on: TypeScript, Arrow function
-let double_short = x => x * 2               # Короткая лямбда с одним параметром — Based on: ES6, C#
-let applied = apply(10, double)             # Передача функции первого класса в аргумент — Based on: JS, Kotlin
-
-# Вызов с аргументом по умолчанию: add(10) == 11
-let eleven = add(10)                        # Вызов с подстановкой default value — Based on: Python, Kotlin
-
-# Частичное применение — только явно через '_'
-let add10 = add(10, _)                      # Частичное применение правого аргумента через '_' — Based on: Scala, Clojure
-let fifteen = add10(5)                      # Вызов частично примененной функции — Based on: Scala, Haskell
-
-let divide_by_2 = divide(_, 2)              # Частичное применение левого аргумента — Based on: Scala
-
-# Блок как выражение
-let block_letue = {                         # Выражение-блок, возвращающее результат — Based on: Rust
-    let left = 10
-    let right = 20
-    left + right                            # Последняя строка вычисляется в значение переменной — Based on: Rust
-}
-
-type UserId = Int                           # Псевдоним примитивного типа (type alias) — Based on: TypeScript, Rust
-type MaybeUser = User?                      # Опциональный тип через постфиксный '?' — Based on: Kotlin, TypeScript, Swift
-type UserResult = Result<User, Str>         # Параметризованный Result-псевдоним — Based on: Rust
-type PublicUser = Omit<User, "password">    # Utility type для исключения полей — Based on: TypeScript
-type ReadonlyUser = Readonly<User>          # Utility type иммутабельности — Based on: TypeScript
-type UserKeys = keyof User                  # Оператор извлечения типов ключей структуры — Based on: TypeScript
-type NameOrAge = "name" | "age"             # Union строковых литеральных типов — Based on: TypeScript
-
-# 4. Записи (Records), видимость полей и Алгебраические типы (ADTs)
-# Объявление номинативного типа записи с модификаторами полей — Based on: Rust (struct), Go (struct)
-pub type User {
-    pub name Str                            # Публичное поле структуры — Based on: Rust
-    pub age Int                             # Публичное поле целого типа — Based on: Rust
-    password Str?                           # Приватное опциональное поле — Based on: Rust, TypeScript
-}
-
-# Алгебраический тип (ADT/Sum Type) со структурированными вариантами — Based on: Rust (enum), Swift
-enum Role {
-    Admin                                   # Вариант без полезной нагрузки — Based on: Rust, Swift
-    Member { id Int }                       # Вариант с анонимной записью — Based on: Rust
-    Guest                                   # Простой единичный вариант — Based on: Rust
-}
-
-# Обобщенное/публичное перечисление с payload-значениями — Based on: Rust, Swift
-pub enum State {
-    Idle                                    # Состояние простоя — Based on: Rust
-    Loading                                 # Состояние загрузки — Based on: Rust
-    Success(User)                           # Вариант с кортежным типом значения — Based on: Rust, Swift
-    Error(Str)                              # Вариант с полезной строковой нагрузкой — Based on: Rust, Swift
-}
-
-# Создание экземпляра структуры с именованными полями — Based on: Rust, Zig
-let alice User = User { name: "Алиса", age: 25, password: None }
-
-# Shorthand-поля (запятая обязательна, если поле одно: { alice, })
-let tag = "new"
-let tagged_user = { alice, tag }            # Record field punning (shorthand) — Based on: JS/TypeScript, OCaml
-let single_field = { tag, }                 # Shorthand-запись из одного поля с trailing comma — Based on: Python tuples: (x,)
-
-# Immutable update записи
-let older_alice = alice with { age: 26 }    # Иммутабельное обновление полей записи — Based on: OCaml, F#, C# (with)
-
-# 5. Обобщенные структуры, объединения и generic defaults
-# Параметризованный тип записи — Based on: Rust (struct<T>), Go
-type Container<T> {
-    letue T                                 # Поле обобщенного типа T — Based on: Rust
-    tag Str                                 # Строковое поле метаданных — Based on: Rust
-}
-
-# Обобщенная пара из двух типов — Based on: Rust, C++, Haskell
-type Pair<T, U> {
-    first T
-    second U
-}
-
-# Перечисление с generic constraint и типом по умолчанию — Based on: Rust, TypeScript
-enum Response<T Number = Int> {
-    Data(T)                                 # Значение обобщенного типа — Based on: Rust
-    Empty                                   # Пустой вариант — Based on: Rust
-}
-
-# Конструктор контейнера с выводом типов полей — Based on: Rust, TypeScript
-fn wrap<T>(let T, tag Str) Container<T> =
-    Container { letue: let, tag }
-
-# 6. Traits/typeclasses, impl и методы
-# Определение интерфейса поведения (Trait/Typeclass) — Based on: Rust (trait), Haskell (typeclass)
-trait Display {
-    fn to_str(self) Str                     # Метод экземпляра с параметром self — Based on: Rust, Python
-}
-
-# Трейт клонирования с возвратом специального Self-типа — Based on: Rust (Clone), Swift
-trait Clone {
-    fn clone(self) Self                     # Возврат текущего типа реализации Self — Based on: Rust, Swift
-}
-
-# Трейт бинарных математических операций — Based on: Rust, Haskell
-trait Number {
-    fn add(self, other Self) Self
-    fn mul(self, other Self) Self
-}
-
-# Блок реализации собственных методов для типа — Based on: Rust (impl)
-impl User {
-    fn is_adult(self) Bool =>                # Метод-предикат над экземпляром — Based on: Rust, Kotlin
-        self.age >= 18
-
-    fn rename(self, name Str) User =>        # Метод с возвратом обновленной копии — Based on: F#, Rust
-        self with { name }
-
-    fn without_password(self) User =>        # Метод очистки приватного поля — Based on: F#, Rust
-        self with { password: None }
-}
-
-# Реализация трейта Display для конкретного типа User — Based on: Rust (impl Trait for Type)
-impl Display for User {
-    fn to_str(self) Str =>
-        "${self.name}, ${self.age}"         # Строковая интерполяция свойств self — Based on: Kotlin, Swift, JS
-}
-
-# Функция с обобщенным ограничением типа через трейт — Based on: Rust (T: Display), C#
-fn print_any<T Display>(letue T) {
-    console.print(letue.to_str())           # Вызов метода из трейта Display — Based on: Rust
-}
-
-# Функция с множественным ограничением трейтов через '+' — Based on: Rust (Display + Clone)
-fn debug_print<T Display + Clone>(letue T) {
-    let copy = letue.clone()                # Вызов метода трейта Clone — Based on: Rust
-    console.print(copy.to_str())
-}
-
-# 7. Отсутствие Null: None, Option ?, safe access, coalescing
-# Функция, возвращающая опциональное значение (Option/Maybe) — Based on: Rust, Swift
-fn find_user(id Int) User? =>
-    if id == 1 {
-        Some(User { name: "Алиса", age: 25, password: None }) # Оборачивание в Some — Based on: Rust, Scala
-    } else {
-        None                                # Вариант отсутствия значения — Based on: Rust, Python
-    }
-
-let target = find_user(1)
-
-# Сопоставление с образцом по Some/None — Based on: Rust (match Option)
-let resolved_name = match target {
-    Some(u) => u.name,                      # Распаковка значения из Some — Based on: Rust
-    None => "Неизвестный"                   # Обработка отсутствия — Based on: Rust
-}
-
-# Безопасная навигация и оператор null-coalescing — Based on: Kotlin, Swift, TypeScript (?. и ??)
-let safe_name = target?.name ?? "Неизвестный"
-
-# Досрочный возврат через оператор '?' для Option — Based on: Rust (operator ?)
-fn get_user_name(id Int) Str? {
-    let user = find_user(id)?               # Возврат None, если результат равен None — Based on: Rust
-    Some(user.name)                         # Возврат завернутого значения — Based on: Rust
-}
-
-# 8. Обработка ошибок: Result, Ok, Err и оператор ?
-# Функция с результатом Result<T, E> — Based on: Rust (Result<T, E>)
-fn divide(a Int, b Int) Result<Int, Str> =>
-    if b == 0 {
-        Err("Деление на ноль")              # Оборачивание ошибки в Err — Based on: Rust
-    } else {
-        Ok(a / b)                           # Успешный результат в Ok — Based on: Rust
-    }
-
-# Обработка цепочек ошибок с преобразованием Option в Result — Based on: Rust
-fn require_user(id Int) Result<User, Str> {
-    let user = find_user(id).ok_or("Пользователь не найден")? # Преобразование и проброс ошибки — Based on: Rust
-    Ok(user)
-}
-
-# Проброс ошибки через Result-оператор '?' — Based on: Rust (? operator)
-fn load_name(id Int) Result<Str, Str> {
-    let user = require_user(id)?            # Досрочный выход при Err — Based on: Rust
-    Ok(user.name)
-}
-
-# 9. Управление потоком: if-выражение, match, guards, rest .., wildcard
-let x = 10
-let y = 20
-let max = if x > y { x } else { y }          # Тернарный if-блок как выражение — Based on: Rust, Kotlin
-
-# If-else блок с побочными эффектами и финальным выражением — Based on: Rust
-let block_res = if x > 5 {
-    console.print("Значение валидно")
-    "Ok"
-} else {
-    "Fail"
-}
-
-# В заголовке if литерал записи берётся в скобки для устранения коллизии блока — Based on: Rust
-if alice == (User { name: "Алиса", age: 25, password: None }) {
-    console.print("Это Алиса")
-}
-
-let current_state = Success(User { name: "Боб", age: 30, password: None })
-
-# Сопоставление структуры, вложенный паттерн-матчинг и guards — Based on: Rust, Swift
-let state_desc = match current_state {
-    Idle => "Ожидание...",
-    Loading => "Загрузка...",
-    Success(User { name, age }) if age > 18 => "Взрослый: ${name}", # Guard-условие 'if' — Based on: Rust, Swift
-    Success(User { name, .. }) => "Пользователь: ${name}",         # Rest-паттерн '..' для игнора полей — Based on: Rust
-    Error(err) => "Ошибка: ${err}",
-    _ => "Неизвестное состояние"                                   # Wildcard-ветка по умолчанию — Based on: Rust
-}
-
-let code = 404
-
-# Паттерн-матчинг примитивов с альтернативами '|' и условиями — Based on: Rust, Kotlin (when)
-let code_desc = match code {
-    200 => "ok",
-    400 | 404 => "client error",             # Объединение условий через '|' — Based on: Rust, Ruby
-    n if n >= 500 => "server error",         # Привязка переменной с guard — Based on: Rust, Scala
-    _ => "unknown"                           # Ветка по умолчанию — Based on: Rust
-}
-
-# Деструктуризация записи в ветках match — Based on: Rust
-let matched_user = match alice {
-    User { name: "Алиса", age, .. } => "Alice age ${age}", # Матчинг литерала поля и пропуск остальных — Based on: Rust
-    User { name, .. } => name
-}
-
-# Ветка сопоставления с телом-блоком из нескольких операторов — Based on: Rust
-let verbose_desc = match code {
-    404 => {
-        console.print("Не найдено")
-        "not found"                         # Возвращаемое значение ветки — Based on: Rust
-    },
-    _ => "other"
-}
-
-# 10. Списки, индексация, срезы и диапазоны
-let names List<Str> = ["Алиса", "Боб", "Ева"]        # Литерал типизированного динамического списка — Based on: Python, Rust
-let numbers List<Int> = [1, 2, 3, 4, 5, 6]           # Список целых чисел — Based on: Python, Kotlin
-let empty_numbers List<Int> = []                     # Пустой типизированный список — Based on: Rust, TypeScript
-
-let first_name = names[0]                            # Доступ к элементу списка по индексу — Based on: Python, C, Rust
-let names_middle = names[1..3]                       # Срез полуоткрытого диапазона [1, 3) — Based on: Rust, Python (1:3)
-let names_from_start = names[..2]                    # Срез от начала коллекции — Based on: Rust, Python (:2)
-let names_to_end = names[1..]                        # Срез до конца коллекции — Based on: Rust, Python (1:)
-let names_copy = names[..]                           # Полный срез (копия) коллекции — Based on: Rust, Python (:)
-
-# Цикл по полуоткрытому диапазону '..' (без правой границы) — Based on: Rust, Swift (1..<5)
-for i in 1..5 {
-    console.print(i)
-}
-
-# Цикл по замкнутому диапазону '..=' (включая границу) — Based on: Rust (..=), Swift (...)
-for i in 1..=5 {
-    console.print(i)
-}
-
-# Итерация for-in по элементам коллекции — Based on: Rust, Python, Swift
-for n in names {
-    console.print(n)
-}
-
-let mut count = 3
-
-# Цикл while с булевым условием — Based on: Rust, Python, C
-while count > 0 {
-    console.print(count)
-    count = count - 1
-}
-
-# Паттерн-матчинг списков с rest-паттерном '..' — Based on: Haskell, Rust, Elixir
-let list_desc = match numbers {
-    [] => "empty",                                   # Матчинг пустого списка — Based on: Haskell, Rust
-    [one] => "one item",                             # Матчинг ровно одного элемента — Based on: Haskell, Rust
-    [first, ..] => "many, first is ${first}"         # Голова списка + хвост (head/tail rest) — Based on: Rust, Elixir
-}
-
-# 11. Числа, строки, escaping и приведение типов
-let int_num Int = 42                                 # Десятичное целое — Based on: C, Rust
-let float_num Float = 3.14                           # Число с плавающей точкой — Based on: C, Rust
-let hex_num = 0xff                                   # Шестнадцатеричный литерал — Based on: C, Rust, JS
-let bin_num = 0b1010                                 # Двоичный числовой литерал — Based on: Rust, Python
-let big_num = 1_000_000                              # Числовой литерал с разделителями разрядов — Based on: Rust, Ruby, Java
-let negative_num = -10                               # Отрицательное число — Based on: C, Rust
-
-let escaped = "Строка с переносом\nи кавычкой \""    # Строка с escape-последовательностями — Based on: C, JS, Rust
-let raw_regex = r"\d+\s+\w+"                         # Raw-строка без экранирования — Based on: Rust, Python (r"...")
-
-let int_as_float = int_num as Float                  # Явное приведение примитивного типа через 'as' — Based on: Rust
-let parsed_int = Int.parse("123")                    # Статический метод парсинга типа — Based on: C#, Rust
-
-# 12. Конвейерная обработка: методы, pipe, композиция, field accessor
-fn trim(letue Str) Str = letue.trim()
-fn lower(letue Str) Str = letue.lower()
-fn add_prefix(letue Str, prefix Str) Str =
-    "${prefix}${letue}"
-
-# Композиция функций вперед через оператор '>>' — Based on: F#, Haskell, Elm
-let normalize = trim >> lower
-
-# Конвейерная обработка через '.>' с плейсхолдером '_' — Based on: Elixir, F#, Hack
-let normalized_name = " Алиса "
-    .> normalize                                     # Передача левого значения первым аргументом — Based on: Elixir, F#
-    .> add_prefix(_, "user:")                        # Подстановка значения в указанный слот '_' — Based on: Scala, Clojure
-
-# Цепочка вызовов методов через точку (fluent API) — Based on: Kotlin, Java, Rust
-let sum_even = numbers
-    .filter((n) => n % 2 == 0)
-    .map(n => n * 10)
-    .sum()
-
-# Вызовы методов и шортхонд геттера поля '.fieldName' — Based on: Swift (KeyPath \.name), Kotlin
-let adult_names = [alice, older_alice]
-    .filter(u => u.is_adult())
-    .map(.name)                                      # Синтаксический сахар для (x => x.name) — Based on: Swift, Clojure
-
-# 13. Деструктуризация в параметрах и лямбдах
-# Деструктуризация структуры прямо в сигнатуре функции — Based on: Rust, Clojure, TypeScript
-fn greet(User { name, age, .. }) Str =>
-    "${name}: ${age}"
-
-let greeted = greet(alice)
-
-# Деструктуризация аргумента внутри лямбды (в скобках) — Based on: Rust, JS/TypeScript
-let only_names = [alice, older_alice]
-    .map((User { name, .. }) => name)
-
-# 14. Комплексная логика и точка входа
-# Сопоставление перечисления с guard-условием и генерацией Result — Based on: Rust
-fn check_access(user User, role Role) Result<Container<User>, Str> =>
-    match role {
-        Admin => Ok(wrap(user.without_password(), "admin")),
-        Member { .. } if user.age >= 18 => Ok(wrap(user.without_password(), "verified_user")), # Pattern + Guard — Based on: Rust
-        Member { .. } => Err("Пользователь слишком молод"),
-        Guest => Err("Гостям вход запрещен")
-    }
-
-# Публичная точка входа программы main — Based on: Rust, C, Kotlin
-pub fn main() {
-    console.print("Версия: ${VERSION}")
-
-    # Создание списка структур — Based on: Rust, Kotlin
-    let users = [
-        User { name: "Алиса", age: 25, password: None },
-        User { name: "Боб", age: 16, password: None },
-        User { name: "Ева", age: 22, password: None }
-    ]
-
-    # Обработка потока данных через функции высшего порядка — Based on: Kotlin, Rust, JS
-    users
-        .map((u) => check_access(u, Member { id: 1 }))
-        .map((res) => match res {                    # Вложенный match внутри итератора — Based on: Rust
-            Ok(container) => "✅ Доступ: ${container.letue.name} [${container.tag}]",
-            Err(err) => "❌ Ошибка: ${err}"
-        })
-        .for_each((msg) => console.print(msg))       # Терминальная операция итератора с side-effect — Based on: Kotlin, Java
-
-    let config_path Str? = None
-
-    # Распаковка Option через match с дефолтным значением — Based on: Rust
-    let path = match config_path {
-        Some(p) => p,
-        None => "/default/path.conf"
-    }
-
-    console.print("Используется путь: ${path}")
-
-    let maybe_admin = find_user(1)
-
-    # Безопасное чтение поля и coalescing к fallback-строке — Based on: TypeScript, Kotlin, Swift
-    let admin_name = maybe_admin?.name ?? "anonymous"
-
-    console.print("Админ: ${admin_name}")
-}
-
-# Определение структуры-калькулятора или замыкания с состоянием
+# Числовые литералы и строки
+let hex_val = 0xff                          # 16-ричный литерал
+let bin_val = 0b1010                        # Двоичный литерал
+let big_num = 1_000_000                     # Читаемые разделители разрядов
+let raw_regex = r"\d+\s+\w+"                # Raw-строка без экранирования
+let int_as_float = counter as Float         # Явное приведение примитивов
+
+# ==============================================================================
+# 3. ЕДИНАЯ СУЩНОСТЬ: ТИПЫ, КЛАССЫ, ФУНКЦИИ И КОНСТРУКТОРЫ
+# ==============================================================================
+# Концепция: тип может хранить поля, иметь конструктор и определяться как функция.
+# Под капотом `fn foo(x)` — это синтаксический сахар над синглтон-структурой foo,
+# реализующей `operator ()`.
+
+# 3.1. Тип с конструктором и вызовом экземпляра (Callable Object / Класс-функция)
 type Multiplier {
-    factor Int
+    pub factor Int                          # Состояние объекта
+
+    # Первичный именованный конструктор с валидацией
+    fn new(factor Int) Multiplier =>
+        Multiplier { factor }
+
+    # Фабрика/умный конструктор с защитой (Result)
+    fn safe_new(factor Int) Result<Multiplier, Str> =>
+        if factor <= 0 {
+            Err("Множитель должен быть положительным")
+        } else {
+            Ok(Multiplier { factor })
+        }
+
+    # Оператор вызова: делает экземпляр функцией: `instance(x)`
+    pub operator ()(self, x Int) Int =>
+        self.factor * x
 }
 
-# Реализация трейта Call для типа Multiplier
-impl Multiplier {
-    # Сигнатура вызова экземпляра как функции
-    fn operator ()(self, x Int) Int => self.factor * x
+let tripler = Multiplier.new(3)
+let calc_result = tripler(10)                # 30 (вызов объекта как обычной функции)
+
+# 3.2. Тип, объединяющий логику валидатора и состояние
+type Validator {
+    min_len Int
+    max_len Int
+
+    # Конструктор со значениями по умолчанию
+    fn new(min_len Int = 3, max_len Int = 20) Validator =>
+        Validator { min_len, max_len }
+
+    # Тело вызова валидатора
+    pub operator ()(self, input Str) Bool => {
+        let len = input.len()
+        len >= self.min_len and len <= self.max_len
+    }
 }
 
-let triple = Multiplier { factor: 3 }
+let is_valid_name = Validator.new(3, 15)
+let check = is_valid_name("Алиса")          # true
 
-# Теперь объект ведет себя как функция:
-let res = triple(10)   # 30 (эквивалентно triple.call(10))
+# 3.3. Традиционный синтаксис функций (Синтаксический сахар над синглтон-типом)
+# Однострочники через '=>'
+fn square(x Int) Int => x * x
+fn add(a Int, b Int = 1) Int => a + b
 
-
-# Добавление метода к чужому типу без прямого изменения его описания
-impl Str {
-    fn shouted(self) Str => "${self}!"
+# Многострочное блочное тело через '{ }'
+fn clamp(val Int, min_val Int, max_val Int) Int {
+    if val < min_val {
+        return min_val                      # Ранний возврат через return
+    }
+    if val > max_val {
+        return max_val
+    }
+    val                                     # Хвостовое выражение возвращается неявно
 }
 
-"hello".shouted() # "hello!"
+# Функция без возврата (None по умолчанию)
+fn notify(msg Str) {
+    console.print(msg)
+}
 
+# 3.4. Лямбды и замыкания
+let double = (x Int) => x * 2               # Явная лямбда
+let double_short = x => x * 2               # Короткая форма с выводом типа
+let add_ten = add(10, _)                    # Частичное применение через плейсхолдер '_'
 
-# Трейт бинарного сложения
-trait Add<Rhs = Self> {
+# ==============================================================================
+# 4. СТРУКТУРЫ (RECORDS) И ИХ ОБНОВЛЕНИЕ
+# ==============================================================================
+
+pub type User {
+    pub id Int
+    pub name Str
+    pub age Int
+    password Str?                           # Опциональное приватное поле (Null-safety)
+}
+
+# Создание экземпляров
+let alice = User { id: 1, name: "Алиса", age: 25, password: None }
+
+# Field Punning (Shorthand-инициализация)
+let id = 2
+let name = "Боб"
+let age = 30
+let bob = User { id, name, age, password: None }
+
+# Анонимные записи
+let point = { x: 10, y: 20 }
+let single_elem_rec = { id, }               # Запятая обязательна для записи из одного поля
+
+# Деструктуризация полей
+let { x, y } = point
+let current_x = point.x
+
+# Немутабельное обновление записи (Immutable Update)
+let older_alice = alice with { age: 26 }
+
+# ==============================================================================
+# 5. ТИПЫ В ДУХЕ TYPESCRIPT: ОБЪЕДИНЕНИЯ, ПЕРЕСЕЧЕНИЯ, УТИЛИТЫ И МЕТАТИПЫ
+# ==============================================================================
+
+# 5.1. Примитивные псевдонимы (Type Aliases)
+type UserId = Int
+type Point2D = { x Int, y Int }
+
+# 5.2. Объединения (Union Types '|')
+type Status = "draft" | "published" | "archived"     # Литеральное объединение
+type Primitive = Str | Int | Bool | Float             # Объединение типов
+
+# Размеченное объединение (Discriminated Union в стиле TS/Flow)
+type Shape =
+    | { kind: "circle", radius Float }
+    | { kind: "rect", width Float, height Float }
+    | { kind: "square", size Float }
+
+fn area(s Shape) Float => match s {
+    { kind: "circle", radius } => 3.14159 * radius * radius,
+    { kind: "rect", width, height } => width * height,
+    { kind: "square", size } => size * size
+}
+
+# 5.3. Пересечения (Intersection Types '&')
+type Identifiable = { id Str }
+type Auditable = { created_at Int, updated_at Int }
+
+# Составной тип, содержащий поля всех компонентов
+type DatabaseUser = User & Identifiable & Auditable
+
+# 5.4. Метаоператоры `keyof` и индексы по типу
+type UserKeys = keyof User                           # "id" | "name" | "age" | "password"
+type UserNameType = User["name"]                     # Str
+
+# 5.5. Встроенные служебные типы (Utility Types)
+type PartialUser = Partial<User>                     # Все поля становятся опциональными (T?)
+type RequiredUser = Required<PartialUser>            # Все поля становятся обязательными
+type PublicUser = Omit<User, "password">             # Исключение поля из типа
+type CompactUser = Pick<User, "name" | "age">        # Выборка подмножества полей
+type UsersById = Record<UserId, User>                # Ассоциативная карта (Map/Dict)
+type ReadonlyPoint = Readonly<Point2D>               # Защита от мутаций
+
+# ==============================================================================
+# 6. АЛГЕБРАИЧЕСКИЕ ТИПЫ ДАННЫХ (ADTS / SUM TYPES)
+# ==============================================================================
+
+# Варианты без данных, с кортежами и со структурами
+pub enum State<T> {
+    Idle,
+    Loading,
+    Success(T),
+    Failure { code Int, message Str }
+}
+
+enum Role {
+    Admin,
+    Member { permissions List<Str> },
+    Guest
+}
+
+# ==============================================================================
+# 7. ДЖЕНЕРИКИ И ТРЕЙТЫ (TRAITS & GENERICS)
+# ==============================================================================
+
+# Дженерик-функция с ограничением
+fn print_id<T Identifiable>(item T) {
+    console.print(item.id)
+}
+
+# Определение трейта
+trait Printable {
+    fn to_str(self) Str
+}
+
+trait Addable<Rhs = Self> {
     type Output
     fn add(self, rhs Rhs) Output
 }
 
-type Point {
-    x Int
-    y Int
+# Реализация методов для структуры
+impl User {
+    fn is_adult(self) Bool => self.age >= 18
+
+    fn rename(self, new_name Str) User =>
+        self with { name: new_name }
 }
 
-# Или явный синтаксис перегрузки через символ оператора:
-impl Point {
-    fn operator +(self, other Point) Point =>
-        Point { x: self.x + other.x, y: self.y + other.y }
+# Реализация трейта для User
+impl Printable for User {
+    fn to_str(self) Str => "${self.name} (${self.age})"
 }
 
-let p1 = Point { x: 1, y: 2 }
-let p2 = Point { x: 3, y: 4 }
-let p3 = p1 + p2    # Point { x: 4, y: 6 }
-
-# Унарный минус (-x)
-impl Point {
-    fn operator -(self) Point =>
-        Point { x: -self.x, y: -self.y }
+# Extension-методы: добавление функционала к внешним типам
+impl Str {
+    fn shouted(self) Str => "${self.upper()}!"
 }
 
-let inverted = -p1  # Point { x: -1, y: -2 }
+# ==============================================================================
+# 8. ПЕРЕГРУЗКА ОПЕРАТОРОВ (OPERATOR OVERLOADING)
+# ==============================================================================
 
-# Точно так же через операторы можно перегрузить квадратные скобки:
-impl Matrix {
-    fn operator [](self, row Int, col Int) Int => ...
+type Vector2 {
+    x Float
+    y Float
+
+    fn new(x Float, y Float) Vector2 => Vector2 { x, y }
+}
+
+impl Vector2 {
+    # Перегрузка бинарного плюса '+'
+    pub operator +(self, other Vector2) Vector2 =>
+        Vector2 { x: self.x + other.x, y: self.y + other.y }
+
+    # Перегрузка унарного минуса '-'
+    pub operator -(self) Vector2 =>
+        Vector2 { x: -self.x, y: -self.y }
+
+    # Индексация массивом '[idx]'
+    pub operator [](self, index Int) Float => match index {
+        0 => self.x,
+        1 => self.y,
+        _ => panic("Индекс за пределами диапазона")
+    }
+}
+
+let v1 = Vector2.new(1.0, 2.0)
+let v2 = Vector2.new(3.0, 4.0)
+let v3 = v1 + v2                            # Vector2 { x: 4.0, y: 6.0 }
+let inv_v1 = -v1                            # Vector2 { x: -1.0, -2.0 }
+let v1_x = v1[0]                            # 1.0
+
+# ==============================================================================
+# 9. NULL-SAFETY, OPTION И ОБРАБОТКА ОШИБОК
+# ==============================================================================
+
+# Option: тип T? эквивалентен Option<T>
+fn find_user(id Int) User? =>
+    if id == 1 {
+        Some(alice)
+    } else {
+        None
+    }
+
+# Safe access '?.' и Coalescing '??'
+let target = find_user(1)
+let user_name = target?.name ?? "Гость"
+
+# Ранний выход из Option через '?'
+fn get_user_name_len(id Int) Int? {
+    let user = find_user(id)?
+    Some(user.name.len())
+}
+
+# Result: строгая типизация исключений и ошибок
+fn parse_port(str_val Str) Result<Int, Str> =>
+    if str_val.is_empty() {
+        Err("Порт не указан")
+    } else {
+        Ok(Int.parse(str_val))
+    }
+
+# Преобразование Option в Result через ok_or и проброс через '?'
+fn load_user_id(id Int) Result<Int, Str> {
+    let user = find_user(id).ok_or("Пользователь не найден")?
+    Ok(user.id)
+}
+
+# ==============================================================================
+# 10. СОПОСТАВЛЕНИЕ С ОБРАЗЦОМ (PATTERN MATCHING) И УПРАВЛЕНИЕ ПОТОКОМ
+# ==============================================================================
+
+# 10.1. Тернарные и блочные if-выражения
+let max_age = if alice.age > bob.age { alice.age } else { bob.age }
+
+# Скобки `(...)` для структур в условиях исключают коллизию тела блока
+if alice == (User { id: 1, name: "Алиса", age: 25, password: None }) {
+    console.print("Данные профиля совпадают")
+}
+
+# 10.2. Match с guards, rest '..' и деструктуризацией
+let state State<User> = Success(alice)
+
+let description = match state {
+    Idle => "Система спит",
+    Loading => "Загрузка...",
+    Success(User { name, age, .. }) if age >= 18 => "Взрослый: ${name}",
+    Success(User { name, .. }) => "Пользователь: ${name}",
+    Failure { code: 404, .. } => "Ресурс не найден",
+    Failure { message, .. } => "Ошибка: ${message}"
+}
+
+# 10.3. Альтернативы '|' и wildcard '_'
+let http_status = 404
+let status_msg = match http_status {
+    200 | 201 => "Успешно",
+    400 | 404 => "Ошибка клиента",
+    code if code >= 500 => "Ошибка сервера: ${code}",
+    _ => "Неизвестный статус"
+}
+
+# ==============================================================================
+# 11. КОЛЛЕКЦИИ, СРЕЗЫ И ЦИКЛЫ
+# ==============================================================================
+
+let numbers List<Int> = [1, 2, 3, 4, 5, 6]
+let empty_list List<Str> = []
+
+# Индексация и диапазоны срезов
+let first = numbers[0]
+let head_slice = numbers[..3]               # Срез [0, 3) -> [1, 2, 3]
+let mid_slice = numbers[2..4]               # Срез [2, 4) -> [3, 4]
+let tail_slice = numbers[3..]               # Срез от 3 до конца -> [4, 5, 6]
+let full_copy = numbers[..]                 # Полная копия
+
+# Паттерн-матчинг списков
+let list_view = match numbers {
+    [] => "пусто",
+    [one] => "один элемент: ${one}",
+    [head, ..tail] => "голова: ${head}, элементов в хвосте: ${tail.len()}"
+}
+
+# Итерация for-in
+for item in numbers {
+    console.print(item)
+}
+
+# Диапазонные циклы: полуоткрытый '..' и замкнутый '..='
+for i in 0..5 {                             # 0, 1, 2, 3, 4
+    console.print(i)
+}
+
+for i in 1..=5 {                            # 1, 2, 3, 4, 5
+    console.print(i)
+}
+
+# Цикл while
+let mut counter_loop = 3
+while counter_loop > 0 {
+    counter_loop -= 1
+}
+
+# ==============================================================================
+# 12. ПАЙПЛАЙНЫ (PIPES), КОМПОЗИЦИЯ И ПОТОКОВАЯ ОБРАБОТКА
+# ==============================================================================
+
+fn trim(s Str) Str => s.trim()
+fn to_upper(s Str) Str => s.upper()
+fn wrap_tag(s Str, tag Str) Str => "<${tag}>${s}</${tag}>"
+
+# Композиция функций вперед через '>>'
+let format_header = trim >> to_upper
+
+# Конвейерная обработка '.>' с плейсхолдером '_'
+let raw_input = "   заголовок статьи   "
+let rendered = raw_input
+    .> format_header
+    .> wrap_tag(_, "h1")                    # Подстановка в позицию '_'
+
+# Fluent API с геттером свойств `.fieldName` и лямбдами
+let users = [alice, bob]
+
+let names_of_adults = users
+    .filter(u => u.is_adult())
+    .map(.name)                             # Синтаксис-сахар для `u => u.name`
+
+# ==============================================================================
+# 13. ТОЧКА ВХОДА И ПРИМЕР СИСТЕМНОГО СЦЕНАРИЯ
+# ==============================================================================
+
+pub fn main() {
+    console.print("Запуск системы v${VERSION}")
+
+    # Создание экземпляра вызываемого класса (Callable)
+    let tax_calculator = Multiplier.new(2)
+    let base_price = 100
+    let total_price = tax_calculator(base_price)
+
+    console.print("Итоговая цена: ${total_price}")
+
+    # Использование расширения типа
+    console.print("готово".shouted())       # ВЫВОД: "ГОТОВО!"
+}
+
+# ==============================================================================
+# ДЖЕНЕРИКИ ВЫСШИХ ПОРЯДКОВ (HIGHER-KINDED TYPES — HKT): 2-Й И 3-Й ПОРЯДОК
+# ==============================================================================
+# Обозначение кайндов (Kinds / мета-типов типов):
+# • Обычный тип (Kind *): Int, Str, User
+# • Конструктор типа 1-го порядка (Kind * -> *): List<_>, Option<_>
+# • Конструктор типа 2-го порядка (Kind (* -> *) -> *): Functor<F<_>>, Monad<M<_>>
+# • Конструктор 3-го порядка (Kind ((* -> *) -> * -> *) -> *): MonadTrans<T<_, _>>
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. ДЖЕНЕРИКИ 2-ГО ПОРЯДКА (HIGHER-KINDED TYPES: KIND (* -> *))
+# Параметризация целым контейнером/эффектом F<_>, а не только типом значения T.
+# ------------------------------------------------------------------------------
+
+# 1.1. Классический Functor (Маппинг содержимого любого контейнера F)
+type Functor<F<_>> {
+    # Метод принимает F<A> и отображает в F<B> с помощью функции (A) => B
+    fn map<A, B>(fa F<A>, f (A) => B) F<B>
+}
+
+# Реализация Functor для List<_>
+impl Functor<List> {
+    fn map<A, B>(fa List<A>, f (A) => B) List<B> => match fa {
+        [] => [],
+        [head, ..tail] => [f(head), ..Functor<List>.map(tail, f)]
+    }
+}
+
+# Реализация Functor для Option<_>
+impl Functor<Option> {
+    fn map<A, B>(fa Option<A>, f (A) => B) Option<B> => match fa {
+        Some(val) => Some(f(val)),
+        None => None
+    }
+}
+
+# 1.2. Монада: абстракция последовательных цепочек вычислений (FlatMap)
+type Monad<M<_>> : Functor<M> {
+    # Упаковка чистого значения в эффект M
+    fn pure<A>(value A) M<A>
+
+    # Связывание / FlatMap
+    fn flat_map<A, B>(ma M<A>, f (A) => M<B>) M<B>
+
+    # Дефолтная реализация map через flat_map и pure
+    fn map<A, B>(ma M<A>, f (A) => B) M<B> =>
+        self.flat_map(ma, a => self.pure(f(a)))
+}
+
+# 1.3. Полиморфная функция, абстрагированная от конкретного контейнера/эффекта
+# Работает одинаково и для List, и для Option, и для Future!
+fn increment_all<C<_> : Functor<C>>(container C<Int>) C<Int> =>
+    Functor<C>.map(container, n => n + 1)
+
+let list_res = increment_all([1, 2, 3])             # List: [2, 3, 4]
+let opt_res = increment_all(Some(41))               # Option: Some(42)
+
+
+# 1.4. Естественное преобразование (Natural Transformation: F ~> G)
+# Морфизм между двумя контейнерами 1-го порядка без распаковки типов значений
+type Transform<F<_>, G<_>> {
+    # Конвертирует структуру F в структуру G для любого произвольного T
+    fn apply<T>(source F<T>) G<T>
+}
+
+# Реализация преобразования Option<T> -> List<T>
+type OptionToList : Transform<Option, List> {
+    fn apply<T>(source Option<T>) List<T> => match source {
+        Some(val) => [val],
+        None => []
+    }
+}
+
+let opt_to_list = OptionToList {}
+let converted = opt_to_list.apply(Some(100))        # [100]
+
+
+# ==============================================================================
+# РЕКУРСИВНЫЕ ДЖЕНЕРИКИ, F-BOUNDED ТИПЫ И АЛГЕБРА ТИПОВ
+# ==============================================================================
+
+# 1. F-Bounded Polymorphism (Самоссылочные дженерики / Self-referential Bounds)
+# Шаблон, где тип параметризуется самим собой (как Comparable<T> в Java/Rust)
+type Comparable<SelfType : Comparable<SelfType>> {
+    fn compare(self, other SelfType) Int
+
+    fn is_greater(self, other SelfType) Bool =>
+        self.compare(other) > 0
+}
+
+# Реализация: Money указывает самого себя в качестве типового аргумента
+type Money : Comparable<Money> {
+    pub amount Int
+    pub currency Str
+
+    fn compare(self, other Money) Int =>
+        self.amount - other.amount
+}
+
+# Обобщенная функция поиска максимума над любым F-Bounded типом
+fn max_item<T : Comparable<T>>(a T, b T) T =>
+    if a.is_greater(b) { a } else { b }
+
+
+# 2. Рекурсивные структуры данных (Деревья, Графы, Связные списки)
+# Рекурсивный дженерик-список (Cons-ячейка / Nil)
+enum LinkedList<T> {
+    Nil,
+    Cons(T, Box<LinkedList<T>>)               # Рекурсивная ссылка через Box/кучу
+}
+
+# Рекурсивное бинарное дерево поиска (BST)
+type TreeNode<T : Comparable<T>> {
+    pub value T
+    pub left TreeNode<T>?                    # Рекурсивная ссылка через опционал
+    pub right TreeNode<T>?
+
+    fn new(value T) TreeNode<T> =>
+        TreeNode { value, left: None, right: None }
+
+    # Рекурсивный метод вставки
+    fn insert(self, new_val T) TreeNode<T> => match self {
+        node if new_val.compare(node.value) < 0 =>
+            node with { left: Some(node.left?.insert(new_val) ?? TreeNode.new(new_val)) },
+        node =>
+            node with { right: Some(node.right?.insert(new_val) ?? TreeNode.new(new_val)) }
+    }
+}
+
+
+# 3. Рекурсивное построение API: Fluent Builder / Method Chaining
+# Дженерик 'SelfType' возвращает конкретный дочерний класс, сохраняя цепочку вызовов
+type QueryBuilder<SelfType : QueryBuilder<SelfType>> {
+    table Str
+    filters List<Str>
+
+    # Возврат конкретного финального типа через F-bound
+    fn where_clause(self, condition Str) SelfType =>
+        (self with { filters: self.filters.append(condition) }) as SelfType
+}
+
+type UserQueryBuilder : QueryBuilder<UserQueryBuilder> {
+    include_deleted Bool
+
+    fn with_deleted(self) UserQueryBuilder =>
+        self with { include_deleted: true }
+}
+
+# Цепочка сохраняет доступ к специфичным методам UserQueryBuilder
+let query = UserQueryBuilder { table: "users", filters: [], include_deleted: false }
+    .where_clause("age >= 18")
+    .with_deleted()
+
+
+# 4. Рекурсивные TypeScript-style типы (DeepReadonly, JSON AST)
+# Определение произвольного валидного JSON AST через рекурсивный Sum Type
+type JsonValue =
+    | None
+    | Bool
+    | Float
+    | Str
+    | List<JsonValue>                        # Рекурсивная ссылка на список значений
+    | Record<Str, JsonValue>                 # Рекурсивная ссылка на словарь
+
+# Рекурсивный мета-тип DeepReadonly (по аналогии с TypeScript conditional types)
+type DeepReadonly<T> = match T {
+    List<infer U> => ReadonlyList<DeepReadonly<U>>,
+    Record<Str, infer U> => ReadonlyRecord<Str, DeepReadonly<U>>,
+    infer Primitive => Primitive
+}
+
+
+# 5. Type-Level вычисления на рекурсивных типах (Peano Numbers / Числа Пеано)
+# Вычисление размерностей на этапе компиляции (Haskell / Rust typenum)
+type Zero
+type Succ<N>                                 # Конструктор следующего числа N + 1
+
+type One = Succ<Zero>
+type Two = Succ<One>
+type Three = Succ<Two>
+
+# Рекурсивный безопасный вектор с фиксированной длиной на уровне типов
+type FixedVector<T, N> {
+    data List<T>
+
+    # Добавление элемента увеличивает счетчик N -> Succ<N> на этапе проверки типов
+    fn push(self, item T) FixedVector<T, Succ<N>> =>
+        FixedVector { data: self.data.append(item) }
+}
+
+let empty_vec FixedVector<Int, Zero> = FixedVector { data: [] }
+let vec_one = empty_vec.push(10)            # Тип: FixedVector<Int, One>
+let vec_two = vec_one.push(20)              # Тип: FixedVector<Int, Two>
+
+# ------------------------------------------------------------------------------
+# 2. ДЖЕНЕРИКИ 3-ГО ПОРЯДКА (3RD-ORDER KINDS: ((* -> *) -> * -> *))
+# Абстракция над типами, которые сами принимают конструкторы типов.
+# Применяется в трансформаторах эффектов, свободных монадах и Tagless Final.
+# ------------------------------------------------------------------------------
+
+# 2.1. Монадный трансформатор (Monad Transformer)
+# Trans<_<_, _>> — это конструктор 3-го порядка.
+# Он принимает:
+#   1) Базовую монаду M<_> (конструктор 1-го порядка)
+#   2) Тип значения A
+# И производит объединенный стек вычислений Trans<M, A>
+type MonadTrans<Trans<M<_>, _>> {
+    # Функция "lift": поднимает эффект из внутренней монады M в трансформер Trans<M>
+    fn lift<M<_> : Monad<M>, A>(base_effect M<A>) Trans<M, A>
+}
+
+# Конкретный трансформер OptionT: добавляет возможность отсутствия значения (Option)
+# поверх любой произвольной базовой монады M<_> (например, Task<Option<A>> или List<Option<A>>)
+type OptionT<M<_>, A> {
+    pub run M<Option<A>>                             # Вложенный стек эффектов
+
+    fn new(run M<Option<A>>) OptionT<M, A> =>
+        OptionT { run }
+
+    # FlatMap через внутреннюю композицию
+    fn flat_map<B>(self, f (A) => OptionT<M, B>, monad Monad<M>) OptionT<M, B> =>
+        OptionT.new(
+            monad.flat_map(self.run, opt_a => match opt_a {
+                Some(a) => f(a).run,
+                None => monad.pure(None)
+            })
+        )
+}
+
+# Реализация MonadTrans 3-го порядка для OptionT
+impl MonadTrans<OptionT> {
+    fn lift<M<_> : Monad<M>, A>(base_effect M<A>) OptionT<M, A> => {
+        let monad = Monad<M>
+        # Оборачиваем чистый результат M<A> в M<Option<A>> через Some
+        let lifted_run = monad.map(base_effect, a => Some(a))
+        OptionT.new(lifted_run)
+    }
+}
+
+
+# 2.2. Мета-абстракция 3-го порядка над вычислительными движками (Tagless Final Algebra)
+# Конструктор Interpreter<_<_>> принимает абстрактный вычислительный контекст F<_>
+type LanguageAlgebra<F<_>> {
+    fn number(val Int) F<Int>
+    fn add(left F<Int>, right F<Int>) F<Int>
+    fn text(val Str) F<Str>
+}
+
+# Мета-компилятор 3-го порядка: умеет транслировать любую программу из
+# одного интерпретатора F<_> в другой G<_>, используя естественное преобразование T<F, G>
+type PipelineCompiler<F<_>, G<_>, Trans : Transform<F, G>> {
+    fn compile<A>(expr F<A>, transformer Trans) G<A> =>
+        transformer.apply(expr)
 }
