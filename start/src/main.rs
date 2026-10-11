@@ -1,65 +1,175 @@
-mod parser_tests;
-
-use std::fs;
 use pest::Parser;
 use pest_derive::Parser;
-use pest::iterators::Pair;
 
 #[derive(Parser)]
 #[grammar = "rl.pest"]
-pub struct RazomyParser;
+struct LangParser;
 
-// Рекурсивная функция для обхода дерева
-fn format_tree(pair: Pair<Rule>, depth: usize, output: &mut String) {
-    let indent = "  ".repeat(depth);
-    let rule = pair.as_rule();
+// ---------------------------------------------------------
+// 1. AST: Всего 5 вариантов токенов
+// ---------------------------------------------------------
+#[derive(Debug, Clone, PartialEq)]
+pub enum Token {
+    Word(String),
+    Number(f64),
+    String(String),
+    Op(String),
+    Group(char, Vec<Sentence>), // Вложенные блоки: '(', '[', или '{'
+}
 
-    // Получаем дочерние элементы
-    let inner: Vec<Pair<Rule>> = pair.clone().into_inner().collect();
+pub type Sentence = Vec<Token>;
 
-    if inner.is_empty() {
-        // Листовой узел (терминал): выводим правило и само значение текста
-        let text = pair.as_str().trim();
-        output.push_str(&format!("{}- {:?}: {:?}\n", indent, rule, text));
-    } else {
-        // Промежуточный узел: выводим название правила и рекурсивно идем внутрь
-        output.push_str(&format!("{}- {:?}\n", indent, rule));
-        for child in inner {
-            format_tree(child, depth + 1, output);
+// ---------------------------------------------------------
+// 2. Препроцессор: отступы Python -> фигурные скобки { }
+// ---------------------------------------------------------
+pub fn desugar_python_indent(input: &str) -> String {
+    let mut result = String::new();
+    let mut indent_stack = vec![0];
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        // Игнорируем пустые строки и комментарии
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Считаем пробелы в начале (1 таб = 4 пробела)
+        let indent = line
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| if c == '\t' { 4 } else { 1 })
+            .sum::<usize>();
+
+        let current_indent = *indent_stack.last().unwrap();
+
+        if indent > current_indent {
+            indent_stack.push(indent);
+            result.push_str(" { \n");
+        } else if indent < current_indent {
+            while indent < *indent_stack.last().unwrap() {
+                indent_stack.pop();
+                result.push_str(" } \n");
+            }
+        }
+
+        result.push_str(trimmed);
+        result.push('\n');
+    }
+
+    // Закрываем висящие скобки в конце
+    while indent_stack.len() > 1 {
+        indent_stack.pop();
+        result.push_str(" }\n");
+    }
+
+    result
+}
+
+// ---------------------------------------------------------
+// 3. Конвертация Pest Pairs в наше чистое AST
+// ---------------------------------------------------------
+fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
+    match pair.as_rule() {
+        Rule::word => Token::Word(pair.as_str().to_string()),
+        Rule::number => Token::Number(pair.as_str().parse().unwrap()),
+        // Rule::string => {
+        //     let s = pair.as_str();
+        //     Token::String(s[1..s.len() - 1].to_string()) // убираем внешние кавычки
+        // }
+        Rule::op => Token::Op(pair.as_str().to_string()),
+        Rule::paren_group => Token::Group('(', parse_sentences(pair)),
+        Rule::bracket_group => Token::Group('[', parse_sentences(pair)),
+        Rule::brace_group => Token::Group('{', parse_sentences(pair)),
+        _ => unreachable!("Неизвестный токен: {:?}", pair.as_rule()),
+    }
+}
+
+fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
+    let mut sentences = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::sentence {
+            let tokens = inner.into_inner().map(parse_token).collect();
+            sentences.push(tokens);
+        }
+    }
+    sentences
+}
+
+pub fn parse_code(source: &str) -> Vec<Sentence> {
+    let desugared = desugar_python_indent(source);
+    let pairs = LangParser::parse(Rule::program, &desugared)
+        .expect("Ошибка синтаксического анализа")
+        .next()
+        .unwrap();
+
+    parse_sentences(pairs)
+}
+
+// ---------------------------------------------------------
+// 4. Пример «нарезки»: интерпретатор/обработчик через match
+// ---------------------------------------------------------
+fn run_program(sentences: &[Sentence]) {
+    for sentence in sentences {
+        match sentence.as_slice() {
+            // let x = 10
+            [Token::Word(w), Token::Word(name), Token::Op(eq), val]
+            if w == "let" && eq == "=" =>
+                {
+                    println!("[ПЕРЕМЕННАЯ] Объявлена: {} со значением {:?}", name, val);
+                }
+
+            // def name(args): блок
+            // или fn name(args) { блок }
+            [Token::Word(kw), Token::Word(name), Token::Group('(', args), Token::Group('{', body)]
+            if kw == "def" || kw == "fn" =>
+                {
+                    println!("[ФУНКЦИЯ] Имя: '{}'", name);
+                    println!("          Аргументы: {:?}", args);
+                    println!("          Тело:");
+                    run_program(body); // рекурсивно выполняем тело
+                }
+
+            // if cond: блок
+            [Token::Word(kw), cond @ .., Token::Group('{', body)] if kw == "if" => {
+                println!("[IF ВЕТКА] Условие: {:?}", cond);
+                run_program(body);
+            }
+
+            // print "строка" / log x
+            [Token::Word(cmd), args @ ..] => {
+                println!("[ВЫЗОВ КОМАНДЫ] {} с аргументами: {:?}", cmd, args);
+            }
+
+            _ => println!("[ДРУГОЕ] {:?}", sentence),
         }
     }
 }
 
+// ---------------------------------------------------------
+// 5. Тестирование
+// ---------------------------------------------------------
 fn main() {
-    let source_path = "./src/example.rl";
-    let output_path = "rl-tree.txt";
+    // Входной код в стиле ПИТОНА (с отступами и двоеточиями)
+    let python_code = r#"
+# Это глобальный скрипт
+let global_var = 100
 
-    let source_code = fs::read_to_string(source_path)
-        .expect("Не удалось прочитать файл исходного кода");
+def test_handler(x, y):
+    let local = 42
+    if x > 10:
+        print "x is greater!"
+        log local
 
-    println!("Парсим комплексный код спецификации...");
-    match RazomyParser::parse(Rule::Program, &source_code) {
-        Ok(parsed_tree) => {
-            println!("✅ УСПЕШНО!\n");
+print "finished"
+"#;
 
-            let mut tree_string = String::new();
+    println!("--- 1. ИСХОДНЫЙ КОД ---");
+    println!("{}", python_code);
 
-            // Обходим корневые элементы
-            for pair in parsed_tree {
-                format_tree(pair, 0, &mut tree_string);
-            }
+    println!("--- 2. ПАРСИНГ В УНИВЕРСАЛЬНОЕ AST ---");
+    let ast = parse_code(python_code);
+    println!("{:#?}", ast);
 
-            // 1. Сохраняем дерево в файл
-            fs::write(output_path, &tree_string)
-                .expect("Не удалось записать дерево в файл");
-            println!("Дерево успешно сохранено в файл: {}", output_path);
-
-            // 2. (Опционально) Если хотите увидеть превью в консоли:
-            // println!("\nПредпросмотр дерева:\n{}", tree_string);
-        }
-        Err(err) => {
-            println!("❌ ОШИБКА ПАРСИНГА:\n");
-            eprintln!("{}", err);
-        }
-    }
+    println!("\n--- 3. НАРЕЗКА И ВЫПОЛНЕНИЕ ---");
+    run_program(&ast);
 }

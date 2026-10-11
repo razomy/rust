@@ -1,259 +1,116 @@
-// ============================================================================
-// 1. ПРОБЕЛЫ, ПЕРЕНОСЫ СТРОК И КОММЕНТАРИИ
-// ============================================================================
-WHITESPACE = _{ " " | "\t" }
-NEWLINE    = _{ "\r\n" | "\n" }
+// === ОСНОВНАЯ СТРУКТУРА ===
+program    = { SOI ~ STATEMENTS ~ EOI }
+STATEMENTS = _{ SEP* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ SEP* }
+sentence   = { token+ }
 
-// Разделитель инструкций (точка с запятой или перенос строки)
-LineTerm = _{ (";" | NEWLINE)+ }
-
-// БАЗОВЫЕ КОММЕНТАРИИ (Явные правила без авто-вставки между токенами)
-BlockComment = { "##" ~ (!"##" ~ ANY)* ~ "##" }
-LineComment  = { !"###" ~ "#" ~ (!NEWLINE ~ ANY)* }
-DocComment   = { "###" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
-
-// Обычный комментарий (строчный или блочный)
-Comment = _{ BlockComment | LineComment }
-
-// ============================================================================
-// 2. КЛЮЧЕВЫЕ СЛОВА
-// ============================================================================
-K_IM       = @{ "im" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_VR       = @{ "vr" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_MUT      = @{ "mut" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FN       = @{ "fn" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_OUT      = @{ "out" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_TYPE     = @{ "type" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_MATCH    = @{ "match" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_IF       = @{ "if" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_ELSE     = @{ "else" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FOR      = @{ "for" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_IN       = @{ "in" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_WHILE    = @{ "while" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_RETURN   = @{ "return" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_BREAK    = @{ "break" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_CONTINUE = @{ "continue" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_NONE     = @{ "none" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_SOME     = @{ "Some" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_OK       = @{ "Ok" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_ERR      = @{ "Err" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_TRUE     = @{ "true" ~ !(ASCII_ALPHANUMERIC | "_") }
-K_FALSE    = @{ "false" ~ !(ASCII_ALPHANUMERIC | "_") }
-
-RESERVED = _{
-    K_IM | K_VR | K_MUT | K_FN | K_OUT | K_TYPE | K_MATCH
-  | K_IF | K_ELSE | K_FOR | K_IN | K_WHILE | K_RETURN
-  | K_BREAK | K_CONTINUE | K_NONE | K_SOME | K_OK | K_ERR
-  | K_TRUE | K_FALSE
+token = _{
+    group
+  | literal
 }
 
-// ============================================================================
-// 3. БАЗОВЫЕ ТОКЕНЫ И СТРОКИ
-// ============================================================================
-IDENT  = @{ !RESERVED ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-NUMBER = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+// === РАЗДЕЛИТЕЛИ ===
+SEP = _{ NEWLINE | SEMICOLON | COLON }
 
-RawString = ${
-    "\"" ~ PUSH(RawTag) ~ (NEWLINE)? ~
-    RawStringInner* ~
-    "\"" ~ POP
-}
-RawTag         = @{ ASCII_ALPHANUMERIC* }
-RawStringInner = _{ !("\"" ~ PEEK) ~ (RawString | RawStringChar) }
-RawStringChar  = { ANY }
 
-STRING        = ${ ("\"" ~ (StrText | Interpolation)* ~ "\"") | RawString }
-StrText       = @{ StrChar+ }
-StrChar       = _{ (!("\"" | "${" | "\\") ~ ANY) | ("\\" ~ ANY) }
-Interpolation = !{ "${" ~ Expr ~ "}" }
-
-// ============================================================================
-// 4. СИСТЕМА ТИПОВ
-// ============================================================================
-Type = { (FuncType | ArrayType | BaseType) ~ OptionType? }
-
-BaseType   = { IDENT ~ TypeArgs? }
-ArrayType  = { "[" ~ Type ~ "]" }
-FuncType   = { "(" ~ (Type ~ ("," ~ Type)*)? ~ ")" ~ "->" ~ Type }
-TypeArgs   = { "(" ~ Type ~ ("," ~ Type)* ~ ","? ~ ")" }
-OptionType = { "?" }
-
-GenericConstraint = { IDENT ~ Type? ~ ("=" ~ Type)? }
-MetaGenerics      = { "<" ~ GenericConstraint ~ ("," ~ GenericConstraint)* ~ ","? ~ ">" }
-
-TypeParamDef = { IDENT ~ Type? ~ ("=" ~ (Literal | Type))? }
-TypeParams   = { "(" ~ TypeParamDef ~ ("," ~ TypeParamDef)* ~ ","? ~ ")" }
-
-// ============================================================================
-// 5. ВЫРАЖЕНИЯ (Expressions) — Промежуточные уровни сделаны тихими (`_`)
-// ============================================================================
-Expr = { IfExpr | MatchExpr | Closure | FlowExpr | RangeExpr }
-
-FlowExpr     = { ReturnExpr | BreakExpr | ContinueExpr }
-ReturnExpr   = { K_RETURN ~ Expr? }
-BreakExpr    = { K_BREAK }
-ContinueExpr = { K_CONTINUE }
-
-Closure          = { (ClosureParamList | IDENT) ~ "=" ~ (Block | Expr) }
-ClosureParamList = { "(" ~ (IDENT ~ ("," ~ IDENT)*)? ~ ","? ~ ")" }
-
-RangeOp    = { "..=" | ".." }
-CoalesceOp = { "??" }
-LogicOrOp  = { "||" | "or" }
-LogicAndOp = { "&&" | "and" }
-BitOrOp    = { "|" }
-BitXorOp   = { "^" }
-BitAndOp   = { "&" }
-CmpOp      = { "==" | "!=" | ">=" | "<=" | ">" | "<" }
-AddOp      = { "+" | "-" }
-MulOp      = { "*" | "/" | "%" }
-
-RangeExpr    = _{ CoalesceExpr ~ (RangeOp ~ CoalesceExpr)? }
-CoalesceExpr = _{ LogicOrExpr ~ (CoalesceOp ~ LogicOrExpr)* }
-LogicOrExpr  = _{ LogicAndExpr ~ (LogicOrOp ~ LogicAndExpr)* }
-LogicAndExpr = _{ BitOrExpr ~ (LogicAndOp ~ BitOrExpr)* }
-BitOrExpr    = _{ BitXorExpr ~ (BitOrOp ~ BitXorExpr)* }
-BitXorExpr   = _{ BitAndExpr ~ (BitXorOp ~ BitAndExpr)* }
-BitAndExpr   = _{ CmpExpr ~ (BitAndOp ~ CmpExpr)* }
-CmpExpr      = _{ MathExpr ~ (CmpOp ~ MathExpr)* }
-MathExpr     = _{ Term ~ (AddOp ~ Term)* }
-Term         = _{ Unary ~ (MulOp ~ Unary)* }
-
-Unary   = _{ UnaryOp* ~ Factor }
-UnaryOp = { "-" | "!" | "not" }
-
-Factor         = _{ Primary ~ Postfix* }
-Postfix        = _{ OptChainMethod | OptChainField | MethodCall | FieldAccess | CallArgs | IndexAccess | TryOp }
-TryOp          =  { "?" }
-OptChainMethod =  { NEWLINE* ~ "?." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
-OptChainField  =  { NEWLINE* ~ "?." ~ IDENT }
-MethodCall     =  { NEWLINE* ~ "." ~ IDENT ~ "(" ~ ArgList? ~ ")" }
-FieldAccess    =  { NEWLINE* ~ "." ~ IDENT }
-IndexAccess    =  { "[" ~ Expr ~ "]" }
-CallArgs       =  { "(" ~ ArgList? ~ ")" }
-ArgList        =  { NEWLINE* ~ Expr ~ ("," ~ NEWLINE* ~ Expr)* ~ ","? ~ NEWLINE* }
-
-Primary = _{
-    ConstructorCall
-  | TupleExpr
-  | Literal
-  | StructInit
-  | IDENT
-  | "(" ~ Expr ~ ")"
+// === ГРУППЫ ===
+group = {
+  brace_group
+  | bracket_group
+  | paren_group
+  | angle_group
 }
 
-TupleExpr       = { "(" ~ Expr ~ ("," ~ Expr)+ ~ ","? ~ ")" }
-ConstructorCall = { (K_SOME | K_OK | K_ERR) ~ "(" ~ ArgList? ~ ")" }
+brace_group       = { BRACE_OPEN ~ STATEMENTS ~ BRACE_CLOSE }
+bracket_group     = { BRACKET_OPEN ~ STATEMENTS ~ BRACKET_CLOSE }
+paren_group       = { PAREN_OPEN ~ STATEMENTS ~ PAREN_CLOSE }
+angle_group       = { ANGLE_OPEN ~ STATEMENTS ~ ANGLE_CLOSE }
 
-Literal   = _{ NUMBER | STRING | K_TRUE | K_FALSE | ArrayInit | K_NONE }
-ArrayInit = { "[" ~ NEWLINE* ~ (Expr ~ ("," ~ NEWLINE* ~ Expr)*)? ~ ","? ~ NEWLINE* ~ "]" }
 
-Spread      = { ".." ~ Expr? }
-StructInit  = { "{" ~ NEWLINE* ~ (StructField ~ ("," ~ NEWLINE* ~ StructField)*)? ~ ","? ~ NEWLINE* ~ "}" }
-StructField = { Spread | IDENT ~ ":"? ~ Expr }
-
-// ============================================================================
-// 6. БЛОКИ И КОНТРОЛЬ ПОТОКА
-// ============================================================================
-Block = {
-    "{" ~ NEWLINE* ~
-    (ItemInBlock ~ LineTerm*)* ~
-    (Expr ~ Comment?)? ~
-    NEWLINE* ~ "}"
+// === ЛИТЕРАЛЫ И ТОКЕНЫ ===
+literal = {
+    number
+  | word
+  | single_quote_group
+  | double_quote_group
+  | backtick_quote_group
+  | op
 }
 
-ItemInBlock = _{
-    Comment
-  | ((FnDecl | Stmt) ~ Comment?)
+number = @{ DIGIT ~ (DOT ~ DIGIT)? }
+// Слово начинается с буквы/_, дальше могут идти буквы/_ и цифры
+word   = @{ WORD_START ~ WORD_PART* }
+
+// Правильное экранирование: (Слеш + любой символ) или (Любой символ)
+single_quote_group   = @{ SINGLE_QUOTE ~ (!SINGLE_QUOTE ~ (BACKSLASH ~ ANY | ANY))* ~ SINGLE_QUOTE }
+double_quote_group   = @{ DOUBLE_QUOTE ~ (!DOUBLE_QUOTE ~ (BACKSLASH ~ ANY | ANY))* ~ DOUBLE_QUOTE }
+backtick_quote_group = @{ BACKTICK ~ (!BACKTICK ~ (BACKSLASH ~ ANY | ANY))* ~ BACKTICK }
+comment_group     = { DOUBLE_HASH ~ (!DOUBLE_HASH ~ ANY)* ~ DOUBLE_HASH }
+
+op = @{ (!OPERATOR_GROUP ~ !SEP ~ !WHITESPACE ~ (PUNCTUATION | SYMBOL))+ }
+
+// === ИМЕНОВАННЫЕ СОСТАВНЫЕ СИМВОЛЫ ===
+DOUBLE_HASH = _{ HASH ~ HASH }
+DIGIT       = _{ ASCII_DIGIT+ }
+WORD_START  = _{ ASCII_ALPHA | UNDERSCORE }
+WORD_PART   = _{ ASCII_ALPHANUMERIC | UNDERSCORE }
+
+OPERATOR_GROUP = _{
+    PAREN_OPEN
+  | PAREN_CLOSE
+  | BRACKET_OPEN
+  | BRACKET_CLOSE
+  | BRACE_OPEN
+  | BRACE_CLOSE
+  | ANGLE_OPEN
+  | ANGLE_CLOSE
+  | DOUBLE_HASH
+  | SINGLE_QUOTE
+  | DOUBLE_QUOTE
+  | BACKTICK
 }
 
-IfExpr = {
-    (K_IF ~ Expr ~ Block ~ (K_ELSE ~ (IfExpr | Block))?)
-  | (K_IF ~ InlineCond ~ Expr ~ K_ELSE ~ Expr)
-}
+// === ИМЕНОВАННЫЕ КОНСТАНТЫ СИМВОЛОВ ===
+// Split / Whitespace
+SPACE      = _{ " " }
+WHITESPACE = _{ SPACE | "\t" }
+DOT        = _{ "." }
+COMMA      = _{ "," }
+COLON      = _{ ":" }
+SEMICOLON  = _{ ";" }
+EQUALS     = _{ "=" }
+PIPE       = _{ "|" }
+PERCENT    = _{ "%" }
 
-InlineCond = { InlineCmp ~ ((LogicAndOp | LogicOrOp) ~ InlineCmp)* }
-InlineCmp  = { MathExpr ~ (CmpOp ~ Unary)? }
+// Join / Word characters
+DASH       = _{ "-" }
+UNDERSCORE = _{ "_" }
+PLUS       = _{ "+" }
+CARET      = _{ "^" }
+TILDE      = _{ "~" }
+ASTERISK   = _{ "*" }
+AMPERSAND  = _{ "&" }
+AT_SIGN    = _{ "@" }
 
-MatchExpr = { K_MATCH ~ Expr ~ "{" ~ NEWLINE* ~ (MatchArm ~ ("," | NEWLINE)+)* ~ MatchArm? ~ NEWLINE* ~ "}" }
-MatchArm  = { Pattern ~ (K_IF ~ Expr)? ~ "=" ~ (Block | Expr) }
+// Delimiters & Groups
+DOUBLE_QUOTE = _{ "\"" }
+SINGLE_QUOTE = _{ "'" }
+BACKTICK     = _{ "`" }
 
-WildcardPat = { "_" }
-RestPat     = { ".." }
+ANGLE_OPEN   = _{ "<" }
+ANGLE_CLOSE  = _{ ">" }
+PAREN_OPEN   = _{ "(" }
+PAREN_CLOSE  = _{ ")" }
+BRACKET_OPEN = _{ "[" }
+BRACKET_CLOSE= _{ "]" }
+BRACE_OPEN   = _{ "{" }
+BRACE_CLOSE  = _{ "}" }
 
-Pattern = _{
-    WildcardPat
-  | TuplePat
-  | ArrayPat
-  | StructPat
-  | VariantPat
-  | Literal
-  | VarPat
-}
-TuplePat       = { "(" ~ Pattern ~ ("," ~ Pattern)+ ~ ","? ~ ")" }
-ArrayPat       = { "[" ~ (Pattern ~ ("," ~ Pattern)*)? ~ (","? ~ RestPat)? ~ ","? ~ "]" }
-VariantPat     = { (K_SOME | K_OK | K_ERR | (K_NONE ~ "(") | IDENT) ~ ("(" ~ (Pattern ~ ("," ~ Pattern)*)? ~ ","? ~ ")")? }
-VarPat         = { IDENT }
-StructPat      = { "{" ~ (StructFieldPat ~ ("," ~ StructFieldPat)*)? ~ (","? ~ RestPat)? ~ ","? ~ "}" }
-StructFieldPat = { IDENT ~ (":"? ~ Pattern)? }
+// Slashes
+SLASH     = _{ "/" }
+BACKSLASH = _{ "\\" }
 
-// ============================================================================
-// 7. ИНСТРУКЦИИ (Statements)
-// ============================================================================
-Stmt = _{
-    VrStmt
-  | AssignStmt
-  | WhileStmt
-  | ForStmt
-  | FlowStmt
-  | ExprStmt
-}
-
-VrStmt     = { K_VR ~ K_MUT? ~ Pattern ~ Type? ~ "=" ~ Expr }
-AssignOp   = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" }
-AssignStmt = { (IDENT ~ Postfix*) ~ AssignOp ~ Expr }
-WhileStmt  = { K_WHILE ~ Expr ~ Block }
-ForStmt    = { K_FOR ~ Pattern ~ K_IN ~ Expr ~ Block }
-
-FlowStmt   = { FlowExpr }
-ExprStmt   = { Expr }
-
-// ============================================================================
-// 8. ДЕКЛАРАЦИИ ВЕРХНЕГО УРОВНЯ И ПРОГРАММА
-// ============================================================================
-Program = { SOI ~ LineTerm* ~ (Item ~ LineTerm*)* ~ EOI }
-
-Item = _{
-    Comment
-  | (DeclOrStmt ~ Comment?)
-}
-
-DeclOrStmt = _{ ImportDecl | TypeDecl | FnDecl | Stmt }
-
-ImportPath   = { STRING | DottedIdent }
-ImportDecl   = { K_IM ~ ImportTarget ~ ("=" ~ ImportPath)? }
-ImportTarget = { ImportList | DottedIdent }
-DottedIdent  = { IDENT ~ ("." ~ IDENT)* }
-ImportList   = { "{" ~ IDENT ~ ("," ~ IDENT)* ~ ","? ~ "}" }
-
-TypeDecl     = { DocComment* ~ K_TYPE ~ IDENT ~ MetaGenerics? ~ TypeParams? ~ (TypeAliasDef | UnionDef | RecordDef)? }
-TypeAliasDef = { "=" ~ (RecordDef | Type) }
-RecordDef    = { "{" ~ NEWLINE* ~ (FieldDef ~ (("," | NEWLINE)+ ~ FieldDef)*)? ~ ","? ~ NEWLINE* ~ "}" }
-FieldDef     = { DocComment* ~ IDENT ~ ":"? ~ Type }
-
-UnionDef        = { "=" ~ NEWLINE* ~ "|"? ~ VariantDef ~ (NEWLINE* ~ "|" ~ VariantDef)* }
-VariantDef      = { VariantName ~ ("(" ~ (VariantFieldDef ~ ("," ~ VariantFieldDef)*)? ~ ","? ~ ")")? }
-VariantName     = { K_SOME | K_NONE | IDENT }
-VariantFieldDef = { RecordDef | (IDENT ~ Type) | Type }
-
-FnDecl     = { DocComment* ~ K_OUT? ~ K_FN ~ IDENT ~ MetaGenerics? ~ FnArgs? ~ FnBody }
-FnArgs     = { "(" ~ (ArgDef ~ ("," ~ ArgDef)*)? ~ ","? ~ ")" }
-ArgDef     = { IDENT ~ Type? ~ ("=" ~ Expr)? }
-ReturnType = { Type }
-
-FnBody = {
-    (ReturnType ~ "=" ~ FnExprBody)
-  | ("=" ~ FnExprBody)
-  | (ReturnType? ~ Block)
-}
-FnExprBody = { NEWLINE* ~ Expr }
+// Priority & Misc
+EXCLAMATION = _{ "!" }
+QUESTION    = _{ "?" }
+HASH        = _{ "#" }
+DOLLAR      = _{ "$" }
