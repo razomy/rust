@@ -7,7 +7,7 @@
 # • Функции: однострочники через '=' (Kotlin, Scala); многострочные через '{ }' (Rust, Swift); '=>' — только в типах, лямбдах и match.
 # • Логические операторы: строго словами `and`, `or`, `not` (Python).
 # • Null-safety & Ошибки: Option/Result, операторы '?', '?.', '??' (Rust, Kotlin, Swift, TypeScript).
-# • Конвейеры: явный pipe '|>', композиция '>>', плейсхолдер '_' и member accessor '.field' (F#, Elixir, Scala, Swift).
+# • Конвейеры: явный pipe '.>'(e.g |>), композиция '>>', плейсхолдер '_' и member accessor '.field' (F#, Elixir, Scala, Swift).
 # • Скобки в заголовках: литералы записей внутри if/while/for/match берутся в скобки: (Type { ... }) во избежание неоднозначности блока (Rust).
 # ==============================================================================
 
@@ -56,10 +56,10 @@ let mut counter = 0                         # Явное объявление и
 counter = counter + 1                       # Переприсваивание переменной — Based on: Rust, C
 counter += 1                                # Составное присваивание с инкрементом — Based on: C, Python, Rust
 
-# 3. Варианты объявления функций, return, Unit и лямбды
-fn square1(x Int) = x * x                   # Однострочная функция с выводом типа возврата — Based on: Kotlin, Scala
-fn square2(x Int, b Int) = x * b            # Однострочная функция с двумя аргументами — Based on: Kotlin
-fn square3(x Int, b Int) Int = x * b        # Однострочник с явным возвращаемым типом — Based on: Scala, Kotlin
+# 3. Варианты объявления функций, return, None и лямбды
+fn square1(x Int) => x * x                   # Однострочная функция с выводом типа возврата — Based on: Kotlin, Scala
+fn square2(x Int, b Int) => x * b            # Однострочная функция с двумя аргументами — Based on: Kotlin
+fn square3(x Int, b Int) Int => x * b        # Однострочник с явным возвращаемым типом — Based on: Scala, Kotlin
 
 # Функция с блочным телом и неявным возвратом последнего выражения — Based on: Rust
 fn square4(x Int, b Int) Int {
@@ -75,31 +75,31 @@ fn abs(x Int) Int {
     x                                       # Неявный возврат хвостового выражения — Based on: Rust, Ruby
 }
 
-fn add(a Int, b Int = 1) Int = a + b        # Параметры со значениями по умолчанию — Based on: Python, Kotlin, TypeScript
+fn add(a Int, b Int = 1) Int => a + b        # Параметры со значениями по умолчанию — Based on: Python, Kotlin, TypeScript
 
-# Функция, возвращающая тип Unit (пустой результат) — Based on: Kotlin, Scala, Rust
-fn log_msg(msg Str) Unit {
+# Функция, возвращающая тип None (пустой результат) — Based on: Kotlin, Scala, Rust
+fn log_msg(msg Str) None {
     console.print(msg)
 }
 
-# Функция без указания возвращаемого типа (Unit по умолчанию) — Based on: Kotlin, Go
+# Функция без указания возвращаемого типа (None по умолчанию) — Based on: Kotlin, Go
 fn log_msg_short(msg Str) {
     console.print(msg)
 }
 
 # Обобщенная (generic) функция — Based on: Rust, TypeScript
-fn identity<T>(let T) T = let
+fn identity<T>(let T) T => let
 
 # Обобщенная функция с ограничением типа (type constraint) — Based on: Rust, Go, C#
-fn calc<T Number>(x T, b T) = x * b
-fn calc2<T Number>(x T, b T) T = x * b      # Generic-функция с ограничением и явным возвратом — Based on: Rust
+fn calc<T Number>(x T, b T) => x * b
+fn calc2<T Number>(x T, b T) T => x * b      # Generic-функция с ограничением и явным возвратом — Based on: Rust
 
 # Функция высшего порядка, принимающая функцию как аргумент — Based on: TypeScript, Rust
-fn apply(x Int, f (Int) => Int) Int =
+fn apply(x Int, f (Int) => Int) Int =>
     f(x)
 
 # Функция, возвращающая функциональный тип — Based on: Haskell, TypeScript, Kotlin
-fn make_multiplier(k Int) (Int) => Int =
+fn make_multiplier(k Int) (Int) => Int =>
     x => x * k                              # Возврат лямбда-функции — Based on: JS/TypeScript, Python
 
 # Лямбды
@@ -207,19 +207,19 @@ trait Number {
 
 # Блок реализации собственных методов для типа — Based on: Rust (impl)
 impl User {
-    fn is_adult(self) Bool =                # Метод-предикат над экземпляром — Based on: Rust, Kotlin
+    fn is_adult(self) Bool =>                # Метод-предикат над экземпляром — Based on: Rust, Kotlin
         self.age >= 18
 
-    fn rename(self, name Str) User =        # Метод с возвратом обновленной копии — Based on: F#, Rust
+    fn rename(self, name Str) User =>        # Метод с возвратом обновленной копии — Based on: F#, Rust
         self with { name }
 
-    fn without_password(self) User =        # Метод очистки приватного поля — Based on: F#, Rust
+    fn without_password(self) User =>        # Метод очистки приватного поля — Based on: F#, Rust
         self with { password: None }
 }
 
 # Реализация трейта Display для конкретного типа User — Based on: Rust (impl Trait for Type)
 impl Display for User {
-    fn to_str(self) Str =
+    fn to_str(self) Str =>
         "${self.name}, ${self.age}"         # Строковая интерполяция свойств self — Based on: Kotlin, Swift, JS
 }
 
@@ -236,7 +236,7 @@ fn debug_print<T Display + Clone>(letue T) {
 
 # 7. Отсутствие Null: None, Option ?, safe access, coalescing
 # Функция, возвращающая опциональное значение (Option/Maybe) — Based on: Rust, Swift
-fn find_user(id Int) User? =
+fn find_user(id Int) User? =>
     if id == 1 {
         Some(User { name: "Алиса", age: 25, password: None }) # Оборачивание в Some — Based on: Rust, Scala
     } else {
@@ -262,7 +262,7 @@ fn get_user_name(id Int) Str? {
 
 # 8. Обработка ошибок: Result, Ok, Err и оператор ?
 # Функция с результатом Result<T, E> — Based on: Rust (Result<T, E>)
-fn divide(a Int, b Int) Result<Int, Str> =
+fn divide(a Int, b Int) Result<Int, Str> =>
     if b == 0 {
         Err("Деление на ноль")              # Оборачивание ошибки в Err — Based on: Rust
     } else {
@@ -400,10 +400,10 @@ fn add_prefix(letue Str, prefix Str) Str =
 # Композиция функций вперед через оператор '>>' — Based on: F#, Haskell, Elm
 let normalize = trim >> lower
 
-# Конвейерная обработка через '|>' с плейсхолдером '_' — Based on: Elixir, F#, Hack
+# Конвейерная обработка через '.>' с плейсхолдером '_' — Based on: Elixir, F#, Hack
 let normalized_name = " Алиса "
-    |> normalize                                     # Передача левого значения первым аргументом — Based on: Elixir, F#
-    |> add_prefix(_, "user:")                        # Подстановка значения в указанный слот '_' — Based on: Scala, Clojure
+    .> normalize                                     # Передача левого значения первым аргументом — Based on: Elixir, F#
+    .> add_prefix(_, "user:")                        # Подстановка значения в указанный слот '_' — Based on: Scala, Clojure
 
 # Цепочка вызовов методов через точку (fluent API) — Based on: Kotlin, Java, Rust
 let sum_even = numbers
@@ -418,7 +418,7 @@ let adult_names = [alice, older_alice]
 
 # 13. Деструктуризация в параметрах и лямбдах
 # Деструктуризация структуры прямо в сигнатуре функции — Based on: Rust, Clojure, TypeScript
-fn greet(User { name, age, .. }) Str =
+fn greet(User { name, age, .. }) Str =>
     "${name}: ${age}"
 
 let greeted = greet(alice)
@@ -429,7 +429,7 @@ let only_names = [alice, older_alice]
 
 # 14. Комплексная логика и точка входа
 # Сопоставление перечисления с guard-условием и генерацией Result — Based on: Rust
-fn check_access(user User, role Role) Result<Container<User>, Str> =
+fn check_access(user User, role Role) Result<Container<User>, Str> =>
     match role {
         Admin => Ok(wrap(user.without_password(), "admin")),
         Member { .. } if user.age >= 18 => Ok(wrap(user.without_password(), "verified_user")), # Pattern + Guard — Based on: Rust
@@ -473,4 +473,63 @@ pub fn main() {
     let admin_name = maybe_admin?.name ?? "anonymous"
 
     console.print("Админ: ${admin_name}")
+}
+
+# Определение структуры-калькулятора или замыкания с состоянием
+type Multiplier {
+    factor Int
+}
+
+# Реализация трейта Call для типа Multiplier
+impl Multiplier {
+    # Сигнатура вызова экземпляра как функции
+    fn operator ()(self, x Int) Int => self.factor * x
+}
+
+let triple = Multiplier { factor: 3 }
+
+# Теперь объект ведет себя как функция:
+let res = triple(10)   # 30 (эквивалентно triple.call(10))
+
+
+# Добавление метода к чужому типу без прямого изменения его описания
+impl Str {
+    fn shouted(self) Str => "${self}!"
+}
+
+"hello".shouted() # "hello!"
+
+
+# Трейт бинарного сложения
+trait Add<Rhs = Self> {
+    type Output
+    fn add(self, rhs Rhs) Output
+}
+
+type Point {
+    x Int
+    y Int
+}
+
+# Или явный синтаксис перегрузки через символ оператора:
+impl Point {
+    fn operator +(self, other Point) Point =>
+        Point { x: self.x + other.x, y: self.y + other.y }
+}
+
+let p1 = Point { x: 1, y: 2 }
+let p2 = Point { x: 3, y: 4 }
+let p3 = p1 + p2    # Point { x: 4, y: 6 }
+
+# Унарный минус (-x)
+impl Point {
+    fn operator -(self) Point =>
+        Point { x: -self.x, y: -self.y }
+}
+
+let inverted = -p1  # Point { x: -1, y: -2 }
+
+# Точно так же через операторы можно перегрузить квадратные скобки:
+impl Matrix {
+    fn operator [](self, row Int, col Int) Int => ...
 }
