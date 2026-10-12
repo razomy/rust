@@ -188,6 +188,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "razomy_language"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "pest",
+ "pest_derive",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -223,15 +232,6 @@ dependencies = [
  "libc",
  "psm",
  "windows-sys",
-]
-
-[[package]]
-name = "start"
-version = "0.1.0"
-dependencies = [
- "insta",
- "pest",
- "pest_derive",
 ]
 
 [[package]]

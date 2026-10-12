@@ -215,7 +215,7 @@ mod types_and_generics {
     parse_tree!(record_nested_type_ref, "type Tree { val Int, left Tree?, right Tree? }\n");
     parse_tree!(adt_empty_variants, "type Status = Ready | Done\n");
     parse_tree!(type_with_default_arg, "type Buffer(Size Int = 1024) { data Str }\n");
-    parse_tree!(type_record_with_method_field, "type Service { start () -> Unit }\n");
+    parse_tree!(type_record_with_method_field, "type Service { src () -> Unit }\n");
     parse_tree!(type_generic_nested, "type Wrapper(T) { inner Container(T) }\n");
     parse_tree!(record_many_fields, "type Big { a Int, b Int, c Int, d Int, e Int }\n");
     parse_tree!(adt_with_mixed_variants, "type Mixed = Zero | One(Int) | Two(Int, Str) | Full { ok Bool }\n");
@@ -269,7 +269,7 @@ mod control_flow {
     parse_tree!(nested_if, "vr r = if a if b 1 else 2 else 3\n");
     parse_tree!(nested_match, "vr r = match a {\n    Some(b) = match b { Ok(v) = v\n Err(_) = 0 }\n    none = 0\n}\n");
     parse_tree!(match_boolean, "vr s = match flag { true = \"yes\"\n false = \"no\" }\n");
-    parse_tree!(match_strings, "vr s = match action { \"start\" = 1\n \"stop\" = 0\n _ = -1 }\n");
+    parse_tree!(match_strings, "vr s = match action { \"src\" = 1\n \"stop\" = 0\n _ = -1 }\n");
     parse_tree!(match_tuples, "vr s = match (x, y) { (0, 0) = \"origin\"\n (x, 0) = \"x-axis\"\n _ = \"plane\" }\n");
     parse_tree!(match_guard_and_destructure, "vr s = match st { Success({ name, age }) if age > 18 = name\n _ = \"err\" }\n");
     parse_tree!(if_comparison_eq, "vr r = if a == b true else false\n");
@@ -288,7 +288,7 @@ mod loops {
     parse_tree!(for_in_collection_block, "for n in names {\n    console.print(n)\n}\n");
     parse_tree!(for_in_range, "for i in 1..5 {\n    console.print(i)\n}\n");
     parse_tree!(for_in_range_inclusive, "for i in 1..=5 console.print(i)\n");
-    parse_tree!(for_in_range_vars, "for i in start..end console.print(i)\n");
+    parse_tree!(for_in_range_vars, "for i in src..end console.print(i)\n");
     parse_tree!(for_destructure_tuple, "for (k, v) in map.entries() console.print(k)\n");
     parse_tree!(for_destructure_record, "for { name, age } in users console.print(name)\n");
     parse_tree!(while_block, "while x > 0 {\n    x = x - 1\n}\n");
