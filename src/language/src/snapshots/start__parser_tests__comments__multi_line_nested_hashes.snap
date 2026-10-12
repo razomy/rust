@@ -1,6 +1,0 @@
----
-source: src/parser_tests.rs
-expression: tree
----
-- Program
-  - BlockComment: "##\n  # внутри многострочного\n##"

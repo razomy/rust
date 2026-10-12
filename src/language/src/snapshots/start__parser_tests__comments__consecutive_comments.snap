@@ -1,8 +1,0 @@
----
-source: src/parser_tests.rs
-expression: tree
----
-- Program
-  - LineComment: "# один"
-  - LineComment: "# два"
-  - LineComment: "# три"
