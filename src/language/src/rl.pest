@@ -1,0 +1,39 @@
+Program    = { SOI ~ statements ~ EOI }
+// Утверждения разделяются переводами строк или точкой с запятой
+statements = _{ SEP* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ SEP* }
+sentence   = { token+ }
+
+token = _{ group | literal }
+
+// --- РАЗДЕЛИТЕЛИ И ПРОБЕЛЫ ---
+SEP = _{ NEWLINE | ":" }
+WHITESPACE = _{ " " | "\t" | "\r" }
+// Комментарии игнорируются парсером автоматически
+COMMENT = _{ ("//" | "##") ~ (!NEWLINE ~ ANY)* }
+
+// --- ГРУППЫ ---
+group = _{ brace_group | bracket_group | paren_group | angle_group }
+
+brace_group   = { "{" ~ statements ~ "}" }
+bracket_group = { "[" ~ statements ~ "]" }
+paren_group   = { "(" ~ statements ~ ")" }
+angle_group   = { "<" ~ statements ~ ">" }
+
+// --- ЛИТЕРАЛЫ И ТОКЕНЫ ---
+literal = _{ number | string | path | op }
+
+number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+// Путь: слово, либо слова через точку (Name, Process.Log, Array)
+path = @{ WORD_START ~ WORD_PART* ~ ("." ~ WORD_START ~ WORD_PART*)* }
+WORD_START = _{ ASCII_ALPHA | "_" }
+WORD_PART  = _{ ASCII_ALPHANUMERIC | "_" }
+
+// Строки
+string = _{ double_quote_group | single_quote_group }
+double_quote_group = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+single_quote_group = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+
+// Операторы (все символы, которые не буквы и не скобки)
+// Сюда попадут &, |, =, и т.д.
+op = @{ ("&" | "|" | "=" | "+" | "-" | "*" | "/" | "!" | "?" | "@" | "#" | "$" | "%" | "^" | "~")+ }
