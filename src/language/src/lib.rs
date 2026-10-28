@@ -41,7 +41,9 @@ pub enum Token {
     Op(String),
     /// Диапазоны (`1..10`, `"a".."z"`, `1..Limit`)
     Range(Box<Token>, Box<Token>),
-    /// Три гомоиконные скобки: '{' (Form), '[' (Stream), '(' (Tuple)
+    /// Три гомоиконные скобки:
+    /// '{' (Form), '[' (Stream), '(' (Tuple/Expression через пробел),
+    /// ')' (маркер слитного списка аргументов `Fn(Args)` без пробела)
     Group(char, Vec<Sentence>),
 }
 
@@ -104,9 +106,9 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
             }
         }
 
-        Rule::operator => Token::Op(pair.as_str().to_string()),
+        Rule::operator | Rule::callable_op => Token::Op(pair.as_str().to_string()),
 
-        Rule::path | Rule::ident_seg => {
+        Rule::path | Rule::callable_path | Rule::ident_seg => {
             let s = pair.as_str();
             if s == "true" {
                 Token::Lit(Literal::Bool(true))
@@ -125,7 +127,22 @@ pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
     let mut sentences = Vec::new();
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::sentence {
-            let tokens = inner.into_inner().map(parse_token).collect();
+            let mut tokens = Vec::new();
+            let mut expect_tight_paren = false;
+
+            for tok_pair in inner.into_inner() {
+                let rule = tok_pair.as_rule();
+                let mut tok = parse_token(tok_pair);
+
+                if expect_tight_paren {
+                    if let Token::Group('(', args) = tok {
+                        tok = Token::Group(')', args);
+                    }
+                }
+
+                expect_tight_paren = matches!(rule, Rule::callable_path | Rule::callable_op);
+                tokens.push(tok);
+            }
             sentences.push(tokens);
         }
     }
@@ -139,12 +156,27 @@ pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule
 }
 
 // =============================================================================
-// 3. СЕМАНТИЧЕСКИЙ КЛАССИФИКАТОР И АНАЛИЗАТОР (ВСЕ КОНСТРУКЦИИ V4.7)
+// 3. СЕМАНТИЧЕСКИЙ КЛАССИФИКАТОР И ДЕКОМПОЗИЦИЯ ПАЙПЛАЙНОВ (V4.7)
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum PipeOp {
+    Dot,      // `.`  Standard Dataflow Pipe
+    Tap,      // `.>` Side-effect Tap Pipe
+    Enrich,   // `.&` Context Enrich / Merge Pipe
+    Filter,   // `.?` Safe / Predicate Filter Pipe
+    Parallel, // `.|` Concurrent Fan-out Pipe
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipeStep {
+    pub op: PipeOp,
+    pub expr: Vec<Token>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SemanticKind {
-    /// Axiom 1: `Name Value`, `MoneyVal $199.99`, `OrderList (...)`
+    /// Axiom 1: `Name Value`, `MoneyVal $199.99`, `Add (A + B)`, `OrderList (...)`
     Binding { key: String, value: Vec<Token> },
     /// Деструктуризация кортежа `(A, B) Source` или параметризованный ключ карты `(K) V`
     TupleBinding { tuple: Vec<Sentence>, value: Vec<Token> },
@@ -166,7 +198,7 @@ pub enum SemanticKind {
     PatternBranch { pattern: Token, body: Vec<Sentence> },
     /// Алгебра типов / уточнений / вычитания: `PublicUser User / User.PasswordHash`, `Adult User & IsAdult`
     AlgebraicDef { name: String, expr: Vec<Token> },
-    /// Вызов функции `Connect("db.internal")`, `RunTestSuite()`
+    /// Вызов функции `Connect("db.internal")`, `RunTestSuite()` (слитная скобка без пробела!)
     CallExpr { name: String, args: Vec<Sentence> },
     /// Пайплайн данных (`.`, `.>`, `.&`, `.?`, `.|`)
     Pipeline(Vec<Token>),
@@ -174,8 +206,19 @@ pub enum SemanticKind {
     Expression(Vec<Token>),
 }
 
+pub fn parse_pipe_op(op: &str) -> Option<PipeOp> {
+    match op {
+        "." => Some(PipeOp::Dot),
+        ".>" => Some(PipeOp::Tap),
+        ".&" => Some(PipeOp::Enrich),
+        ".?" => Some(PipeOp::Filter),
+        ".|" => Some(PipeOp::Parallel),
+        _ => None,
+    }
+}
+
 pub fn is_pipe_op(op: &str) -> bool {
-    matches!(op, "." | ".>" | ".&" | ".?" | ".|")
+    parse_pipe_op(op).is_some()
 }
 
 pub fn has_pipe_op(tokens: &[Token]) -> bool {
@@ -186,10 +229,46 @@ pub fn has_algebra_op(tokens: &[Token]) -> bool {
     tokens.iter().any(|t| matches!(t, Token::Op(op) if matches!(op.as_str(), "&" | "|" | "/")))
 }
 
+/// Разбивает плоский пайплайн `A . B .? C` на начальное выражение `A` и шаги `Vec<PipeStep>`
+pub fn split_pipeline(tokens: &[Token]) -> (Vec<Token>, Vec<PipeStep>) {
+    let mut head = Vec::new();
+    let mut steps: Vec<PipeStep> = Vec::new();
+    let mut current_op: Option<PipeOp> = None;
+    let mut current_expr = Vec::new();
+
+    for token in tokens {
+        if let Token::Op(op_str) = token {
+            if let Some(pipe_op) = parse_pipe_op(op_str) {
+                if let Some(prev_op) = current_op.replace(pipe_op) {
+                    steps.push(PipeStep {
+                        op: prev_op,
+                        expr: std::mem::take(&mut current_expr),
+                    });
+                } else {
+                    head = std::mem::take(&mut current_expr);
+                }
+                continue;
+            }
+        }
+        current_expr.push(token.clone());
+    }
+
+    if let Some(last_op) = current_op {
+        steps.push(PipeStep {
+            op: last_op,
+            expr: current_expr,
+        });
+    } else {
+        head = current_expr;
+    }
+
+    (head, steps)
+}
+
 pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
     match sentence.as_slice() {
-        // 1. Перегрузка оператора или контракт: `+(Other Vec2) [ ... ]`, `<(Other) Bool`
-        [Token::Op(op), Token::Group('(', args), rest @ ..] if !rest.is_empty() => {
+        // 1. Перегрузка оператора или контракт (слитная скобка `)`): `+(Other Vec2) [ ... ]`, `<(Other) Bool`
+        [Token::Op(op), Token::Group(')' | '(', args), rest @ ..] if !rest.is_empty() => {
             SemanticKind::OperatorMethod {
                 op: op.clone(),
                 args: args.clone(),
@@ -198,10 +277,12 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
         }
 
         // 2. Анонимная лямбда или ветка кортежа: `(Args) [Body]`
-        [Token::Group('(', args), Token::Group('[', body)] => SemanticKind::LambdaOrTupleBranch {
-            args: args.clone(),
-            body: body.clone(),
-        },
+        [Token::Group('(' | ')', args), Token::Group('[', body)] => {
+            SemanticKind::LambdaOrTupleBranch {
+                args: args.clone(),
+                body: body.clone(),
+            }
+        }
 
         // 3. Ветка паттерн-матчинга `[ _ >= 2000 ] [ 300 ]` или `{ Method 'GET' } [ ... ]`
         [pat @ Token::Group('[', _), Token::Group('[', body)]
@@ -211,15 +292,16 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
         },
 
         // 4. Деструктуризация кортежа `(String, Int) root.base` или ключ карты `(K) V`
-        [Token::Group('(', tuple), rest @ ..] if !rest.is_empty() && !has_pipe_op(rest) => {
+        [Token::Group('(' | ')', tuple), rest @ ..] if !rest.is_empty() && !has_pipe_op(rest) => {
             SemanticKind::TupleBinding {
                 tuple: tuple.clone(),
                 value: rest.to_vec(),
             }
         }
 
-        // 5. Именованная функция `Name(Args) [Body]`, Вызов `Name(Args)` или Дженерик `Name(T) ...`
-        [Token::Path(name), Token::Group('(', args), rest @ ..] => match rest {
+        // 5. Слитная скобка `Name(Args)` (маркер `')'`):
+        // Именованная функция `Name(Args) [Body]`, Вызов `Name(Args)` или Дженерик `Name(T) ...`
+        [Token::Path(name), Token::Group(')', args), rest @ ..] => match rest {
             [Token::Group('[', body), tail @ ..] => SemanticKind::FunctionDef {
                 name: name.clone(),
                 args: args.clone(),
@@ -238,7 +320,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             },
         },
 
-        // 6. Начинается с идентификатора `Name ...`
+        // 6. Начинается с идентификатора `Name ...` (где после `Name` был пробел!)
         [Token::Path(name), rest @ ..] => match rest {
             [] => SemanticKind::Expression(sentence.clone()),
 
@@ -281,6 +363,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
                 expr: rest.to_vec(),
             },
 
+            // Сюда попадают `Add (A + B)`, `Origin (0.0, 0.0)`, `OrderList (...)`!
             _ => SemanticKind::Binding {
                 key: name.clone(),
                 value: rest.to_vec(),

@@ -1,5 +1,5 @@
 // =============================================================================
-// RAZOMY LANGUAGE V4.7 — COMPLETE PEST GRAMMAR
+// RAZOMY LANGUAGE V4.7 — COMPLETE PRODUCTION PEST GRAMMAR
 // =============================================================================
 
 Program = { SOI ~ statements ~ EOI }
@@ -33,7 +33,6 @@ sentence   = { token ~ (pipe_nl? ~ token)* }
 // =============================================================================
 // ТОКЕНЫ (СТРОГИЙ ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
 // =============================================================================
-// ВАЖНО: range_expr стоит ДО string_lit и symbol_lit, чтобы "0".."9" парсился как Range!
 token = _{
     group
   | range_expr
@@ -41,7 +40,9 @@ token = _{
   | symbol_lit
   | rich_literal
   | number_lit
+  | callable_op
   | operator
+  | callable_path
   | path
 }
 
@@ -83,7 +84,6 @@ url_char     = _{ interp_chunk | (!(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]
 
 url_lit      = @{ ("https://" | "http://") ~ url_char+ }
 file_lit     = @{ "%" ~ url_char+ }
-// Сегменты домена разделены явно через ("." ~ ...)+, чтобы жадный `+` не съедал последнюю точку
 email_lit    = @{ (ASCII_ALPHANUMERIC | "_" | "." | "-" | "+")+ ~ "@" ~ (ASCII_ALPHANUMERIC | "-")+ ~ ("." ~ (ASCII_ALPHANUMERIC | "-")+)+ }
 money_lit    = @{ ASCII_ALPHA_UPPER{0, 3} ~ "$" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
 hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -100,8 +100,12 @@ color_lit    = @{ "#" ~ ASCII_HEX_DIGIT{3, 8} ~ !(ASCII_ALPHANUMERIC | "_") }
 // ВАЖНО: ("." ~ !".") запрещает одиночную точку после числа, но разрешает диапазон `..` (например, `1..100`)
 number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !".")) }
 
-// 6. Операторы (унарный `!` примыкает плотно, бинарные отделяются пробелом или `(` при перегрузке)
-OP_BOUND = _{ &(" " | "\t" | "\r" | NEWLINE | EOI | "{" | "[" | "(") }
+// 6. Операторы:
+// - `callable_op`: перегрузка оператора `+(Other Vec2)`, `<(Other) Bool` (слитно с `(`, проверяется через `&"("`)
+// - `operator`: бинарные операторы (отделяются пробелом) и унарный `!` (примыкает плотно)
+overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
+callable_op = @{ overload_op ~ &"(" }
+
 operator = @{
     ("!" ~ !"=")
   | (
@@ -113,13 +117,18 @@ operator = @{
           | "+"  | "-"  | "*"  | "/" | "%"
           | ">"  | "<"
           | "&"  | "|"  | "."
-        ) ~ OP_BOUND
+        ) ~ &(" " | "\t" | "\r" | NEWLINE | EOI)
     )
 }
 
-// 7. Слитные пути и идентификаторы (без пробелов):
-// Name, User.Name, JonnDoyName3.0, JonnDoyName3.-1, _.Age, root.base
-path          = @{ primary_ident ~ ("." ~ (ident_seg | index_seg))* }
+// 7. Слитные пути, вызовы и идентификаторы:
+// - `callable_path`: `Name` в `Name(Args)` — атомарный lookahead `&"("` проверяет, что `(` идет БЕЗ пробела,
+//   но НЕ поглощает саму скобку `(`, поэтому внутри `(...)` пробелы работают штатно!
+// - `path`: `Name`, `User.Name`, `JonnDoyName3.-1`, `_.Age`, `State.Read().Count`
+PATH_END      = _{ &(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "}" | EOI) }
+callable_path = @{ path_core ~ !("()" ~ ".") ~ &"(" }
+path          = @{ path_core ~ ("()" ~ ("." ~ (ident_seg | index_seg))+)? ~ PATH_END }
+path_core     = _{ primary_ident ~ ("." ~ (ident_seg | index_seg))* }
 primary_ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 ident_seg     = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 index_seg     = @{ "-"? ~ ASCII_DIGIT+ }
