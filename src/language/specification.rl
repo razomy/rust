@@ -1,25 +1,27 @@
 // =============================================================================
-// RAZOMY LANGUAGE V5.5: HOMOICONIC AXIOMATICS OF THREE BRACKETS (`.rl`)
+// RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (`.rl`)
 // =============================================================================
 // 1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
 // {} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
-//             Parens on a key position `{ (K) V }` define a parameterized/computed Map key.
+//             Parens on a key position `{ (K) V }` define a parameterized/computed Map key
+//             or a compound AST/path pattern key (e.g. `{ (self.old_id) [ self.new_id ] }`).
 //             All Forms `{}` and Tuples `()` have structural equality `==` and hashing by default.
 // [] — Stream (Executable body: Lazy sequence of operations, Predicates, Lambdas, Dialects).
 //             Every `[...]` is a Stream with an active input context (`_`, or depth-indexed `_0`, `_1`, `_2`).
 // () — Tuple  (Ordered array of data, Tuples, Argument slots, Eager value evaluation in `{}`).
 //             • Canonical Triad `Name(Slots) {Form} [Stream]` & Universal Slot Resolution Rule:
-//               - `Name { ... }`                     -> Form / Struct / Module (`PascalCase`, immutable!)
-//               - `Name(T, U) { ... }`               -> 1st-Order Generic Form (unbound `PascalCase` `T`, `U` are Type Params `*`)
+//               - `Name { ... }`                     -> Form / Struct / Module (`PascalCase`, immutable Prototype/Type!)
+//               - `Name(T, U) { ... }`               -> 1st-Order Generic Form (unbound `PascalCase` `T`, `U` are Type Params `*`;
+//                                                       MUST NOT shadow existing Types in scope!)
 //               - `Name(F(_)) { ... }`               -> 2nd-Order Generic Form / HKT (`F(_)` is Type Constructor `* -> *`)
 //               - `Name(T(_(_), _)) { ... }`         -> 3rd-Order Generic Form (`T` has Kind `(* -> *) -> * -> *`)
 //               - `Name(TC Category, cat TC) { ... }`-> Bounded Generic Form (`PascalCase` `TC Category` constrains Type `TC <: Category`;
 //                                                       `snake_case` `cat TC` binds runtime value parameter `cat` of type `TC`)
-//               - `Name(Age) { new_age age }`        -> Auto-Unpacked Class (known Type `Age` in scope auto-binds `age Age` via Law 1c!)
-//               - `Name(User, User) { ... }`         -> Duplicate known Type Slots auto-bind indexed `user1`, `user2`!
+//               - `Name(Age) { new_age age }`        -> Auto-Unpacked Class (single atomic known Type `Age` in scope auto-binds `age Age` via Law 1c!)
+//               - `Name(u1 User, u2 User) { ... }`   -> Duplicate or compound Type Slots (`A & B`) MUST use explicit `snake_case` names!
 //               - `Name(a Type, b Int) { ... }`      -> Explicit Class (`snake_case` value slots are also Form fields on `self`!)
 //               - `Name(T, a T) { ... }`             -> Generic Class (`PascalCase` Type Param `T` + `snake_case` Value Param `a`)
-//               - `name(Age) [ age == 18 ]`          -> Function with auto-bound `age` from known `Age` Type (Law 1c)
+//               - `name(Age) [ age == 18 ]`          -> Function with auto-bound `age` from single atomic known `Age` Type (Law 1c)
 //               - `name(A, B, x A) B [Body]`         -> Generic function: pure Type slots (`A`, `B`) are compile-time and auto-inferred;
 //                                                       runtime UFCS calls `val . name` bind directly to the 1st value slot (`x`)!
 //               - `name(args) ReturnType [Body]`     -> Named function with explicit return type (`snake_case`)
@@ -33,15 +35,21 @@
 //               accepts `fn(a, b, c)` without double parens `(())`, and a slot expecting `Tuple(T)`
 //               automatically lifts a single element `(x)` without requiring a trailing comma!
 //
-// 2. CASE RULE, IMMUTABILITY OF TYPES, TAGGED STRINGS & SPACE-DELIMITED LEXER:
+// 2. CASE RULE, COMPILE-TIME FIRST (`Compile &`), TAGGED STRINGS & SPACE-DELIMITED LEXER:
 // • PascalCase  — Types, Forms, Classes, Modules, Union Variants, Type Params (`User`, `Age`, `TC`).
-//                 RULE: `PascalCase` bindings are IMMUTABLE Type/Form definitions (`Product { id Int }`).
-//                 Writing `ExistingForm { id 3 }` inside an expression instantiates `ExistingForm`.
+//                 RULE (Prototype-Type Duality): `PascalCase` bindings are IMMUTABLE Form Prototypes & Types
+//                 (`Product { id Int }`). Reading `ExistingForm.field` or `ExistingForm.0` inspects its static
+//                 compile-time default specification, whereas writing `ExistingForm { id 3 }` (or `ExistingForm {}`)
+//                 inside an expression instantiates a concrete runtime instance of `ExistingForm`.
 // • snake_case  — Variables, Field keys, Functions, Methods, Value Params (`user_id`, `find_user`).
 //                 RULE: Only `snake_case` bindings inside `[]` can be rebound/mutated in-place!
+// • Compile     — Compile-Time Evaluation Tag (`Compile & [ ... ]` or `fn(...) [...] & Compile`):
+//                 Razomy is a Compile-Time First language. Any expression, macro, AST rewrite (`Meta.rewrite`),
+//                 or static assertion intersected with `& Compile` is evaluated 100% at compile-time,
+//                 emitting flat, zero-overhead machine code!
 // • 'symbol'    — Paired Symbol Literal: exact constant tag without interpolation (`'draft'`, `'GET'`).
 // • "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}")
-//                 and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`).
+//                 and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`, `\}`).
 // • r"..."      — Raw String (multiline by default, also numbered `r1"..."1`, `r2"..."2`):
 //                 zero `\` escapes and zero `{}` interpolation; never uses `#` so comments never collide!
 // • Type"..."   — Type-Prefixed String Sugar: ANY `Type"..."` (`Money"199.99"`, `Path"./a.json"`,
@@ -60,10 +68,14 @@
 //                 (b) Tight Call `fn(x)` vs Spaced Binding `x (expr)`:
 //                     • `name(args)` (NO space before `(`) is a function call or type constructor application.
 //                     • `name (expr)` (WITH space before `(`) binds or rebinds variable/field `name` to `(expr)`.
-//                 (c) Space-Delimited Lexer Rule: All binary operators (`+`, `-`, `*`, `/`, `%`, `**`,
-//                     `<<`, `>>`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`, `.?`,
-//                     `.|`, `&`, `|`) MUST be surrounded by spaces (`a - b`, `a / b`, `a . b`), while
-//                     unary `!` prefixes tightly (`!x`).
+//                     • COMPILER SAFETY: If `name` in `name (expr)` resolves to an existing Function in scope
+//                       rather than a variable/field, the compiler emits `E01_AMBIGUOUS_CALL_OR_BIND`!
+//                 (c) Space-Delimited Lexer Rule: In expressions, all binary operators (`+`, `-`, `*`, `/`,
+//                     `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`,
+//                     `.?`, `.|`, `&`, `|`) MUST be surrounded by spaces (`a - b`, `a / b`, `a . b`), while
+//                     unary `!` prefixes tightly (`!x`). Inside a Form `{}` declaration, operator method
+//                     definitions has space to their parameter tuple (`+ (other T) [...]`, `< (other T) [...]`)
+//                     exactly like named methods `fn(other T) [...]`.
 //
 // 3. COMPLETE OPERATOR & ALGEBRAIC OVERLOADING REFERENCE:
 // 'a.b'     (no spaces)   — Tight Path Access: field, module, ancestor `a.Parent.field`, or index `a.0`, `a.-1`
@@ -71,23 +83,24 @@
 //                           and `a . b(c, d)` is UFCS sugar for `b(a, c, d)`)
 // 'a .> b'                — Tap Pipeline: executes side-effect `b(a)` and passes original `a` further
 // 'a .& b'                — Enrich Pipeline: calls `b(a)` and merges `&` result with left context `a`
-//                           (distributes over Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
+//                           (distributes over `Bypass` Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
 // 'a .? b'                — Safe/Filter Pipe: passes `a` further only if predicate/type `b` matches, else `None`
 // 'a .| {}'               — Parallel Pipeline: concurrent fan-out execution of branches in `{}`, merged via `&`
-// 'a & b'                 — Universal Algebraic Composition / Intersection (6 Canonical Combinations):
+// 'a & b'                 — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
 //                           1. Form & Form       -> Inheritance, Trait `impl`, or Structural Merge with Lineage
 //                           2. Type & Stream     -> Refinement Type (type constrained by predicate `[...]`)
 //                           3. Function & Form   -> Partial application / Default & DI override (`fn & { db MockDb }`)
 //                           4. Stream & Stream   -> Sequential pipeline composition (`[ a . b ]`)
-//                           5. Value & TagForm   -> Metadata / visibility attachment (`val & Private`)
+//                           5. Value & TagForm   -> Metadata / visibility / compile-time attachment (`val & Private`, `Compile & [...]`)
 //                           6. TypeA & TypeB(A)  -> F-Bounded Trait constraint (`User & Comparable(User)`)
+//                           7. Type & Bypass     -> Marks a failure/empty Union outcome (`NotFound & Bypass`) for Law 3 short-circuiting!
 // 'a | b'                 — Union: algebraic sum of types, patterns, or outcomes
 // 'a / b'                 — Relative Subtraction (for Types/Forms/Maps) or Overloaded Method `/` (for Values):
 //                           • Form / FieldPath   -> Removes specific field (`User / User.password_hash`)
 //                           • Form / 'key'       -> Removes field key from all ancestors (`Combined / 'name'`)
 //                           • Form / Ancestor    -> If `Ancestor` is in `Form` lineage, removes its slice (`UserAndCloud / Cloud`)
-//                           • Form / TagOrState  -> If `TagOrState` is NOT in `Form` lineage, acts as a Negative Type
-//                                                   Constraint / Typestate Guard `Form & ![ _ . is(TagOrState) ]` (`Order / Cancelled`)
+//                           • Form / TagOrState  -> If `TagOrState` is NOT in `Form` lineage, acts as a Closed-World Negative
+//                                                   Type Constraint / Typestate Guard `Form & ![ _ . is(TagOrState) ]` (`Order / Cancelled`)
 //                           • Map  / key_val     -> Removes entry key from a Map (`config_map / "host"`)
 //                           • Union / Type       -> Removes branch from Union (`Result / Error`)
 //                           • ValueA / ValueB    -> Invokes overloaded `/` method (`num1 / num2`, `shape1 / shape2`)
@@ -99,54 +112,69 @@
 //                           • When streams are nested `fn(a) [ a . [ ... ] ]`, `_0` is the root function stream's
 //                             input tuple, `_1` is the 1st nested `[...]` input (so inside the 1st nested `[...]`,
 //                             `_1` and `_` are identical!), `_2` is the 2nd nested `[...]` input, etc.
+//                           • Note: Router branch bodies `x . { Pattern [Body] }` are themselves streams `[...]`,
+//                             so each nested `[...]` increments the depth index (`_1`, `_2`, etc.) predictably!
 //                           • In router keys `{ _ [...] }`, Type slots `F(_)`, or imports `_ mod`, `_` is wildcard/hole.
 // 'self'                  — Current Form Instance: references the enclosing Form `{}` inside its methods/formulas
 // 'Self'                  — Current Form Type: references the enclosing Form Type in contracts and recursive types
-// '{k (e)}' vs '{k [e]}'  — Eager vs Lazy/Reactive Field: `k (e)` evaluates `(e)` once on creation; `k [e]` is a
-//                           zero-cost inline getter (or reactive computed node when reading a `Signal`)
+// '{k (e)}' vs '{k [e]}'  — Eager vs Zero-Cost Lazy/Reactive Field:
+//                           • `k (e)` evaluates `(e)` once on creation and stores the value in the struct layout.
+//                           • `k [e]` compiles to a pure static inline getter `Form.get_k(self)` (or reactive computed
+//                             node when reading a `Signal`). Because `k [e]` does NOT store a heap closure capturing `self`,
+//                             the Form retains `RefCount == 1` and supports Perceus O(1) in-place mutation!
 // 'x . { K [V] }'         — Universal Router Axiom: every branch key `K` in a router `{ K [V] }` is unified sugar for
 //                           a predicate check `[ _ . matches(K) ]`. By Law 3, if `x` is a Union `A | B` and a partial
-//                           router only handles `{ A [Out] }`, unhandled branch `B` automatically bypasses into `Out | B`!
+//                           router only handles `{ A [Out] }`, unhandled `Bypass` branch `B` automatically bypasses into `Out | B`!
 //                           • Value key `0` or `(0, 0)`        -> sugar for `[ _ == (0, 0) ]`
 //                           • Type key `Circle`                -> sugar for `[ _ . is(Circle) ]` (binds `circle` via Law 1c)
 //                           • Tuple of Types `(Disconnected, ConnectCmd)` -> matches element types & binds `disconnected`, `connect_cmd`
 //                           • Structural pattern `{ path ("users", id) }` -> matches fields and extracts `id`
+//                           • Computed/Path key `(self.x)`     -> matches AST/computed key `self.x`
 //                           • Predicate stream `[ _ > 10 ]`    -> executes boolean stream directly
 //
 // 4. FOUR IRON LAWS OF RAZOMY & COMPILER GUARANTEES:
-// - LAW 1 (TRANSPARENT SCOPING & DUAL SLOT PROJECTION — NO HIDDEN FIELD MAGIC):
+// - LAW 1 (TRANSPARENT SCOPING & SAFE SLOT PROJECTION — NO IMPLICIT SHADOWING OR INDEXING):
 //   Variables enter `{ form }` or `[ stream ]` in 4 explicit, predictable ways:
 //   (a) `self.field` — inside Form definitions `{}`, methods and reactive formulas access sibling fields via `self`.
 //                      Value parameter slots in `Form(a Int, b Int) { ... }` are automatically fields on `self`!
 //   (b) `_` & `_0, _1` — inside any stream `[...]`, `_` is the input of the nearest `[...]`, while `_0`, `_1`, `_2`
-//                      index enclosing streams from the function root (`_0`) down to nested pipe streams (`_1`, `_2`).
-//   (c) `Name(KnownType)` / `Name(KnownType, KnownType)` — Dual Slot Projection: when a single `PascalCase` identifier
-//                      in `()` refers to an EXISTING Type in scope, it acts as shorthand for `(known_type KnownType)`:
-//                      • Single occurrence `(Age)` -> binds `age` of type `Age`.
-//                      • Multiple occurrences of the same Type `(User, User)` -> auto-binds indexed `user1`, `user2`!
-//                      • Conversely, an unbound `PascalCase` identifier `Box(T)` or bounded `PascalCase` slot
-//                        `Name(TC Category)` declares a compile-time Type Parameter (`T` or `TC <: Category`).
+//                      index enclosing streams from the function root (`_0`) down to nested pipe/router streams (`_1`, `_2`).
+//   (c) `Name(KnownType)` — Safe Single-Slot Projection: when a single atomic `PascalCase` identifier in `()` refers to
+//                      an EXISTING Type in scope, it acts as shorthand for `(known_type KnownType)`:
+//                      • Single atomic occurrence `(Age)` -> binds `age` of type `Age`.
+//                      • NO IMPLICIT SPLITTING OR INDEXING: Multiple occurrences of the same Type `(User, User)` or
+//                        compound intersection expressions `(User & Cart)` without an explicit `snake_case` name are a
+//                        COMPILE ERROR (`E02_DUPLICATE_UNNAMED_TYPE`)! You must name them: `(u1 User, u2 User)` or `(ctx User & Cart)`.
+//                      • NO SILENT SHADOWING: An unbound `PascalCase` identifier `Box(T)` or bounded slot `Name(TC Category)`
+//                        declares a compile-time Type Parameter (`T` or `TC <: Category`). If an unbound Type Parameter name
+//                        collides with an existing Type in scope, the compiler emits `E03_TYPE_PARAM_SHADOWS_TYPE`!
 //   (d) `fn(u User)` or `fn({ name } User)` — explicit parameter naming (`u.name`) or explicit field destructuring
 //                      (`{ name }`) when custom variable names or direct fields are desired in scope.
 // - LAW 2 (LINEAGE NAMESPACING & DEAD LINEAGE ELIMINATION): Upon name collision during merge `A & B`, unique
 //   fields are accessed directly (`ctx.age`), while colliding fields require the ancestor path (`ctx.A.id`, `ctx.B.id`)
 //   until resolved via `/`. Unreferenced ancestor fields are eliminated at compile time (zero runtime RAM overhead).
-// - LAW 3 (SUBTYPING-DRIVEN OUTCOME BYPASS): When a Union `A | B` is piped into `fn(Param)` or partial router `{ Param [...] }`:
+// - LAW 3 (SUBTYPING-DRIVEN `Bypass` OUTCOME SHORT-CIRCUITING): When a Union `A | B` is piped into `fn(Param)` or partial router `{ Param [...] }`:
 //   • If `(A | B) <: Param` (e.g. `Param` is `Any` or `A | B`), `fn` receives the entire `A | B` directly.
-//   • If `A <: Param` but `B` is NOT a subtype of `Param`, branch `B` automatically bypasses `fn` without invocation,
-//     accumulating into the final Union return type `Out | B`!
-// - LAW 4 (UFCS AUTOCOMPLETE & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)` in scope is
-//   suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile into
-//   zero-allocation machine loops (Tail-Call Optimization).
+//   • If `A <: Param` but `B` is NOT a subtype of `Param`:
+//     - If `B <: Bypass` (e.g. `None`, `NotFound`, `IoError`), branch `B` automatically bypasses `fn` without invocation,
+//       accumulating into the final Union return type `Out | B`!
+//     - If `B` is NOT marked with `& Bypass` (an unhandled domain type!), the compiler emits `E04_UNHANDLED_UNION_BRANCH`!
+// - LAW 4 (UFCS AUTOCOMPLETE, ZERO-COST GETTERS & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)`
+//   in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile
+//   into zero-allocation machine loops (Tail-Call Optimization).
 // =============================================================================
 
 
 #
-0. CORE AXIOMS, UNIVERSAL SLOTS (`user1`, `user2`), DEPTH-INDEXED `_1` & LINEAGE HISTORY
+0. CORE AXIOMS, SAFE SLOTS (LAW 1c), DEPTH-INDEXED `_1` & LINEAGE HISTORY
 #
 
 // Single line comments (`//`) and multiline block comments (`# ... #`)
 // are homoiconic doc-elements attached to the following or preceding AST node (`Meta.doc_of`).
+
+// Built-in Compile-Time & Control Contracts:
+Compile {} // Forces compile-time evaluation (`Compile & [...]` or `fn(...) [...] & Compile`)
+Bypass  {} // Marks Union failure/empty branches (`None`, `NotFound`) that automatically short-circuit via Law 3!
 
 // --- A. The 4 Core Axioms of Forms & Lineage (Clear Vehicle Hierarchy) ---
 
@@ -154,21 +182,22 @@
 BrandName String
 default_user_name "Alice"
 
-// Axiom 2: [FormName] { [key] [Type_or_Default] } (Declares a new immutable Form Type)
+// Axiom 2: [FormName] { [key] [Type_or_Default] } (Declares a new immutable Form Prototype/Type)
 Vehicle {
   brand     BrandName            // Required field of type `BrandName` (`String`)
   max_speed Int 180              // Explicit type `Int` with default value `180`
   tag       "standard"           // Inferred type `String` with default `"standard"`
 }
 
-// Axiom 3: [FormName] { [key] [Value] } & [Parent1] & [Parent2]
+// Axiom 3: [FormName] [Parent1] & [Parent2] { [key] [Value] }
+// (Canonical form composition: `Name Parents { fields }` is unified sugar for `Name (Parents & { fields })`)
 HasBattery {
-  battery_kwh Int
+  battery_kwh Int 75
 }
 
-ElectricVehicle {
+ElectricVehicle Vehicle & HasBattery & {
   charging_port String "Type2"
-} & Vehicle & HasBattery
+}
 
 // Axiom 4: [NewFormName] [BaseForm] { [key] [Override_Value] }
 Car Vehicle {
@@ -185,9 +214,9 @@ MyCar SportsCar {
   brand "CustomPorsche"
 }
 
-// 1. Tight dot '.' access: Active Values vs Ancestor Specification (Lineage History)
-//    Note: Compiler resolves static ancestor accesses at compile-time with 0 runtime memory cost!
-MyCar.brand                              // "CustomPorsche" (active overridden value on MyCar)
+// 1. Tight dot '.' access on Form Prototypes: Active Defaults vs Ancestor Specification (Lineage History)
+//    Note: Compiler resolves static prototype & ancestor accesses at compile-time with 0 runtime memory cost!
+MyCar.brand                              // "CustomPorsche" (active overridden default on MyCar prototype)
 MyCar.SportsCar.brand                    // "Porsche" (value specified at SportsCar ancestor level)
 MyCar.SportsCar.Car.brand                // "GenericMotor" (value from Car ancestor)
 MyCar.Vehicle.brand                      // BrandName (base specification type on root Vehicle)
@@ -196,14 +225,15 @@ MyGarageCar MyCar & { garage_slot 1 }
 MyGarageCar.brand                        // "CustomPorsche"
 MyGarageCar.MyCar.SportsCar              // Access to entire ancestor slice
 
-MyGarageCar.0                            // Access by field index 0 (brand -> "CustomPorsche")
-MyGarageCar.-1                           // Access by field index -1 from end (garage_slot -> 1)
+MyGarageCar.0                            // Access default by field index 0 (brand -> "CustomPorsche")
+MyGarageCar.-1                           // Access default by field index -1 from end (garage_slot -> 1)
 
-// 2. Updating Data by Deep Field Path, Positional Index (`.0`, `.-1`), or `&` Merge:
+// 2. Instantiating a Form Prototype & Updating Data by Deep Field Path, Positional Index (`.0`, `.-1`), or `&` Merge:
 mutate_car_demo() [
+  // Instantiating `MyGarageCar` prototype into a mutable local `snake_case` instance `my_car`:
   my_car (MyGarageCar {})
 
-  // (a) Create new updated Form via `&` while preserving Lineage history:
+  // (a) Create new updated Form instance via `&` while preserving Lineage history:
   upgraded_car (my_car & { max_speed 350, garage_slot 2 })
 
   // (b) In-place rebinding of `snake_case` variable by field name (Perceus O(1) zero-copy mutation):
@@ -214,12 +244,13 @@ mutate_car_demo() [
   my_car.-1 42
 ]
 
-// --- B. Universal Slot Rule: Generics, Bounded Generics & Auto-Indexed Parameters (Law 1c) ---
+// --- B. Universal Slot Rule: Generics, Bounded Generics & Safe Law 1c Parameters ---
 
 Category { title String }
 Age      Int
 
 // 1. Unbound 1st-Order Generic Form (`T` is unbound `PascalCase` -> Type Parameter `*`):
+//    Note: If `T` already existed as a Type in scope, compiler would emit `E03_TYPE_PARAM_SHADOWS_TYPE`!
 Box(T) {
   item T
 }
@@ -232,7 +263,7 @@ CategorizedUser(TC Category, active_cat TC) {
   current    active_cat          // Uses `active_cat` (`snake_case`) value instance
 }
 
-// 3. Single Auto-Named Type Parameter (`Age` is a known Type in scope -> auto-binds `age` via Law 1c):
+// 3. Single Auto-Named Type Parameter (`Age` is a single atomic known Type in scope -> auto-binds `age` via Law 1c):
 UserWithAge(Age) {
   new_age age
 }
@@ -241,9 +272,10 @@ is_user_18(Age) [
   age == 18
 ]
 
-// 4. Multiple Identical Type Parameters (`(Age, Age)` auto-binds indexed `age1` and `age2` via Law 1c!):
-compare_ages(Age, Age) [
-  age1 >= age2
+// 4. Multiple Identical Type Parameters MUST use explicit `snake_case` names (Law 1c/1d):
+//    (Writing `compare_ages(Age, Age)` without names is a compile error `E02_DUPLICATE_UNNAMED_TYPE`!)
+compare_ages(candidate_age Age, minimum_age Age) [
+  candidate_age >= minimum_age
 ]
 
 // 5. Explicit Value Parameter (`recipient` is `snake_case` with Type `String`):
@@ -266,10 +298,10 @@ ReadViaSelf {
 }
 
 // Named functions ALWAYS have `()` parameter slots:
-read_via_type(WithName)             [ with_name.name ] // Law 1c: Known `WithName` auto-binds `with_name`
-join_two(WithName, WithName)        [ "{with_name1.name} & {with_name2.name}" ] // Law 1c: Duplicate types bind `1`, `2`
-read_via_var(w WithName)            [ w.name ]         // Law 1d: Explicit parameter variable `w`
-read_unpacked({ name } WithName)    [ name ]           // Law 1d: Explicit field destructuring `{ name }`
+read_via_type(WithName)                  [ with_name.name ]         // Law 1c: Single known `WithName` auto-binds `with_name`
+join_two(first WithName, second WithName)[ "{first.name} & {second.name}" ] // Law 1d: Explicit names required for 2+ same types!
+read_via_var(w WithName)                 [ w.name ]                 // Law 1d: Explicit parameter variable `w`
+read_unpacked({ name } WithName)         [ name ]                   // Law 1d: Explicit field destructuring `{ name }`
 
 // Law 1b: `_` is the input of the nearest enclosing `[...]`, while `_0`, `_1`, `_2` index stream depth!
 extract_name_demo(w WithName) [                        // Root stream `_0`
@@ -282,7 +314,7 @@ sum_pair_pipe(pair (Int, Int)) [                       // Root stream `_0` (wher
 ]
 
 // Top-level parameterless function uses explicit `()`:
-do_init() [ "Razomy v5.5 initialized" . Shell.log ]
+do_init() [ "Razomy v5.7 initialized" . Shell.log ]
 do_init()
 
 
@@ -303,14 +335,16 @@ Any    _
 
 // Exact Fixed-Point `Money` (4 decimal places stored as integer micro-units: 1.0000 == 10000):
 // Eliminates IEEE-754 floating-point rounding errors in financial calculations!
-Money(raw String) {
+Money(raw String "0.00") {
   scaled (raw . Decimal.parse_scale4) // e.g., "100.00" -> 1000000 (Int64)
 
-  +(other Money)   [ Money.from_scaled(self.scaled + other.scaled) ]
-  -(other Money)   [ Money.from_scaled(self.scaled - other.scaled) ]
-  *(factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
-  /(divisor Float) [ Money.from_scaled((self.scaled.to_float / divisor).round_to_int) ]
-  ==(other Money)  [ self.scaled == other.scaled ]
+  from_scaled(val Int) [ Money { scaled val } ]
+
+  +   (other Money)   [ Money.from_scaled(self.scaled + other.scaled) ]
+  -   (other Money)   [ Money.from_scaled(self.scaled - other.scaled) ]
+  *   (factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
+  /   (divisor Float) [ Money.from_scaled((self.scaled.to_float / divisor).round_to_int) ]
+  ==  (other Money)  [ self.scaled == other.scaled ]
 }
 
 Usd(raw String)        { money Money(raw), currency 'USD' }
@@ -389,6 +423,7 @@ Cloud Identifiable {
 }
 
 // 4. Advanced Type Subtraction (`/`) & Lineage Disambiguation:
+//    All `/` operations on Forms/Types are resolved 100% at compile-time!
 // Case A: Remove field by path or symbol key
 PublicUser   User / User.password_hash
 AnonymousUsr PublicUser / 'name'
@@ -410,8 +445,11 @@ RestoredUser       UserAndCloud / Cloud
 GuestUser          PublicUser / PublicUser.role & { role 'guest' }
 
 // 5. Generic Key-Value Map, Set & Dictionary Manipulation (parens `(K)` define parameterized key)
-Map(K, V) { (K) V }
-Set(T)    { (T) Bool }
+Map(K, V) {
+  (K) V
+  get(m Map(K, V), key K) [ (m, key) . native_map_get ] // Returns `Some(V) | None`
+}
+Set(T) { (T) Bool }
 
 config_map {
   "host" "localhost"
@@ -430,7 +468,8 @@ updated_config config_map & { "port" "9090", "tls" "true" } / "host"
 // 2. `snake_case` variables inside `[]` can be rebound by name (`counter (counter + 1)` — note the space
 //    before `(` which distinguishes binding from function call `counter(1)`!) or by deep path
 //    (`corp.departments.0.budget 2500`), which is sugar for nested `&` updates.
-// 3. Perceus / Uniqueness Optimization: when `raw_order` is uniquely owned (refcount == 1),
+// 3. Perceus / Uniqueness Optimization: because lazy fields `k [e]` compile to static inline getters
+//    rather than closures capturing `self`, `raw_order` is uniquely owned (refcount == 1), and
 //    the compiler mutates the target offset IN-PLACE in O(1) with ZERO heap allocation!
 
 Order      { id String, amount Int }
@@ -472,7 +511,7 @@ update_order_demo() [
 // In Rust, you need separate keywords (`struct`, `trait`, `impl Type`, `impl Trait for Type`).
 // In Razomy, ALL of these are unified under the single algebraic operator `&`!
 
-// --- A. The 6 Canonical Combinations of `A & B` ---
+// --- A. The 7 Canonical Combinations of `A & B` ---
 
 // 1. Form & Form -> Structural Merge / Inheritance / Trait Implementation:
 Printable {
@@ -500,19 +539,23 @@ trim_str  [ _ . trim ]
 upper_str [ _ . to_upper ]
 clean_str trim_str & upper_str   // Produces stream `[ _ . trim . to_upper ]`
 
-// 5. Value/Member & TagForm -> Metadata / Visibility Attachment:
+// 5. Value/Member & TagForm -> Metadata / Visibility / Compile-Time Attachment:
 Public  {}
 Private {}
 secret_key "xyz987" & Private
 
 // 6. Type & Parameterized Trait `Trait(Self)` -> F-Bounded Polymorphism:
-Comparable(Other Self) {
-  <(other Other) Bool
+Comparable(Other) {
+  < (other Other) Bool
 }
 
 SortableUser User & Comparable(User) {
-  <(other User) [ self.age < other.age ]
+  < (other User) [ self.age < other.age ]
 }
+
+// 7. Type & `Bypass` -> Marks an Empty/Error Outcome for Law 3 Pipeline Short-Circuiting:
+None     {} & Bypass
+NotFound { entity String, id String } & Bypass
 
 // --- B. Open Extension Methods (UFCS) without modifying the original Form ---
 // Because `user . greet` == `greet(user)`, any standalone function `fn(User)`
@@ -527,7 +570,8 @@ greet(User) [ "Welcome, {user.name}!" ]
 // Parameterized Form `MathOps(a Int, b Int) { ... }`:
 // • By Law 1a, constructor value slots `a` and `b` are automatically fields on `self` (`self.a`, `self.b`).
 // • Inside `{}`, single parens `(a + b)` compute EAGERLY on construction,
-//   while brackets `[ self.a / self.b ]` define a LAZY Zero-Cost Getter evaluated on access!
+//   while brackets `[ self.a / self.b ]` define a LAZY Zero-Cost Static Getter evaluated on access
+//   (occupies 0 bytes in struct layout and never increments `self` refcount)!
 MathOps(a Int, b Int) {
   add      (a + b)
   sub      (a - b)
@@ -551,17 +595,17 @@ Vec2 {
   x Float
   y Float
 
-  +(other Vec2)  [ Vec2 { x (self.x + other.x), y (self.y + other.y) } ]
-  -(other Vec2)  [ Vec2 { x (self.x - other.x), y (self.y - other.y) } ]
-  *(scale Float) [ Vec2 { x (self.x * scale),   y (self.y * scale) } ]
-  /(scale Float) [ Vec2 { x (self.x / scale),   y (self.y / scale) } ]
-  ==(other Vec2) [ (self.x == other.x) && (self.y == other.y) ]
+  +  (other Vec2)  [ Vec2 { x (self.x + other.x), y (self.y + other.y) } ]
+  -  (other Vec2)  [ Vec2 { x (self.x - other.x), y (self.y - other.y) } ]
+  *  (scale Float) [ Vec2 { x (self.x * scale),   y (self.y * scale) } ]
+  /  (scale Float) [ Vec2 { x (self.x / scale),   y (self.y / scale) } ]
+  == (other Vec2) [ (self.x == other.x) && (self.y == other.y) ]
 }
 
 // Overloading `/` for CSG Boolean Geometry Subtraction (`Shape / Shape`):
 Shape {
   vertices Tuple(Vec2)
-  /(cutter Shape) [ (self, cutter) . native_csg_subtract ]
+  / (cutter Shape) [ (self, cutter) . native_csg_subtract ]
 }
 
 LogicOps(x Bool, y Bool, val Int) {
@@ -602,7 +646,7 @@ string_ops(first String, last String) [
 // | `break` (in loop/fold)     | `Break { value acc }` inside `. fold(...)`                |
 // | `for (x in list)`          | `list . map([ ... ])` or `list . for_each([ ... ])`       |
 // | `while (cond)`             | Tail-recursive stream `loop(state) [ ... loop(next) ]`    |
-// | `null` / `nil` / `undefined`| `None {}` inside a Union `User | None` (bypasses via Law 3)|
+// | `null` / `nil` / `undefined`| `None` (`{} & Bypass`) inside `User | None` (Law 3)       |
 // | `try { f() } catch (e)`    | Union outcome `f() . { Success [...], IoError [...] }`    |
 
 // Built-in control-flow signal for early termination of `fold` / `reduce` (supports optional label):
@@ -637,17 +681,16 @@ Shell {
   exec(cmd String) [ cmd . native_exec ]
 }
 
-Cart     { cart_id String, amount Int }
-NotFound { entity String, id String }
+Cart { cart_id String, amount Int }
 
 Db {
-  // 1. Named Slot (`id String`) returning `User | NotFound`:
-  find_user(id String) [
+  // 1. Named Slot (`id String`) returning `User | NotFound` (where `NotFound` is `& Bypass`):
+  find_user(id String) User | NotFound [
     User { id id, name "Alice", age 25, role 'user', password_hash "xyz" }
   ]
 
-  // 2. Known Type Slot (`Identifiable`):
-  //    Triggers Law 1c (auto-binds `identifiable`) and Law 3 (bypasses `None` / `NotFound`)!
+  // 2. Single Known Type Slot (`Identifiable`):
+  //    Triggers Law 1c (auto-binds `identifiable`) and Law 3 (bypasses `None` / `NotFound` because they are `& Bypass`)!
   find_cart(Identifiable) [
     Cart { cart_id "c_for_{identifiable.id}", amount 2500 }
   ]
@@ -676,10 +719,11 @@ search_users(names) [
 8. PIPELINE OPERATORS (`.`, `.>`, `.&`, `.?`, `.|`), CONTEXT ENRICHMENT & MULTI-QUERY `do`-NOTATION
 #
 
-// Known intersection slot `(User & Cart)` binds `user` and `cart` (Law 1c).
-// Notice how `user`, `cart`, `self`, and `_` (or depth-indexed `_1`) have zero ambiguity:
-finalize_bill(User & Cart) [
-  (user & cart) & {
+// By Law 1d, a compound intersection parameter `(ctx User & Cart)` uses an explicit `snake_case` name `ctx`
+// (or you can define a named type `BillContext User & Cart` to auto-bind `bill_context` via Law 1c).
+// Notice how `ctx`, `self`, and `_` (or depth-indexed `_1`) have zero ambiguity:
+finalize_bill(ctx User & Cart) [
+  ctx & {
     discount [
       self.amount . {
         [ _ >= 2000 ] [ 300 ]
@@ -694,21 +738,22 @@ finalize_bill(User & Cart) [
 
 // 1. Linear Pipeline with Dependency Injection slot (`db Db`):
 //    In tests, override via `(process_order_pipeline & { db MockDb })("u1")`!
+//    Because `NotFound` and `None` are marked `& Bypass`, Law 3 automatically short-circuits them!
 process_order_pipeline(user_id String, db Db) [
   user_id
   .  db.find_user         // `.`  Standard Pipe: returns `User | NotFound`
   .? [ _.age >= 18 ]      // `.?` Filter Pipe: returns `User | NotFound | None`
-  .& db.find_cart         // `.&` Enrich Pipe: `NotFound | None` bypasses via Law 3; `User` merges -> `(User & Cart) | NotFound | None`
+  .& db.find_cart         // `.&` Enrich Pipe: `NotFound | None` (`<: Bypass`) bypasses via Law 3; `User` merges -> `(User & Cart) | NotFound | None`
   .  finalize_bill        // `.`  Processes `(User & Cart)`, while `NotFound | None` bypasses to final output
 ]
 
 // 2. Combining Multiple Fallible Queries (Replaces Haskell `do`-notation and Rust `?` operator!):
-//    Because `.&` distributes over Unions (`Context .& (Result | Err)` -> `(Context & Result) | Err`),
-//    any error in step 1 or step 2 automatically short-circuits the remaining `.&` steps via Law 3!
+//    Because `.&` distributes over `Bypass` Unions (`Context .& (Result | Err)` -> `(Context & Result) | Err`),
+//    any `NotFound` error in step 1 or step 2 automatically short-circuits the remaining `.&` steps via Law 3!
 load_user_and_friend(uid1 String, uid2 String) [
   { first_id uid1, second_id uid2 }
-  .& [ { u1 (_.first_id  . Db.find_user) } ] // If `NotFound`, bypasses remaining steps!
-  .& [ { u2 (_.second_id . Db.find_user) } ] // Only runs if `u1` succeeded!
+  .& [ _.first_id . Db.find_user . [ { u1 _ } ] ]
+  .& [ _.second_id . Db.find_user . [ { u2 _ } ] ]
   .  [ "{_.u1.name} is friends with {_.u2.name}" ]
 ]
 
@@ -812,7 +857,7 @@ process_combined(combined_context) [
       // Unique fields (`name`, `amount`) are accessed directly on `user_order`:
       "Client Name: {user_order.name}, Order Amount: {user_order.amount}" . Shell.log
 
-      // ❌ COMPILE ERROR (Law 2 Violation): Ambiguous field `id` (present in both `User` and `Order`)
+      // ❌ COMPILE ERROR (Law 2 Violation `E05_AMBIGUOUS_LINEAGE_FIELD`): Ambiguous field `id` (present in both `User` and `Order`)
       // "ID: {user_order.id}" . Shell.log
 
       // ✅ VALID: Colliding fields are accessed via explicit Lineage path:
@@ -827,7 +872,7 @@ UserOrderClean UserOrder / Order.id // Removes Order's id; `.id` now unambiguous
 // 3. Declarative Type Migration:
 ClientAccount { account_id String, name String, is_adult Bool }
 
-// Law 1c: Known Type slot `(User)` binds `user` for clean, self-documented mapping:
+// Law 1c: Single Known Type slot `(User)` binds `user` for clean, self-documented mapping:
 migrate_user(User) [
   ClientAccount {
     account_id user.id
@@ -842,7 +887,7 @@ migrate_user(User) [
 #
 
 // 1. Excel-Style Reactive Forms `{}`:
-//    Reactive streams `[]` inside a Form `{}` compile to zero-cost inline getters
+//    Reactive streams `[]` inside a Form `{}` compile to zero-cost static inline getters (`Invoice.get_total(self)`)
 //    and recompute automatically when source fields are overridden via `&`:
 Invoice {
   price    Money"100.00"
@@ -873,15 +918,16 @@ run_signal_demo() [
 13. ONTOLOGICAL TYPING (TYPESTATE), OUTCOME BYPASS (LAW 3) & IDE AUTOCOMPLETE (LAW 4)
 #
 // Instead of exceptions or Result<T, E> monads, the pipeline collects outcomes into a Union.
+// Failure outcomes are explicitly marked with `& Bypass` so Law 3 safely short-circuits them!
 
 Reserved   { reserved_at Int }
 Paid       { transaction_id String }
 Cancelled  { cancelled_at Int }
 
-OutOfStock { reason String }
-NoMoney    { reason String }
+OutOfStock { reason String } & Bypass
+NoMoney    { reason String } & Bypass
 
-// Negative Type Constraint (Typestate Guard): because `Cancelled` is not a base field of `Order`,
+// Negative Type Constraint (Closed-World Typestate Guard): because `Cancelled` is not a base field of `Order`,
 // `Order / Cancelled` means `Order & ![ _ . is(Cancelled) ]` — cancelled orders cannot enter fulfillment!
 reserve_stock(o Order / Cancelled) [
   o.amount . {
@@ -898,7 +944,7 @@ charge_payment(o Order & Reserved) [
 ]
 
 // Inferred return type: `(Order & Reserved & Paid) | OutOfStock | NoMoney`
-// If `reserve_stock` returns `OutOfStock`, it automatically bypasses `charge_payment` (Law 3)!
+// If `reserve_stock` returns `OutOfStock` (`<: Bypass`), it automatically bypasses `charge_payment` (Law 3)!
 execute_fulfillment(initial_order Order / Cancelled) [
   initial_order
   . reserve_stock
@@ -924,22 +970,19 @@ audit_any_outcome(outcome (Order & Reserved & Paid) | OutOfStock | NoMoney) [
 14. TYPE-LEVEL COMPUTATIONS, RECURSIVE `Self` & 1ST/2ND/3RD-ORDER GENERICS (HKT & MONADS)
 #
 
-// 1. Type-level Peano numbers & Fixed-Length Vector (`T`, `N` are 1st-Order Type Params `*`)
+// 1. Type-level Peano numbers & Fixed-Length Vector (`T`, `N` are 1st-Order Type Params `*`; `Tuple(T)` is built-in)
 Zero    {}
 Succ(N) { prev N }
 One     Succ(Zero)
 Two     Succ(One)
 Three   Succ(Two)
 
-Tuple(T) ()
-
 FixedVector(T, N) {
   data   Tuple(T)
   length N
 }
 
-// 2. Self-Recursive `Json` Union (`Self` references `Json`):
-None {}
+// 2. Self-Recursive `Json` Union (`Self` references `Json`; `None` is defined in Sec 4 as `{} & Bypass`):
 Json String | Int | Float | Bool | None | Tuple(Self) | Map(String, Self)
 
 // 3. Recursive Generics: Linked List, Multi-Branch Tree (`Self`) and Binary Tree
@@ -973,7 +1016,7 @@ sort_users(users List(User & Comparable(User))) [
 
 // 5. Higher-Order Generics: 1st-Order (`*`), 2nd-Order HKT (`* -> *`), and 3rd-Order (`(* -> *) -> * -> *`)!
 //    • Function type signature is written naturally via Tuple + Stream: `(A) [B]`
-//    • 2nd-order type constructor parameter is written `F(_)`
+//    • 2nd-order type constructor parameter is written `F(_)` (invariant by default for decidable type checking!)
 //    • 3rd-order type constructor parameter is written `T(_(_), _)`
 //    • Unbound `PascalCase` slots (`A`, `B`) are compile-time type parameters inferred automatically at call sites!
 
@@ -985,10 +1028,10 @@ Functor(F(_)) {
   fmap(A, B, fa F(A), f (A) [B]) F(B)
 }
 
-Monad(M(_)) {
+Monad(M(_)) & Functor(M) {
   pure(A, a A)                          M(A)
   flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
-} & Functor(M)
+}
 
 // Concrete Implementation of 2nd-Order `Monad` for `Option` via `&`:
 Some(T)   { value T }
@@ -1144,7 +1187,7 @@ modify_global_counter() [
 ]
 
 // 4. Explicit Finite State Machine (Connection Lifecycle FSM):
-//    Notice how `(Disconnected, ConnectCmd)` is a Tuple of Types: by the Universal Router Axiom,
+//    Notice how `(Disconnected, ConnectCmd)` is a Tuple of DISTINCT Types: by the Universal Router Axiom,
 //    it checks `[ _.0 . is(Disconnected) && _.1 . is(ConnectCmd) ]` and auto-binds
 //    `disconnected` and `connect_cmd` into the branch scope (Law 1c)!
 Disconnected { reason String }
@@ -1154,7 +1197,7 @@ ConnState    Disconnected | Connecting | Connected
 
 ConnectCmd    { host String }
 HandshakeOk   { session_id String }
-NetworkError  { reason String }
+NetworkError  { reason String } & Bypass
 DisconnectCmd {}
 ConnEvent     ConnectCmd | HandshakeOk | NetworkError | DisconnectCmd
 
@@ -1174,7 +1217,7 @@ step_connection(state ConnState, event ConnEvent) ConnState [
 #
 
 FileHandle { fd Int, path Path }
-IoError    { msg String }
+IoError    { msg String } & Bypass
 
 Fs {
   open(path Path)   [ path . native_fs_open ]           // Returns `FileHandle | IoError`
@@ -1182,8 +1225,8 @@ Fs {
   close(FileHandle) [ file_handle.fd . native_fs_close ]
 
   // Bracket pattern: `FileHandle` match automatically binds `file_handle` so `Fs.close`
-  // closes the file after `action` while returning `action`'s result (`IoError` bypasses the
-  // partial router `{ FileHandle [...] }` directly into the return Union via Law 3)!
+  // closes the file after `action` while returning `action`'s result (`IoError` is `& Bypass`, so it
+  // bypasses the partial router `{ FileHandle [...] }` directly into the return Union via Law 3)!
   with_file(path Path, action) [
     path . Fs.open . {
       FileHandle [
@@ -1221,7 +1264,7 @@ HttpRequest {
 }
 
 HttpResponse { status Int, body String }
-Unauthorized { reason String }
+Unauthorized { reason String } & Bypass
 
 auth_middleware(req HttpRequest) [
   req.headers . Map.get("Authorization") . {
@@ -1330,17 +1373,19 @@ counter_app(state Atom(CounterState)) [
 
 
 #
-20. METAPROGRAMMING, DOC-COMMENTS (`Meta.doc_of`), COMPOSE & SELF-HOSTED `Meta.rewrite`
+20. COMPILE-TIME METAPROGRAMMING (`Compile &`), DOC-COMMENTS (`Meta.doc_of`), COMPOSE & SELF-HOSTED `Meta.rewrite`
 #
+// All `Meta` operations are intersected with `& Compile`. When applied to Forms, Streams, or Types,
+// they execute 100% at compile-time with zero runtime reflection overhead!
 
 // Homoiconic `Meta` Module (Reflection, Partial Evaluation, Doc-Comments & Deep AST Rewriting):
 Meta {
-  type_of(entity)           [ entity . native_meta_type_of ]
-  doc_of(entity)            [ entity . native_meta_doc_of ]
-  fields_of(entity)         [ entity . native_meta_fields_of ]
-  steps_of(stream)          [ stream . native_meta_steps_of ]
-  map_fields(form, mapper)  [ (form, mapper) . native_meta_map_fields ]
-  compose(stream)           [ stream . native_meta_eval_parens ]
+  type_of(entity)           [ entity . native_meta_type_of ]            & Compile
+  doc_of(entity)            [ entity . native_meta_doc_of ]             & Compile
+  fields_of(entity)         [ entity . native_meta_fields_of ]          & Compile
+  steps_of(stream)          [ stream . native_meta_steps_of ]           & Compile
+  map_fields(form, mapper)  [ (form, mapper) . native_meta_map_fields ] & Compile
+  compose(stream)           [ stream . native_meta_eval_parens ]        & Compile
 
   // Self-Hosted Deep Tree Rewriting (`Meta.rewrite` in 10 Lines of Razomy!):
   rewrite(node, rules) [
@@ -1358,7 +1403,7 @@ Meta {
 
     // Step 2: Apply pattern rules to current node (or keep `walked` if no rule matches):
     walked . (rules & { _ [ walked ] })
-  ]
+  ] & Compile
 }
 
 // 1. Algebraic Stream Composition
@@ -1366,10 +1411,10 @@ step_1 [ _ + 10 ]
 step_2 [ _ * 2 ]
 combined_pipeline step_1 & step_2
 
-// 2. Partial Evaluation (`Meta.compose`): evaluates only parenthesized `()` expressions inside `[]`
+// 2. Partial Evaluation (`Meta.compose`): evaluates only parenthesized `()` expressions inside `[]` at compile-time
 build_multiplier(factor Int) [
   Meta.compose([ _ * (factor * 10) ]) // Returns stream `[ _ * 50 ]` when factor == 5
-]
+] & Compile
 
 // 3. Aspect-Oriented Stream Manipulation (`Meta.steps_of` + `fold` via `&`):
 trace_execution(code_block) [
@@ -1379,7 +1424,7 @@ trace_execution(code_block) [
     step & [ _ .> [ "Step result: {_}" . Shell.log ] ]
   ])
   . fold([ _ ], (acc, step) [ acc & step ])
-]
+] & Compile
 
 // 4. Compile-time AST Macro (`derive_json`), Reflection (`Meta.fields_of`) & Doc-Comments (`Meta.doc_of`):
 derive_json(TargetForm) [
@@ -1394,18 +1439,20 @@ derive_json(TargetForm) [
       "\{ {inner} \}"
     ]
   }
-]
+] & Compile
 
 #
 Represents a catalog product with auto-derived JSON serialization.
 Comments attached before or inline on declarations are inspectable via `Meta.doc_of`!
 #
-Product ({
-  id    Int    // Unique product identifier
-  title String // Display title in catalog
-} . derive_json)
+Product (Compile & [
+  {
+    id    Int    // Unique product identifier
+    title String // Display title in catalog
+  } . derive_json
+])
 
-// Inspecting types, fields, and homoiconic documentation comments at compile-time or runtime:
+// Inspecting types, fields, and homoiconic documentation comments (compile-time specialized via `& Compile`):
 inspect_entity(entity) [
   type_name (entity . Meta.type_of)
   doc_text  (entity . Meta.doc_of)
@@ -1414,7 +1461,7 @@ inspect_entity(entity) [
   entity . Meta.fields_of . for_each((f) [
     "Field {f.name} ({f.doc}) has type {f.type} and value {f.value}" . Shell.log
   ])
-]
+] & Compile
 
 
 #
@@ -1481,7 +1528,7 @@ run_test_suite() [
 23. CAPSTONE: STATEFUL RECURSIVE AUTONOMOUS AI AGENT & MAIN ENTRY POINT
 #
 
-CompileError { code Int, log String }
+CompileError { code Int, log String } & Bypass
 BuildSuccess { status String, artifact String }
 BuildResult  BuildSuccess | CompileError
 
@@ -1499,12 +1546,16 @@ AgentState {
 }
 
 Ai {
-  call(query AiQuery) [ query . native_ai_llm_request ]
+  call(query AiQuery) AiResponse [ query . native_ai_llm_request ]
 }
 
-run_build() [ "cargo build --release" . Shell.exec ]
+run_build() BuildResult [ "cargo build --release" . Shell.exec . native_parse_build_result ]
 
 // Pure tail-recursive loop over `AgentState` (compiled to a zero-overhead machine loop via Law 4 TCO):
+// Notice stream depth indexing (Law 1b):
+// • `_0` = `agent_loop` root stream (`state AgentState`)
+// • `_1` = `_ [ ... ]` router branch stream (`state.retries`)
+// • `_2` (or `_`) = `.> [ ... ]` tap stream (`AiResponse` from `Ai.call`)!
 agent_loop(state AgentState) [
   state.retries . {
     [ _ == 0 ] [ "Retry limit reached. Human intervention required." . Shell.log ]
@@ -1516,8 +1567,8 @@ agent_loop(state AgentState) [
           user_prompt   "Error log: {state.err.log}. Write a patch."
         }
         . Ai.call
-        .> [ "AI suggests solution: {_1.explanation}" . Shell.log ]
-        .> [ "git apply {_1.diff}" . Shell.exec ]
+        .> [ "AI suggests solution: {_2.explanation}" . Shell.log ]
+        .> [ "git apply {_2.diff}" . Shell.exec ]
       )
 
       run_build() . {
@@ -1567,8 +1618,11 @@ main() [
 
 
 #
-24. APPENDIX: ADVANCED HOMOICONIC GRAPH REWRITING & SCENE OPTIMIZATION
+24. APPENDIX A: ADVANCED HOMOICONIC GRAPH REWRITING & SCENE OPTIMIZATION (`Compile &`)
 #
+// Note on Rule 1 (`{(K) V}`): When a pattern key in `Meta.rewrite` is a compound AST expression or
+// dotted path (`(calc(_))`, `(Shell.log)`, `(self.i_id_attribute)`), wrapping the key in parens `()`
+// keeps the lexer 100% unambiguous!
 
 ComplexSystem {
   name "Core"
@@ -1581,10 +1635,12 @@ ComplexSystem {
   }
 }
 
-UpgradedSystem (ComplexSystem . Meta.rewrite({
-  calc(_)   [ (x Float) [ x * 1.20 ] ] // Replaces all `calc` functions at every depth
-  Shell.log [ Audit.write ]            // Replaces `Shell.log` inside any nested stream
-}))
+UpgradedSystem (Compile & [
+  ComplexSystem . Meta.rewrite({
+    (calc(_))   [ (x Float) [ x * 1.20 ] ] // Replaces all `calc` functions at every depth
+    (Shell.log) [ Audit.write ]            // Replaces `Shell.log` inside any nested stream
+  })
+])
 
 // --- Case 1: Simultaneous Field Declaration & Call-Site Refactoring ---
 IdNameController {
@@ -1600,12 +1656,12 @@ refactor_id_to_my_id(context_tree) [
     { i_id_attribute val } [
       { my_id (MyAttributeForCurrentContext & val) }
     ]
-    // (b) Replace all read accesses inside Streams `[]`:
-    self.i_id_attribute [ self.my_id ]
-    _.i_id_attribute    [ _.my_id ]
-    i_id_attribute      [ my_id ]
+    // (b) Replace all read accesses inside Streams `[]` (path keys wrapped in `()` per Rule 1):
+    (self.i_id_attribute) [ self.my_id ]
+    (_.i_id_attribute)    [ _.my_id ]
+    i_id_attribute        [ my_id ]
   })
-]
+] & Compile
 
 // --- Case 2A: Collapse a Component Group via Ancestor Subtraction (`/`) ---
 Cuboid {
@@ -1644,7 +1700,7 @@ optimize_graph(root_context) [
       }
     ]
   })
-]
+] & Compile
 
 // --- Case 2C: Flatten an Entire Deep Component Subtree into a Single Native Node ---
 RoundButton Cuboid & {
@@ -1667,22 +1723,176 @@ render_for_mobile(screen_graph) [
       }
     ]
   })
-]
+] & Compile
 
 // --- Architectural Best Practices for Graph Rewriting ---
 // Rule 1: Preserve Lineage (`my_btn PlayButton & MyIdContext`) instead of destructive edits.
 // Rule 2: Use Default Parameter Slots for 90% of variation instead of AST rewriting:
-Element(id_attr ProceduralId) {
+Element(id_attr ProceduralId) Cuboid & StartNode {
   id id_attr
-} & Cuboid & StartNode
+}
 
 default_el Element()
 custom_el  (Element & { id_attr MyAttributeForCurrentContext })()
 
-// Rule 3: Run Graph `rewrite` in one centralized Render Pipeline at the end:
+// Rule 3: Run Graph `rewrite` in one centralized Render Pipeline at compile-time:
 build_screen(raw_tree) [
   raw_tree
   . refactor_id_to_my_id
   . optimize_graph
   . render_for_mobile
+] & Compile
+
+
+#
+25. APPENDIX B: COMPILER ERROR CATALOG & HOW TO SOLVE HARD ARCHITECTURAL EDGE CASES
+#
+// This section documents exact compile-time errors (`E01`..`E07`) that protect developers from
+// ambiguity, accidental shadowing, and unhandled union branches, along with canonical solutions.
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 1: Spaced Binding vs Function Call Ambiguity (`E01_AMBIGUOUS_CALL_OR_BIND`)
+// -----------------------------------------------------------------------------
+// Problem: A developer puts a space before `(` when calling a function `area (Circle { radius 5.0 })`.
+// Compiler Rule: `name (expr)` with a space is ONLY legal if `name` is a new local variable or
+// an existing mutable `snake_case` variable/field. If `name` resolves to a Function in scope,
+// the compiler halts immediately!
+
+edge_case_1_demo() [
+  // ❌ COMPILE ERROR `E01_AMBIGUOUS_CALL_OR_BIND`:
+  //    `area` is a Function in scope; cannot rebind a function name or call it with a leading space!
+  // area (Circle { radius 5.0 })
+
+  // ✅ SOLUTION A (To call function `area`, remove the space before `(` or use `.` pipe):
+  res1 area(Circle { radius 5.0 })
+  res2 (Circle { radius 5.0 } . area)
+
+  // ✅ SOLUTION B (To bind a new local variable, use a distinct variable name):
+  circle_area (Circle { radius 5.0 } . area)
 ]
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 2: Duplicate or Compound Unnamed Types in Parameter Slots (`E02_DUPLICATE_UNNAMED_TYPE`)
+// -----------------------------------------------------------------------------
+// Problem: Passing two `Account` types without names (`transfer(Account, Account, Money)`)
+// or an unnamed intersection (`finalize(User & Cart)`) makes slot bindings ambiguous.
+// Compiler Rule: Law 1c auto-binding (`Account` -> `account`) is strictly limited to a SINGLE
+// atomic `PascalCase` Type identifier in `()`. Duplicate or compound types require explicit `snake_case` names!
+
+Account { iban String, balance Money }
+
+// ❌ COMPILE ERROR `E02_DUPLICATE_UNNAMED_TYPE`:
+//    Type `Account` appears twice in parameter slots without explicit names!
+// transfer_bad(Account, Account, Money) [
+//   account1.balance (account1.balance - money)
+// ]
+
+// ✅ SOLUTION: Give duplicate types explicit semantic `snake_case` names, while `Money` (unique & atomic!)
+//    can still use Law 1c auto-binding (`money`):
+transfer_safe(source Account, target Account, Money) [
+  source.balance (source.balance - money)
+  target.balance (target.balance + money)
+  (source, target)
+]
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 3: Generic Type Parameter Shadowing an Existing Type (`E03_TYPE_PARAM_SHADOWS_TYPE`)
+// -----------------------------------------------------------------------------
+// Problem: You write a generic container `Wrapper(User) { val User }` thinking `User` is an unbound
+// type parameter `T`, or a library update introduces a concrete `Item` type that collides with your
+// generic `Cache(Item)`.
+// Compiler Rule: An unbound Generic Type Parameter MUST NOT share a name with any Type in scope!
+// If you want a concrete field, give it a `snake_case` name or use Law 1c inside `{}`.
+// If you want a Generic Type Parameter, use a non-shadowing name (`T`, `Elem`, `Val`)!
+
+// ❌ COMPILE ERROR `E03_TYPE_PARAM_SHADOWS_TYPE`:
+//    `User` is already a concrete Type in scope. In `Wrapper(User)`, `User` is auto-bound as value `user User`.
+//    Using `User` as a generic type parameter inside `{ item User }` is rejected!
+
+// ✅ SOLUTION A (Generic Container — use an unbound Type Parameter name like `T` or `Elem`):
+Wrapper(Elem) {
+  item Elem
+}
+
+// ✅ SOLUTION B (Bounded Generic where `U` is a subtype of `User`):
+UserWrapper(U User, current_user U) {
+  active U current_user
+}
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 4: Accidental Union Bypass on Domain Types (`E04_UNHANDLED_UNION_BRANCH`)
+// -----------------------------------------------------------------------------
+// Problem: A pipeline returns `User | Company | NotFound`. You pipe it into `send_welcome(User)`.
+// `NotFound` is an error (`& Bypass`), so it should bypass `send_welcome`.
+// But `Company` is a valid business entity (NOT `& Bypass`)! If `Company` silently bypassed
+// `send_welcome`, business notifications for companies would be silently dropped!
+// Compiler Rule (Law 3): Only branches that implement `& Bypass` (`None`, `NotFound`, `IoError`)
+// automatically bypass functions! Unhandled non-`Bypass` branches trigger `E04_UNHANDLED_UNION_BRANCH`!
+
+fetch_actor(id String) User | Company | NotFound [
+  User { id id, name "Alice", age 30, role 'admin', password_hash "hash" }
+]
+
+send_welcome_email(User) [ "Sent email to {user.name}" ]
+
+handle_actor_pipeline(id String) [
+  // ❌ COMPILE ERROR `E04_UNHANDLED_UNION_BRANCH`:
+  //    `fetch_actor` returns `User | Company | NotFound`.
+  //    `NotFound` implements `Bypass` (OK), `User` matches `send_welcome_email(User)` (OK),
+  //    but `Company` is NOT a subtype of `User` and is NOT marked `& Bypass`!
+  // id . fetch_actor . send_welcome_email
+
+  // ✅ SOLUTION A: Explicitly route both business branches in `{}` (`NotFound` still auto-bypasses!):
+  id . fetch_actor . {
+    User    [ user . send_welcome_email ]
+    Company [ "Sent corporate onboarding to {company.name}" ]
+  }
+]
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 5: Lineage Diamond Collision (`E05_AMBIGUOUS_LINEAGE_FIELD`)
+// -----------------------------------------------------------------------------
+// Problem: Merging `User & Cloud` creates two `.name` fields (`User.name` and `Cloud.name`).
+// Reading `.name` directly is ambiguous.
+
+resolve_diamond_demo(entity User & Cloud) [
+  // ❌ COMPILE ERROR `E05_AMBIGUOUS_LINEAGE_FIELD`:
+  //    Field `name` exists in both ancestor `User` and ancestor `Cloud`!
+  // entity.name . Shell.log
+
+  // ✅ SOLUTION A (Explicit Ancestor Path at read site):
+  "User: {entity.User.name}, Cloud: {entity.Cloud.name}" . Shell.log
+
+  // ✅ SOLUTION B (Subtract one ancestor's field at the Type level via `/`):
+  clean_entity (entity / Cloud.name)
+  clean_entity.name . Shell.log // Unambiguously resolves to `User.name`!
+]
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 6: Mutating an Immutable Form Type vs Instance (`E06_IMMUTABLE_TYPE_BINDING`)
+// -----------------------------------------------------------------------------
+// Problem: Trying to mutate a `PascalCase` Form declaration directly.
+
+immutable_demo() [
+  // ❌ COMPILE ERROR `E06_IMMUTABLE_TYPE_BINDING`:
+  //    `Car` is a `PascalCase` Form Prototype/Type and is strictly immutable!
+  // Car.max_speed 500
+
+  // ✅ SOLUTION: Instantiate `Car` into a `snake_case` local variable, then mutate in-place:
+  my_car (Car {})
+  my_car.max_speed 500
+]
+
+// -----------------------------------------------------------------------------
+// EDGE CASE 7: Static Verification with `Compile &` Assertions (`E07_STATIC_ASSERT_FAILED`)
+// -----------------------------------------------------------------------------
+// How to enforce architectural invariants (e.g. "PublicUser must never contain `password_hash`")
+// at compile-time so the build fails immediately if someone breaks a security rule:
+
+VerifyPublicUserSafety (Compile & [
+  fields (PublicUser . Meta.fields_of . map([ _.name ]))
+  (fields . contains("password_hash")) . {
+    true  [ Compile.error("SECURITY VIOLATION: PublicUser leaked password_hash!") ]
+    false [ true ]
+  }
+])
