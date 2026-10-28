@@ -1,39 +1,125 @@
-Program    = { SOI ~ statements ~ EOI }
-// Утверждения разделяются переводами строк или точкой с запятой
-statements = _{ SEP* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ SEP* }
-sentence   = { token+ }
+// =============================================================================
+// RAZOMY LANGUAGE V4.7 — COMPLETE PEST GRAMMAR
+// =============================================================================
 
-token = _{ group | literal }
+Program = { SOI ~ statements ~ EOI }
 
-// --- РАЗДЕЛИТЕЛИ И ПРОБЕЛЫ ---
-SEP = _{ NEWLINE | ":" }
+// --- ПРОБЕЛЫ И КОММЕНТАРИИ ---
 WHITESPACE = _{ " " | "\t" | "\r" }
-// Комментарии игнорируются парсером автоматически
-COMMENT = _{ ("//" | "##") ~ (!NEWLINE ~ ANY)* }
 
-// --- ГРУППЫ ---
-group = _{ brace_group | bracket_group | paren_group | angle_group }
+COMMENT = _{ line_comment | block_comment }
+line_comment  = @{ "//" ~ (!NEWLINE ~ ANY)* }
+// '#' открывает блочный комментарий ТОЛЬКО если за ним идет пробел или перевод строки.
+// Внутри разрешены закавыченные '#' ("'#'" и "\"#\"").
+block_comment = @{ "#" ~ &(" " | "\t" | "\r" | NEWLINE) ~ ( "'#'" | "\"#\"" | (!"#" ~ ANY) )* ~ "#" }
 
+// --- РАЗДЕЛИТЕЛИ И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
+// ВАЖНО: `@` (atomic) гарантирует, что Pest не съест пробелы после "." неявным WHITESPACE*
+PIPE_OP_AHEAD = @{
+    ".>" | ".&" | ".?" | ".|"
+  | ("." ~ (" " | "\t" | "\r" | NEWLINE))
+}
+
+// Перевод строки продолжает текущее предложение, если первое, что идет после
+// любых пустых строк, отступов и комментариев — это оператор пайплайна.
+pipe_nl = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
+
+// Разделитель предложений срабатывает только тогда, когда это НЕ продолжение пайплайна
+SEP = _{ "," | (!pipe_nl ~ NEWLINE) }
+
+statements = _{ ( "," | NEWLINE )* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ ( "," | NEWLINE )* }
+sentence   = { token ~ (pipe_nl? ~ token)* }
+
+// =============================================================================
+// ТОКЕНЫ (СТРОГИЙ ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
+// =============================================================================
+// ВАЖНО: range_expr стоит ДО string_lit и symbol_lit, чтобы "0".."9" парсился как Range!
+token = _{
+    group
+  | range_expr
+  | string_lit
+  | symbol_lit
+  | rich_literal
+  | number_lit
+  | operator
+  | path
+}
+
+// 1. Три гомоиконные скобки: {} (Form), [] (Stream), () (Tuple)
+group = _{ brace_group | bracket_group | paren_group }
 brace_group   = { "{" ~ statements ~ "}" }
 bracket_group = { "[" ~ statements ~ "]" }
 paren_group   = { "(" ~ statements ~ ")" }
-angle_group   = { "<" ~ statements ~ ">" }
 
-// --- ЛИТЕРАЛЫ И ТОКЕНЫ ---
-literal = _{ number | string | path | op }
+// 2. Строки "..." (с экранированием) и Символы '...'
+string_lit = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\{" | "\\}" | (!"\"" ~ ANY) )* ~ "\"" }
+symbol_lit = @{ "'" ~ ( "\\'" | "\\\\" | (!"'" ~ ANY) )* ~ "'" }
 
-number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+// 3. Диапазоны (Ranges): 1..10, 1..Limit, "0".."9", "a".."z"
+range_atom = _{ string_lit | symbol_lit | number_lit | ident_seg }
+range_expr = ${ range_atom ~ ".." ~ range_atom }
 
-// Путь: слово, либо слова через точку (Name, Process.Log, Array)
-path = @{ WORD_START ~ WORD_PART* ~ ("." ~ WORD_START ~ WORD_PART*)* }
-WORD_START = _{ ASCII_ALPHA | "_" }
-WORD_PART  = _{ ASCII_ALPHANUMERIC | "_" }
+// 4. Богатые самотипизированные литералы (Rich Human Literals — без пробелов)
+// ВАЖНО: hex_byte_lit стоит ДО coord_lit, чтобы 0x00 не парсился как координата!
+rich_literal = _{
+    url_lit
+  | file_lit
+  | email_lit
+  | money_lit
+  | hex_byte_lit
+  | date_lit
+  | time_lit
+  | ip_lit
+  | version_lit
+  | coord_lit
+  | duration_lit
+  | percent_lit
+  | color_lit
+}
 
-// Строки
-string = _{ double_quote_group | single_quote_group }
-double_quote_group = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
-single_quote_group = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
+// Поддержка интерполяции {Expr} внутри некавыченных URL и File литералов
+interp_chunk = _{ "{" ~ (!("}" | " " | "\t" | "\r" | NEWLINE) ~ ANY)* ~ "}" }
+url_char     = _{ interp_chunk | (!(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "{" | "}") ~ ANY) }
 
-// Операторы (все символы, которые не буквы и не скобки)
-// Сюда попадут &, |, =, и т.д.
-op = @{ ("&" | "|" | "=" | "+" | "-" | "*" | "/" | "!" | "?" | "@" | "#" | "$" | "%" | "^" | "~")+ }
+url_lit      = @{ ("https://" | "http://") ~ url_char+ }
+file_lit     = @{ "%" ~ url_char+ }
+// Сегменты домена разделены явно через ("." ~ ...)+, чтобы жадный `+` не съедал последнюю точку
+email_lit    = @{ (ASCII_ALPHANUMERIC | "_" | "." | "-" | "+")+ ~ "@" ~ (ASCII_ALPHANUMERIC | "-")+ ~ ("." ~ (ASCII_ALPHANUMERIC | "-")+)+ }
+money_lit    = @{ ASCII_ALPHA_UPPER{0, 3} ~ "$" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
+date_lit     = @{ ASCII_DIGIT{4} ~ "-" ~ ASCII_DIGIT{2} ~ "-" ~ ASCII_DIGIT{2} }
+time_lit     = @{ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ (":" ~ ASCII_DIGIT{2})? }
+ip_lit       = @{ ASCII_DIGIT{1,3} ~ ("." ~ ASCII_DIGIT{1,3}){3} ~ (":" ~ ASCII_DIGIT+)? }
+version_lit  = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ ("-" ~ (ASCII_ALPHANUMERIC | "." | "-")+)? }
+coord_lit    = @{ !"0x" ~ ASCII_DIGIT+ ~ ("x" ~ ASCII_DIGIT+)+ ~ !(ASCII_ALPHA | "_") }
+duration_lit = @{ (ASCII_DIGIT+ ~ ("ms" | "s" | "m" | "h" | "d"))+ ~ !(ASCII_ALPHA | "_") }
+percent_lit  = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "%" }
+color_lit    = @{ "#" ~ ASCII_HEX_DIGIT{3, 8} ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// 5. Числа (Int и Float)
+// ВАЖНО: ("." ~ !".") запрещает одиночную точку после числа, но разрешает диапазон `..` (например, `1..100`)
+number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !".")) }
+
+// 6. Операторы (унарный `!` примыкает плотно, бинарные отделяются пробелом или `(` при перегрузке)
+OP_BOUND = _{ &(" " | "\t" | "\r" | NEWLINE | EOI | "{" | "[" | "(") }
+operator = @{
+    ("!" ~ !"=")
+  | (
+        (
+            ".>" | ".&" | ".?" | ".|"
+          | "==" | "!=" | ">=" | "<="
+          | "&&" | "||"
+          | "**" | "<<" | ">>"
+          | "+"  | "-"  | "*"  | "/" | "%"
+          | ">"  | "<"
+          | "&"  | "|"  | "."
+        ) ~ OP_BOUND
+    )
+}
+
+// 7. Слитные пути и идентификаторы (без пробелов):
+// Name, User.Name, JonnDoyName3.0, JonnDoyName3.-1, _.Age, root.base
+path          = @{ primary_ident ~ ("." ~ (ident_seg | index_seg))* }
+primary_ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+ident_seg     = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+index_seg     = @{ "-"? ~ ASCII_DIGIT+ }
