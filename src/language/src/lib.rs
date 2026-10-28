@@ -1,6 +1,7 @@
-mod analyzer;
-mod runtime;
-mod hir;
+// src/lib.rs
+pub mod analyzer;
+pub mod hir;
+pub mod runtime;
 
 use pest::Parser;
 use pest_derive::Parser;
@@ -183,22 +184,50 @@ pub enum SemanticKind {
     /// Axiom 1: `Name Value`, `MoneyVal $199.99`, `Add (A + B)`, `OrderList (...)`
     Binding { key: String, value: Vec<Token> },
     /// Деструктуризация кортежа `(A, B) Source` или параметризованный ключ карты `(K) V`
-    TupleBinding { tuple: Vec<Sentence>, value: Vec<Token> },
+    TupleBinding {
+        tuple: Vec<Sentence>,
+        value: Vec<Token>,
+    },
     /// Axiom 2 & 3: `Name { ... }` или `Name { ... } & Trait`
-    FormDef { name: String, body: Vec<Sentence>, tail: Vec<Token> },
+    FormDef {
+        name: String,
+        body: Vec<Sentence>,
+        tail: Vec<Token>,
+    },
     /// Axiom 4: `User Identifiable { ... } & Extra`
-    SubtypeFormDef { name: String, base: String, body: Vec<Sentence>, tail: Vec<Token> },
+    SubtypeFormDef {
+        name: String,
+        base: String,
+        body: Vec<Sentence>,
+        tail: Vec<Token>,
+    },
     /// Именованная функция: `Name(Args) [Body]` (с возможным `& Private`)
-    FunctionDef { name: String, args: Vec<Sentence>, body: Vec<Sentence>, tail: Vec<Token> },
+    FunctionDef {
+        name: String,
+        args: Vec<Sentence>,
+        body: Vec<Sentence>,
+        tail: Vec<Token>,
+    },
     /// Дженерик-тип / форма: `Map(K, V) { (K) V }`, `List(T) None | Cons(T)`
-    GenericDef { name: String, params: Vec<Sentence>, body: Vec<Token> },
+    GenericDef {
+        name: String,
+        params: Vec<Sentence>,
+        body: Vec<Token>,
+    },
     /// Реактивное поле / поток / ветка паттерн-матчинга по типу: `Subtotal [ Price * Quantity ]`
     StreamOrBranch { name: String, stream: Vec<Sentence> },
     /// Перегрузка оператора или контракт метода: `+(Other Vec2) [ ... ]`, `<(Other) Bool`
-    OperatorMethod { op: String, args: Vec<Sentence>, rest: Vec<Token> },
+    OperatorMethod {
+        op: String,
+        args: Vec<Sentence>,
+        rest: Vec<Token>,
+    },
     /// Анонимная лямбда или ветка кортежа в роутере: `(Args) [Body]`
-    LambdaOrTupleBranch { args: Vec<Sentence>, body: Vec<Sentence> },
-    /// Ветка роутера с предикатом `[ _ >= 2000 ] [ 300 ]` или структурой `{ Method 'GET' } [ ... ]`
+    LambdaOrTupleBranch {
+        args: Vec<Sentence>,
+        body: Vec<Sentence>,
+    },
+    /// Ветка роутера с предикатом `[ _ >= 2000 ] [ 300 ]`, структурой `{ Method 'GET' } [ ... ]` или литералом `true [ ... ]`
     PatternBranch { pattern: Token, body: Vec<Sentence> },
     /// Алгебра типов / уточнений / вычитания: `PublicUser User / User.PasswordHash`, `Adult User & IsAdult`
     AlgebraicDef { name: String, expr: Vec<Token> },
@@ -226,11 +255,15 @@ pub fn is_pipe_op(op: &str) -> bool {
 }
 
 pub fn has_pipe_op(tokens: &[Token]) -> bool {
-    tokens.iter().any(|t| matches!(t, Token::Op(op) if is_pipe_op(op)))
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Op(op) if is_pipe_op(op)))
 }
 
 pub fn has_algebra_op(tokens: &[Token]) -> bool {
-    tokens.iter().any(|t| matches!(t, Token::Op(op) if matches!(op.as_str(), "&" | "|" | "/")))
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Op(op) if matches!(op.as_str(), "&" | "|" | "/")))
 }
 
 /// Разбивает плоский пайплайн `A . B .? C` на начальное выражение `A` и шаги `Vec<PipeStep>`
@@ -288,14 +321,15 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             }
         }
 
-        // 3. Ветка паттерн-матчинга `[ _ >= 2000 ] [ 300 ]` или `{ Method 'GET' } [ ... ]`
+        // 3. Ветка паттерн-матчинга `[ _ >= 2000 ] [ 300 ]`, `{ Method 'GET' } [ ... ]` или `true [ ... ]`
         [pat @ Token::Group('[', _), Token::Group('[', body)]
-        | [pat @ Token::Group('{', _), Token::Group('[', body)] => SemanticKind::PatternBranch {
+        | [pat @ Token::Group('{', _), Token::Group('[', body)]
+        | [pat @ Token::Lit(_), Token::Group('[', body)] => SemanticKind::PatternBranch {
             pattern: pat.clone(),
             body: body.clone(),
         },
 
-        // 4. Деструктуризация кортежа `(String, Int) root.base` или ключ карты `(K) V`
+        // 4. Деструктуризация кортежа `(String, Int) root.base` или ключ карты `("host") "localhost"`
         [Token::Group('(' | ')', tuple), rest @ ..] if !rest.is_empty() && !has_pipe_op(rest) => {
             SemanticKind::TupleBinding {
                 tuple: tuple.clone(),
@@ -303,7 +337,17 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             }
         }
 
-        // 5. Слитная скобка `Name(Args)` (маркер `')'`):
+        // 5. Ключ карты в виде строкового или символьного литерала: `"host" "localhost"`
+        [Token::Lit(Literal::String(key) | Literal::Symbol(key)), rest @ ..]
+        if !rest.is_empty() && !has_pipe_op(rest) && !matches!(rest, [Token::Op(_), ..]) =>
+            {
+                SemanticKind::Binding {
+                    key: key.clone(),
+                    value: rest.to_vec(),
+                }
+            }
+
+        // 6. Слитная скобка `Name(Args)` (маркер `')'`):
         // Именованная функция `Name(Args) [Body]`, Вызов `Name(Args)` или Дженерик `Name(T) ...`
         [Token::Path(name), Token::Group(')', args), rest @ ..] => match rest {
             [Token::Group('[', body), tail @ ..] => SemanticKind::FunctionDef {
@@ -324,7 +368,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             },
         },
 
-        // 6. Начинается с идентификатора `Name ...` (где после `Name` был пробел!)
+        // 7. Начинается с идентификатора `Name ...` (где после `Name` был пробел!)
         [Token::Path(name), rest @ ..] => match rest {
             [] => SemanticKind::Expression(sentence.clone()),
 
@@ -354,11 +398,15 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             },
 
             [Token::Path(base), Token::Group('{', body), tail @ ..] => {
-                SemanticKind::SubtypeFormDef {
-                    name: name.clone(),
-                    base: base.clone(),
-                    body: body.clone(),
-                    tail: tail.to_vec(),
+                if has_pipe_op(tail) {
+                    SemanticKind::Pipeline(sentence.clone())
+                } else {
+                    SemanticKind::SubtypeFormDef {
+                        name: name.clone(),
+                        base: base.clone(),
+                        body: body.clone(),
+                        tail: tail.to_vec(),
+                    }
                 }
             }
 
@@ -367,14 +415,14 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
                 expr: rest.to_vec(),
             },
 
-            // Сюда попадают `Add (A + B)`, `Origin (0.0, 0.0)`, `OrderList (...)`!
+            // Сюда попадают `Add (A + B)`, `Origin (0.0, 0.0)`, `OrderList (...)`, `DefaultConn Connect()`!
             _ => SemanticKind::Binding {
                 key: name.clone(),
                 value: rest.to_vec(),
             },
         },
 
-        // 7. Любые другие пайплайны и выражения
+        // 8. Любые другие пайплайны и выражения
         _ => {
             if has_pipe_op(sentence) {
                 SemanticKind::Pipeline(sentence.clone())

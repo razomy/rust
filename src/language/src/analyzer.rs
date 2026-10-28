@@ -57,6 +57,7 @@ pub struct SymbolInfo {
     pub documentation: String,
     pub fields: HashMap<String, FieldSchema>,
     pub field_order: Vec<String>,
+    pub methods: Vec<String>,
     pub ancestors: Vec<String>,
     pub params: Vec<(String, String)>,
     pub auto_unpacks_first_arg: bool,
@@ -107,6 +108,7 @@ impl AnalysisReport {
                     "signature": sym.signature,
                     "doc": sym.documentation,
                     "ancestors": sym.ancestors,
+                    "methods": sym.methods,
                     "autoUnpacks": sym.auto_unpacks_first_arg,
                     "fields": fields,
                 })
@@ -164,6 +166,12 @@ impl AnalysisReport {
                 }
             }
         }
+        if !sym.methods.is_empty() {
+            md.push_str("\n**Методы и операторы:**\n");
+            for m in &sym.methods {
+                md.push_str(&format!("- `{m}`\n"));
+            }
+        }
         Some(md)
     }
 }
@@ -185,7 +193,6 @@ pub fn analyze_source(source: &str) -> AnalysisReport {
         }
     };
 
-    // ШАГ 1: Строим статический HIR из сырого AST
     let hir = lower_to_hir(&sentences);
     analyze_from_hir(hir, &mut report);
     report
@@ -203,11 +210,12 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
                             severity: Severity::Information,
                             code: "I002_LAW2_COLLISION",
                             message: format!(
-                                "Закон 2 (Lineage, предложение #{}): В типе '{}' поле '{}' унаследовано от: {}. Используйте явный путь предка.",
+                                "Закон 2 (Lineage, предложение #{}): В типе '{}' поле '{}' унаследовано от: {}. При прямом доступе используйте путь предка ({}.{fname}).",
                                 hir_form.origin.sentence_index,
                                 form_name,
                                 fname,
-                                hf.conflicting_origins.join(" и ")
+                                hf.conflicting_origins.join(" и "),
+                                hf.conflicting_origins.first().cloned().unwrap_or_default()
                             ),
                             context_symbol: Some(form_name.clone()),
                             sentence_index: Some(hir_form.origin.sentence_index),
@@ -239,13 +247,18 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
                 SymbolInfo {
                     name: form_name.clone(),
                     kind,
-                    signature: format!("Form {form_name} {{ {} fields }}", hir_form.field_order.len()),
+                    signature: format!(
+                        "Form {form_name} {{ {} fields, {} methods }}",
+                        hir_form.field_order.len(),
+                        hir_form.method_order.len()
+                    ),
                     documentation: format!(
                         "Статически разрешенная форма HIR (предложение #{})",
                         hir_form.origin.sentence_index
                     ),
                     fields,
                     field_order: hir_form.field_order.clone(),
+                    methods: hir_form.method_order.clone(),
                     ancestors: hir_form.ancestors.clone(),
                     params: vec![],
                     auto_unpacks_first_arg: false,
@@ -261,9 +274,13 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
                 name: g.key.clone(),
                 kind: SymbolKind::Variable,
                 signature: format!("{} : {}", g.key, g.inferred_type),
-                documentation: format!("Глобальная привязка (предложение #{})", g.origin.sentence_index),
+                documentation: format!(
+                    "Глобальная привязка (предложение #{})",
+                    g.origin.sentence_index
+                ),
                 fields: HashMap::new(),
                 field_order: vec![],
+                methods: vec![],
                 ancestors: vec![],
                 params: vec![],
                 auto_unpacks_first_arg: false,
@@ -271,6 +288,7 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
             if let Some(base_sym) = report.symbols.get(&g.inferred_type).cloned() {
                 sym.fields = base_sym.fields;
                 sym.field_order = base_sym.field_order;
+                sym.methods = base_sym.methods;
                 sym.ancestors = base_sym.ancestors;
             }
             report.symbol_order.push(g_name.clone());
@@ -298,7 +316,13 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
 
             let param_str = params_tuple
                 .iter()
-                .map(|(n, t)| if t.is_empty() { n.clone() } else { format!("{n} {t}") })
+                .map(|(n, t)| {
+                    if t.is_empty() || n == t {
+                        n.clone()
+                    } else {
+                        format!("{n} {t}")
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -319,6 +343,7 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
                     ),
                     fields: HashMap::new(),
                     field_order: vec![],
+                    methods: vec![],
                     ancestors: vec![],
                     params: params_tuple,
                     auto_unpacks_first_arg: hir_fn.auto_unpacks,
@@ -339,6 +364,8 @@ fn verify_hir_function_body(
     report: &mut AnalysisReport,
 ) {
     let mut shadowed_named_fields: HashMap<String, (String, String)> = HashMap::new();
+    let mut ambiguous_unpacked_fields: HashMap<String, Vec<String>> = HashMap::new();
+
     if !auto_unpacks {
         for p in params {
             if !p.type_constraint.is_empty() {
@@ -355,6 +382,12 @@ fn verify_hir_function_body(
                 }
             }
         }
+    } else if let Some(first_param) = params.first() {
+        collect_ambiguous_fields_for_type(
+            &first_param.name,
+            &report.symbols,
+            &mut ambiguous_unpacked_fields,
+        );
     }
 
     let mut local_vars = HashSet::new();
@@ -371,9 +404,24 @@ fn verify_hir_function_body(
             sent,
             &local_vars,
             &shadowed_named_fields,
+            &ambiguous_unpacked_fields,
             sentence_idx,
             report,
         );
+    }
+}
+
+fn collect_ambiguous_fields_for_type(
+    type_name: &str,
+    symbols: &HashMap<String, SymbolInfo>,
+    out: &mut HashMap<String, Vec<String>>,
+) {
+    if let Some(sym) = symbols.get(type_name) {
+        for (fname, fschema) in &sym.fields {
+            if fschema.is_ambiguous {
+                out.insert(fname.clone(), fschema.conflicting_origins.clone());
+            }
+        }
     }
 }
 
@@ -382,6 +430,7 @@ fn check_tokens_for_laws(
     tokens: &[Token],
     local_vars: &HashSet<String>,
     shadowed_named_fields: &HashMap<String, (String, String)>,
+    ambiguous_unpacked_fields: &HashMap<String, Vec<String>>,
     sentence_idx: usize,
     report: &mut AnalysisReport,
 ) {
@@ -392,25 +441,61 @@ fn check_tokens_for_laws(
             &head,
             local_vars,
             shadowed_named_fields,
+            ambiguous_unpacked_fields,
             sentence_idx,
             report,
         );
         for step in steps {
             if let Some(Token::Group('{', branches)) = step.expr.first() {
                 for branch in branches {
-                    if let SemanticKind:: PatternBranch { body, .. } = classify_sentence(branch) {
-                        for s in &body {
-                            check_tokens_for_laws(
-                                fn_name,
-                                s,
-                                local_vars,
-                                shadowed_named_fields,
-                                sentence_idx,
-                                report,
-                            );
+                    match classify_sentence(branch) {
+                        SemanticKind::PatternBranch { body, .. } => {
+                            for s in &body {
+                                check_tokens_for_laws(
+                                    fn_name,
+                                    s,
+                                    local_vars,
+                                    shadowed_named_fields,
+                                    ambiguous_unpacked_fields,
+                                    sentence_idx,
+                                    report,
+                                );
+                            }
                         }
+                        SemanticKind::StreamOrBranch { name, stream } => {
+                            // Закон 1b + Закон 2: При сопоставлении по типу `UserOrder [ ... ]`
+                            // проверяем, нет ли прямого обращения к коллизионным полям!
+                            let mut branch_ambiguous = ambiguous_unpacked_fields.clone();
+                            collect_ambiguous_fields_for_type(
+                                &name,
+                                &report.symbols,
+                                &mut branch_ambiguous,
+                            );
+                            for s in &stream {
+                                check_tokens_for_laws(
+                                    fn_name,
+                                    s,
+                                    local_vars,
+                                    shadowed_named_fields,
+                                    &branch_ambiguous,
+                                    sentence_idx,
+                                    report,
+                                );
+                            }
+                        }
+                        _ => {}
                     }
                 }
+            } else {
+                check_tokens_for_laws(
+                    fn_name,
+                    &step.expr,
+                    local_vars,
+                    shadowed_named_fields,
+                    ambiguous_unpacked_fields,
+                    sentence_idx,
+                    report,
+                );
             }
         }
         return;
@@ -432,11 +517,34 @@ fn check_tokens_for_laws(
                             sentence_index: Some(sentence_idx),
                         });
                     }
+                    if let Some(origins) = ambiguous_unpacked_fields.get(p) {
+                        let suggestion = origins
+                            .iter()
+                            .map(|o| format!("{o}.{p}"))
+                            .collect::<Vec<_>>()
+                            .join(" или ");
+                        report.diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            code: "E002_LAW2_AMBIGUOUS_FIELD_ACCESS",
+                            message: format!(
+                                "Нарушение Закона 2 (предложение #{}): В '{}' поле '{}' неоднозначно (коллизия предков: {}). Используйте явный путь: {}.",
+                                sentence_idx,
+                                fn_name,
+                                p,
+                                origins.join(" & "),
+                                suggestion
+                            ),
+                            context_symbol: Some(fn_name.to_string()),
+                            sentence_index: Some(sentence_idx),
+                        });
+                    }
                 }
             }
             Token::Lit(Literal::String(raw)) => {
                 for (field_name, (param_var, _)) in shadowed_named_fields {
-                    if raw.contains(&format!("{{{field_name}}}")) && !local_vars.contains(field_name) {
+                    if raw.contains(&format!("{{{field_name}}}"))
+                        && !local_vars.contains(field_name)
+                    {
                         report.diagnostics.push(Diagnostic {
                             severity: Severity::Warning,
                             code: "W001_LAW1_NAMED_SLOT_INTERP",
@@ -448,6 +556,44 @@ fn check_tokens_for_laws(
                             sentence_index: Some(sentence_idx),
                         });
                     }
+                }
+                for (field_name, origins) in ambiguous_unpacked_fields {
+                    if raw.contains(&format!("{{{field_name}}}"))
+                        && !local_vars.contains(field_name)
+                    {
+                        let suggestion = origins
+                            .iter()
+                            .map(|o| format!("{{{o}.{field_name}}}"))
+                            .collect::<Vec<_>>()
+                            .join(" или ");
+                        report.diagnostics.push(Diagnostic {
+                            severity: Severity::Error,
+                            code: "E002_LAW2_AMBIGUOUS_FIELD_ACCESS",
+                            message: format!(
+                                "Нарушение Закона 2 (предложение #{}): В '{}' интерполяция '{{{}}}' обращается к коллизионному полю (предков: {}). Используйте {}.",
+                                sentence_idx,
+                                fn_name,
+                                field_name,
+                                origins.join(" & "),
+                                suggestion
+                            ),
+                            context_symbol: Some(fn_name.to_string()),
+                            sentence_index: Some(sentence_idx),
+                        });
+                    }
+                }
+            }
+            Token::Group(_, sents) => {
+                for s in sents {
+                    check_tokens_for_laws(
+                        fn_name,
+                        s,
+                        local_vars,
+                        shadowed_named_fields,
+                        ambiguous_unpacked_fields,
+                        sentence_idx,
+                        report,
+                    );
                 }
             }
             _ => {}

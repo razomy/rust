@@ -24,7 +24,7 @@ pub struct SourceOrigin {
 }
 
 // =============================================================================
-// 2. УЗЛЫ HIR (СТАТИЧЕСКИЕ СХЕМЫ ФОРМ, ПОЛЕЙ И ФУНКЦИЙ)
+// 2. УЗЛЫ HIR (СТАТИЧЕСКИЕ СХЕМЫ ФОРМ, ПОЛЕЙ, МЕТОДОВ И ФУНКЦИЙ)
 // =============================================================================
 
 #[derive(Debug, Clone)]
@@ -49,8 +49,15 @@ pub struct HirForm {
     /// Полностью разрешенная таблица полей (после применения всех `&` и `/`)
     pub fields: HashMap<String, HirField>,
     pub field_order: Vec<String>,
+    /// Методы и перегруженные операторы внутри формы (`Vec2.+`, `Db.FindUser`)
+    pub methods: HashMap<String, HirFunction>,
+    pub method_order: Vec<String>,
     /// Полный список предков (Lineage)
     pub ancestors: Vec<String>,
+    /// Ветки объединения (`Circle | Rect`)
+    pub union_variants: Vec<String>,
+    /// Предикаты уточнения (`User & IsAdult`)
+    pub refinement_predicates: Vec<String>,
     pub is_algebraic_alias: bool,
     pub origin: SourceOrigin,
 }
@@ -59,6 +66,7 @@ pub struct HirForm {
 pub struct HirParam {
     pub name: String,
     pub type_constraint: String,
+    pub default_expr: Vec<Token>,
     pub is_anonymous_type_slot: bool,
 }
 
@@ -66,7 +74,7 @@ pub struct HirParam {
 pub struct HirFunction {
     pub name: String,
     pub params: Vec<HirParam>,
-    /// Закон 1c: true для `Fn(User)`, false для `Fn(U User)`
+    /// Закон 1c: true для `Fn(User)` или `Fn(User & Cart)`, false для `Fn(U User)`
     pub auto_unpacks: bool,
     pub body: Vec<Sentence>,
     pub origin: SourceOrigin,
@@ -159,7 +167,7 @@ pub fn lower_to_hir(sentences: &[Sentence]) -> HirModule {
                     symbol_context: name.clone(),
                     raw_ast: sentence.clone(),
                 };
-                let (params, auto_unpacks) = lower_fn_params(&args);
+                let (params, auto_unpacks) = lower_fn_params(&args, &hir);
                 let func = HirFunction {
                     name: name.clone(),
                     params,
@@ -259,7 +267,11 @@ fn register_stdlib_hir(hir: &mut HirModule) {
             name: "Shell".into(),
             fields,
             field_order: vec!["Log".into(), "Exec".into()],
+            methods: HashMap::new(),
+            method_order: vec![],
             ancestors: vec![],
+            union_variants: vec![],
+            refinement_predicates: vec![],
             is_algebraic_alias: false,
             origin: dummy_origin,
         },
@@ -276,9 +288,13 @@ fn lower_form(
 ) -> HirForm {
     let mut fields = HashMap::new();
     let mut field_order = Vec::new();
+    let mut methods = HashMap::new();
+    let mut method_order = Vec::new();
     let mut ancestors = Vec::new();
+    let mut union_variants = Vec::new();
+    let mut refinement_predicates = Vec::new();
 
-    // 1. Статическое копирование полей базовой формы (Axiom 4)
+    // 1. Статическое копирование полей и методов базовой формы (Axiom 4)
     if let Some(base_name) = base {
         ancestors.push(base_name.to_string());
         if let Some(base_form) = hir.forms.get(base_name) {
@@ -286,6 +302,12 @@ fn lower_form(
                 if let Some(f) = base_form.fields.get(k) {
                     fields.insert(k.clone(), f.clone());
                     field_order.push(k.clone());
+                }
+            }
+            for m in &base_form.method_order {
+                if let Some(mf) = base_form.methods.get(m) {
+                    methods.insert(m.clone(), mf.clone());
+                    method_order.push(m.clone());
                 }
             }
             for anc in &base_form.ancestors {
@@ -296,9 +318,9 @@ fn lower_form(
         }
     }
 
-    // 2. Собственные поля внутри `{ ... }`
+    // 2. Собственные поля, реактивные потоки, методы и перегруженные операторы внутри `{ ... }`
     for (f_idx, s) in body.iter().enumerate() {
-        let field_origin = SourceOrigin {
+        let member_origin = SourceOrigin {
             sentence_index: f_idx,
             symbol_context: format!("{name}.{f_idx}"),
             raw_ast: s.clone(),
@@ -320,7 +342,7 @@ fn lower_form(
                         is_reactive: false,
                         is_ambiguous: false,
                         conflicting_origins: vec![],
-                        origin: field_origin,
+                        origin: member_origin,
                     },
                 );
             }
@@ -341,7 +363,48 @@ fn lower_form(
                         is_reactive: true,
                         is_ambiguous: false,
                         conflicting_origins: vec![],
-                        origin: field_origin,
+                        origin: member_origin,
+                    },
+                );
+            }
+            SemanticKind::FunctionDef {
+                name: method_name,
+                args,
+                body: fn_body,
+                ..
+            } => {
+                let (params, auto_unpacks) = lower_fn_params(&args, hir);
+                if !methods.contains_key(&method_name) {
+                    method_order.push(method_name.clone());
+                }
+                methods.insert(
+                    method_name.clone(),
+                    HirFunction {
+                        name: method_name,
+                        params,
+                        auto_unpacks,
+                        body: fn_body,
+                        origin: member_origin,
+                    },
+                );
+            }
+            SemanticKind::OperatorMethod { op, args, rest } => {
+                let (params, auto_unpacks) = lower_fn_params(&args, hir);
+                let fn_body = match rest.first() {
+                    Some(Token::Group('[', b)) => b.clone(),
+                    _ => vec![rest],
+                };
+                if !methods.contains_key(&op) {
+                    method_order.push(op.clone());
+                }
+                methods.insert(
+                    op.clone(),
+                    HirFunction {
+                        name: op,
+                        params,
+                        auto_unpacks,
+                        body: fn_body,
+                        origin: member_origin,
                     },
                 );
             }
@@ -349,13 +412,15 @@ fn lower_form(
         }
     }
 
-    // 3. Разрешение алгебры типов `&` и `/` в статику!
+    // 3. Разрешение алгебры типов `&`, `|` и `/` в статику!
     if !tail.is_empty() {
         resolve_type_algebra_into_fields(
             name,
             &mut fields,
             &mut field_order,
             &mut ancestors,
+            &mut union_variants,
+            &mut refinement_predicates,
             tail,
             &origin,
             hir,
@@ -366,7 +431,11 @@ fn lower_form(
         name: name.to_string(),
         fields,
         field_order,
+        methods,
+        method_order,
         ancestors,
+        union_variants,
+        refinement_predicates,
         is_algebraic_alias: false,
         origin,
     }
@@ -380,29 +449,52 @@ fn lower_algebraic_form(
 ) -> HirForm {
     let mut fields = HashMap::new();
     let mut field_order = Vec::new();
+    let mut methods = HashMap::new();
+    let mut method_order = Vec::new();
     let mut ancestors = Vec::new();
+    let mut union_variants = Vec::new();
+    let mut refinement_predicates = Vec::new();
 
-    if let Some(Token::Path(first_type)) = expr.first() {
-        if let Some(base_form) = hir.forms.get(first_type) {
-            ancestors.push(first_type.clone());
-            for anc in &base_form.ancestors {
-                if !ancestors.contains(anc) {
-                    ancestors.push(anc.clone());
+    if let Some(first_tok) = expr.first() {
+        match first_tok {
+            Token::Path(first_type) => {
+                if let Some(base_form) = hir.forms.get(first_type) {
+                    ancestors.push(first_type.clone());
+                    for anc in &base_form.ancestors {
+                        if !ancestors.contains(anc) {
+                            ancestors.push(anc.clone());
+                        }
+                    }
+                    for k in &base_form.field_order {
+                        if let Some(f) = base_form.fields.get(k) {
+                            fields.insert(k.clone(), f.clone());
+                            field_order.push(k.clone());
+                        }
+                    }
+                    for m in &base_form.method_order {
+                        if let Some(mf) = base_form.methods.get(m) {
+                            methods.insert(m.clone(), mf.clone());
+                            method_order.push(m.clone());
+                        }
+                    }
+                } else {
+                    union_variants.push(first_type.clone());
                 }
             }
-            for k in &base_form.field_order {
-                if let Some(f) = base_form.fields.get(k) {
-                    fields.insert(k.clone(), f.clone());
-                    field_order.push(k.clone());
-                }
+            Token::Lit(Literal::Symbol(sym)) => {
+                union_variants.push(format!("'{sym}'"));
             }
+            _ => {}
         }
+
         if expr.len() > 1 {
             resolve_type_algebra_into_fields(
                 name,
                 &mut fields,
                 &mut field_order,
                 &mut ancestors,
+                &mut union_variants,
+                &mut refinement_predicates,
                 &expr[1..],
                 &origin,
                 hir,
@@ -414,17 +506,24 @@ fn lower_algebraic_form(
         name: name.to_string(),
         fields,
         field_order,
+        methods,
+        method_order,
         ancestors,
+        union_variants,
+        refinement_predicates,
         is_algebraic_alias: true,
         origin,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_type_algebra_into_fields(
     owner_name: &str,
     fields: &mut HashMap<String, HirField>,
     field_order: &mut Vec<String>,
     ancestors: &mut Vec<String>,
+    union_variants: &mut Vec<String>,
+    refinement_predicates: &mut Vec<String>,
     tail: &[Token],
     owner_origin: &SourceOrigin,
     hir: &HirModule,
@@ -436,10 +535,10 @@ fn resolve_type_algebra_into_fields(
                 if let Some(next_tok) = tail.get(i + 1) {
                     match next_tok {
                         Token::Path(rhs_type) => {
-                            if !ancestors.contains(rhs_type) {
-                                ancestors.push(rhs_type.clone());
-                            }
                             if let Some(rhs_form) = hir.forms.get(rhs_type) {
+                                if !ancestors.contains(rhs_type) {
+                                    ancestors.push(rhs_type.clone());
+                                }
                                 for k in &rhs_form.field_order {
                                     if let Some(rhs_f) = rhs_form.fields.get(k) {
                                         if let Some(existing) = fields.get_mut(k) {
@@ -470,6 +569,11 @@ fn resolve_type_algebra_into_fields(
                                         }
                                     }
                                 }
+                            } else if hir.functions.contains_key(rhs_type) {
+                                // Предикат уточнения типа (например, `Adult User & IsAdult`)
+                                refinement_predicates.push(rhs_type.clone());
+                            } else if !ancestors.contains(rhs_type) {
+                                ancestors.push(rhs_type.clone());
                             }
                         }
                         Token::Group('{', override_sents) => {
@@ -494,6 +598,26 @@ fn resolve_type_algebra_into_fields(
                                     );
                                 }
                             }
+                        }
+                        Token::Group('[', _) => {
+                            refinement_predicates.push("<inline_predicate>".into());
+                        }
+                        _ => {}
+                    }
+                }
+                i += 2;
+            }
+            Token::Op(op) if op == "|" => {
+                if let Some(next_tok) = tail.get(i + 1) {
+                    match next_tok {
+                        Token::Path(variant) => {
+                            if union_variants.is_empty() && !ancestors.is_empty() {
+                                union_variants.extend(ancestors.clone());
+                            }
+                            union_variants.push(variant.clone());
+                        }
+                        Token::Lit(Literal::Symbol(sym)) => {
+                            union_variants.push(format!("'{sym}'"));
                         }
                         _ => {}
                     }
@@ -543,14 +667,16 @@ fn resolve_type_algebra_into_fields(
     }
 }
 
-pub fn lower_fn_params(args: &[Sentence]) -> (Vec<HirParam>, bool) {
+pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bool) {
     let mut out = Vec::new();
     let mut auto_unpacks = false;
 
     for (idx, sent) in args.iter().enumerate() {
         match sent.as_slice() {
+            // Закон 1c: Одиночный идентификатор типа `Fn(User)`
             [Token::Path(single)] => {
-                let is_type = single
+                let is_type = hir.forms.contains_key(single)
+                    || single
                     .chars()
                     .next()
                     .map(|c| c.is_uppercase())
@@ -560,12 +686,14 @@ pub fn lower_fn_params(args: &[Sentence]) -> (Vec<HirParam>, bool) {
                 }
                 out.push(HirParam {
                     name: single.clone(),
-                    type_constraint: String::new(),
+                    type_constraint: if is_type { single.clone() } else { String::new() },
+                    default_expr: vec![],
                     is_anonymous_type_slot: is_type,
                 });
             }
-            [Token::Path(param_name), rest @ ..] => {
-                let constraint = rest
+            // Закон 1c: Анонимный пересеченный слот `FinalizeBill(User & Cart)` или `ShipToCustomer(Order & Reserved & Paid)`
+            [Token::Path(first_type), Token::Op(op), ..] if op == "&" || op == "|" || op == "/" => {
+                let constraint = sent
                     .iter()
                     .map(|t| match t {
                         Token::Path(p) => p.clone(),
@@ -574,9 +702,35 @@ pub fn lower_fn_params(args: &[Sentence]) -> (Vec<HirParam>, bool) {
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
+                if idx == 0 {
+                    auto_unpacks = true;
+                }
+                out.push(HirParam {
+                    name: first_type.clone(),
+                    type_constraint: constraint,
+                    default_expr: vec![],
+                    is_anonymous_type_slot: true,
+                });
+            }
+            // Именованный параметр с типом `Fn(U User)` или с дефолтным значением `Connect(Host "localhost")`
+            [Token::Path(param_name), rest @ ..] => {
+                let is_default_lit = matches!(rest.first(), Some(Token::Lit(_) | Token::Group(_, _)));
+                let constraint = if is_default_lit {
+                    infer_hir_type(rest, hir)
+                } else {
+                    rest.iter()
+                        .map(|t| match t {
+                            Token::Path(p) => p.clone(),
+                            Token::Op(o) => o.clone(),
+                            _ => "...".into(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
                 out.push(HirParam {
                     name: param_name.clone(),
                     type_constraint: constraint,
+                    default_expr: if is_default_lit { rest.to_vec() } else { vec![] },
                     is_anonymous_type_slot: false,
                 });
             }
@@ -601,6 +755,10 @@ pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
             Literal::Date(_) => "Date".into(),
             Literal::Time(_) => "Time".into(),
             Literal::Duration(_) => "Duration".into(),
+            Literal::Coord(_) => "Coord".into(),
+            Literal::Color(_) => "Color".into(),
+            Literal::Url(_) => "Url".into(),
+            Literal::File(_) => "File".into(),
             _ => "Literal".into(),
         },
         Some(Token::Path(p)) => {
