@@ -657,7 +657,7 @@ CleanModule AuthInternal / 'Salt' / 'Hash'
 // --- ШАГ 25: Полная спецификация Razomy v4.7 целиком (Интеграционный тест) ---
 #[test]
 fn test_step_25_full_v4_7_specification_parses_100_percent() -> Result<(), Box<dyn std::error::Error>> {
-    let full_spec = fs::read_to_string("./tests/spec.rl")?;
+    let full_spec = fs::read_to_string("./specification.rl")?;
 
     let ast = parse_code(&full_spec).expect("Вся спецификация v4.7 должна парситься без единой ошибки!");
     assert!(ast.len() > 150, "Ожидалось более 150 корневых инструкций, получено: {}", ast.len());

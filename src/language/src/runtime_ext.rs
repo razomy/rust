@@ -1,12 +1,14 @@
 // src/runtime_ext.rs
 // =============================================================================
-// RAZOMY V4.7 — STDLIB, EXTENSIONS, DIALECTS & METAPROGRAMMING ENGINE
+// RAZOMY V5.0 — STDLIB, EXTENSIONS, DIALECTS & METAPROGRAMMING ENGINE (LIR)
 // Включает: Коллекции, Map, Meta (Reflect/Compose/StepsOf/Rewrite), Parse, UI, Port, Http.
 // =============================================================================
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::hir::HirModule;
+use crate::lir::lower_body_to_stmts;
 use crate::parser::{Literal, Sentence, Token};
 use crate::runtime::{
     apply_callable, eval_sentence, FormInstance, FunctionBody, FunctionInstance, Scope, Value,
@@ -85,7 +87,11 @@ pub fn eval_compose_call(call_args: &[Sentence], scope: &mut Scope) -> Result<Va
             .iter()
             .map(|s| partial_eval_tokens(s, scope))
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(Value::Stream(partially_evaluated));
+        let dummy_hir = HirModule::default();
+        return Ok(Value::Stream {
+            stmts: lower_body_to_stmts(&partially_evaluated, &dummy_hir),
+            raw: partially_evaluated,
+        });
     }
     Ok(Value::None)
 }
@@ -227,7 +233,6 @@ fn register_string_and_collection_combinators(scope: &mut Scope) {
         _ => Ok(Value::Int(0)),
     });
 
-    // `Map` одновременно является модулем с методом `Map.Get(Key)` и вызываемой функцией `Col . Map(Fn)` (через `__call__`)!
     let mut map_mod = FormInstance::new("Map");
     reg_mod_fn(&mut map_mod, "Get", |a, _| match (a.first(), a.get(1)) {
         (Some(Value::Form(f_arc)), Some(key)) => {
@@ -337,7 +342,6 @@ fn register_string_and_collection_combinators(scope: &mut Scope) {
 }
 
 fn register_meta_and_dialects(scope: &mut Scope) {
-    // 1. Модуль `Meta` (`TypeOf`, `FieldsOf`, `StepsOf`, `Rewrite`)
     let mut meta = FormInstance::new("Meta");
     reg_mod_fn(&mut meta, "TypeOf", |a, _| match a.first() {
         Some(Value::Form(f)) => Ok(Value::String(f.read().unwrap().type_name.clone())),
@@ -364,12 +368,17 @@ fn register_meta_and_dialects(scope: &mut Scope) {
         Ok(Value::Tuple(list))
     });
     reg_mod_fn(&mut meta, "StepsOf", |a, _| match a.first() {
-        Some(Value::Stream(sents)) => Ok(Value::Tuple(
-            sents
-                .iter()
-                .map(|s| Value::Stream(vec![s.clone()]))
-                .collect(),
-        )),
+        Some(Value::Stream { raw, .. }) => {
+            let dummy_hir = HirModule::default();
+            Ok(Value::Tuple(
+                raw.iter()
+                    .map(|s| Value::Stream {
+                        stmts: lower_body_to_stmts(std::slice::from_ref(s), &dummy_hir),
+                        raw: vec![s.clone()],
+                    })
+                    .collect(),
+            ))
+        }
         _ => Ok(Value::Tuple(vec![])),
     });
     reg_mod_fn(&mut meta, "Rewrite", |a, _| {
@@ -377,7 +386,6 @@ fn register_meta_and_dialects(scope: &mut Scope) {
     });
     scope.set("Meta", Value::Form(Arc::new(RwLock::new(meta))));
 
-    // 2. Модуль `Json`
     let mut json_mod = FormInstance::new("Json");
     reg_mod_fn(&mut json_mod, "FormatValue", |a, _| match a.first() {
         Some(Value::String(s)) => Ok(Value::String(format!("\"{s}\""))),
@@ -392,7 +400,6 @@ fn register_meta_and_dialects(scope: &mut Scope) {
     });
     scope.set("Json", Value::Form(Arc::new(RwLock::new(json_mod))));
 
-    // 3. Модули `Http`, `Port`, `UI`, `Regex`, `Parse`
     let mut http_mod = FormInstance::new("Http");
     reg_mod_fn(&mut http_mod, "Get", |a, _| {
         Ok(Value::String(format!(

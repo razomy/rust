@@ -1,5 +1,9 @@
 pub mod analyzer;
+pub mod codegen;
+pub mod codegen_csharp;
+pub mod codegen_typescript;
 pub mod hir;
+pub mod lir;
 pub mod parser;
 pub mod runtime;
 pub mod runtime_ext;

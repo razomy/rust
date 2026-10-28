@@ -1,7 +1,8 @@
 // src/runtime.rs
 // =============================================================================
-// RAZOMY V4.7 — CORE RUNTIME ENGINE (SYSTEM KERNEL)
-// Потокобезопасное ядро: Value, Scope, Законы 1–3, Lineage, Пайплайны и Роутеры.
+// RAZOMY V5.0 — LIR-POWERED RUNTIME ENGINE (SYSTEM KERNEL)
+// Архитектура: AST -> HIR -> Canonical LIR -> LIR VM Execution
+// Потокобезопасное ядро: Value, Scope, Законы 1–3, Lineage, LIR-выражения и Роутеры.
 // =============================================================================
 
 use std::collections::{HashMap, VecDeque};
@@ -10,9 +11,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use crate::hir::{lower_to_hir, HirModule};
+use crate::lir::{
+    lower_body_to_stmts, lower_hir_to_lir, lower_router_branches, lower_tokens_to_expr, LirBranch,
+    LirExpr, LirFieldPatValue, LirInterpPart, LirModule, LirPattern, LirStmt, LirTuplePatElem,
+};
 use crate::parser::{
-    classify_sentence, has_pipe_op, parse_code, split_pipeline, Literal, PipeOp, PipeStep,
-    SemanticKind, Sentence, Token,
+    classify_sentence, parse_code, PipeOp, SemanticKind, Sentence, Token,
 };
 use crate::runtime_ext::{
     create_global_scope, eval_compose_call, make_empty_form, make_some,
@@ -38,8 +42,13 @@ pub enum Value {
     Range(i64, i64),
     Tuple(Vec<Value>),
     Form(Arc<RwLock<FormInstance>>),
-    Stream(Vec<Sentence>),
-    Router(Vec<Sentence>),
+    /// Реактивный поток или блок инструкций, скомпилированный в LIR (+ сырые предложения для Meta.StepsOf)
+    Stream {
+        stmts: Vec<LirStmt>,
+        raw: Vec<Sentence>,
+    },
+    /// Таблица маршрутизации `{ ... }`, скомпилированная в ветки LirBranch
+    Router(Vec<LirBranch>),
     Function(Arc<FunctionInstance>),
     Atom(Arc<Mutex<Value>>),
     Channel(Arc<Mutex<VecDeque<Value>>>),
@@ -138,9 +147,10 @@ pub type NativeFn = Arc<dyn Fn(Vec<Value>, &mut Scope) -> Result<Value, String> 
 
 #[derive(Clone)]
 pub enum FunctionBody {
-    UserDefined {
+    LirDefined {
         args: Vec<Sentence>,
-        body: Vec<Sentence>,
+        stmts: Vec<LirStmt>,
+        raw_body: Vec<Sentence>,
         captured_env: Arc<RwLock<Scope>>,
         overrides: HashMap<String, Value>,
         partial_args: Vec<Value>,
@@ -183,7 +193,7 @@ impl fmt::Debug for Value {
                     .collect();
                 write!(f, "{} {{ {} }}", form.type_name, pairs.join(", "))
             }
-            Value::Stream(_) => write!(f, "[Stream]"),
+            Value::Stream { .. } => write!(f, "[Stream]"),
             Value::Router(_) => write!(f, "{{Router}}"),
             Value::Function(func) => write!(f, "Fn({})", func.name),
             Value::Atom(a) => write!(f, "Atom({:?})", a.lock().unwrap()),
@@ -244,9 +254,9 @@ impl Scope {
             }
             if let Some(val) = form.fields.get(fname) {
                 if eval_reactive {
-                    if let Value::Stream(sents) = val {
-                        if !stream_uses_free_underscore(sents) {
-                            if let Ok(comp) = eval_stream_body(sents, None, self) {
+                    if let Value::Stream { stmts, raw } = val {
+                        if !stream_uses_free_underscore(raw) {
+                            if let Ok(comp) = eval_lir_stmts(stmts, None, self) {
                                 self.set(fname, unwrap_done(comp));
                                 continue;
                             }
@@ -274,191 +284,474 @@ fn unwrap_done(v: Value) -> Value {
 }
 
 // =============================================================================
-// 3. ВЫЧИСЛЕНИЕ ТОКЕНОВ, ИНТЕРПОЛЯЦИИ И СЛИТНЫХ ПУТЕЙ
+// 3. ВЫПОЛНЕНИЕ LIR-ИНСТРУКЦИЙ И LIR-ВЫРАЖЕНИЙ (ЯДРО LIR VM)
 // =============================================================================
 
-pub fn eval_literal(lit: &Literal, scope: &mut Scope) -> Value {
-    match lit {
-        Literal::Int(i) => Value::Int(*i),
-        Literal::Float(f) => Value::Float(*f),
-        Literal::Bool(b) => Value::Bool(*b),
-        Literal::Byte(b) => Value::Byte(*b),
-        Literal::String(s) | Literal::Url(s) | Literal::File(s) => {
-            Value::String(interpolate_string(s, scope))
-        }
-        Literal::Symbol(s) => Value::Symbol(s.clone()),
-        Literal::Money(m) => Value::Money(m.clone()),
-        Literal::Percent(p) => Value::Percent(*p),
-        Literal::Date(d) => Value::Date(d.clone()),
-        Literal::Duration(d) => Value::Duration(d.clone()),
-        Literal::Coord(c)
-        | Literal::Color(c)
-        | Literal::IpAddr(c)
-        | Literal::Version(c)
-        | Literal::Email(c)
-        | Literal::Time(c) => Value::String(c.clone()),
+pub fn eval_lir_stmts(
+    stmts: &[LirStmt],
+    input: Option<Value>,
+    scope: &mut Scope,
+) -> Result<Value, String> {
+    if let Some(inp) = input {
+        scope.set("_", inp);
     }
-}
-
-fn interpolate_string(raw: &str, scope: &mut Scope) -> String {
-    let mut out = String::new();
-    let mut chars = raw.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next_c) = chars.next() {
-                out.push(next_c);
+    let mut last = Value::None;
+    for stmt in stmts {
+        last = match stmt {
+            LirStmt::Let { name, value } => {
+                let val = eval_lir_expr(value, scope)?;
+                scope.set(name, val.clone());
+                val
             }
-        } else if c == '{' {
-            let key: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
-            let trimmed = key.trim();
-            if let Ok(val) = eval_path(trimmed, scope) {
-                out.push_str(&val.to_string());
-            } else if let Ok(sents) = parse_code(trimmed) {
-                if let Some(first) = sents.first() {
-                    if let Ok(val) = eval_sentence(first, scope) {
-                        out.push_str(&val.to_string());
-                        continue;
+            LirStmt::DestructTuple { names, value } => {
+                let val = eval_lir_expr(value, scope)?;
+                if let Value::Tuple(items) = &val {
+                    for (n, it) in names.iter().zip(items.iter()) {
+                        if n != "_" {
+                            scope.set(n, it.clone());
+                        }
                     }
                 }
-                out.push_str(&format!("{{{key}}}"));
-            } else {
-                out.push_str(&format!("{{{key}}}"));
+                val
             }
-        } else {
-            out.push(c);
+            LirStmt::Expr(e) | LirStmt::Return(e) => eval_lir_expr(e, scope)?,
+        };
+
+        if let Value::Done(_) = last {
+            return Ok(last);
+        }
+        if let Value::Form(f_arc) = &last {
+            let f = f_arc.read().unwrap();
+            if f.type_name == "Done" {
+                if let Some(v) = f.get_field("Value") {
+                    return Ok(Value::Done(Box::new(v)));
+                }
+            }
         }
     }
-    out
+    Ok(last)
 }
 
-pub fn eval_token(token: &Token, scope: &mut Scope) -> Result<Value, String> {
-    match token {
-        Token::Lit(lit) => Ok(eval_literal(lit, scope)),
-        Token::Path(path) => eval_path(path, scope),
-        Token::Range(start_tok, end_tok) => {
-            match (eval_token(start_tok, scope)?, eval_token(end_tok, scope)?) {
-                (Value::Int(a), Value::Int(b)) => Ok(Value::Range(a, b)),
-                (Value::String(a), Value::String(b)) => Ok(Value::Range(
-                    a.chars().next().unwrap_or('a') as i64,
-                    b.chars().next().unwrap_or('z') as i64,
-                )),
-                _ => Ok(Value::Range(0, 0)),
-            }
-        }
-        Token::Group('(' | ')', sentences) => match sentences.as_slice() {
-            [] => Ok(Value::Tuple(vec![])),
-            [single] => eval_sentence(single, scope),
-            many => Ok(Value::Tuple(
-                many.iter()
-                    .map(|s| eval_sentence(s, scope))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-        },
-        Token::Group('[', sentences) => Ok(Value::Stream(sentences.clone())),
-        Token::Group('{', sentences) => {
-            let is_router = sentences.iter().any(|s| match classify_sentence(s) {
-                SemanticKind::PatternBranch { .. } | SemanticKind::LambdaOrTupleBranch { .. } => {
-                    true
-                }
-                SemanticKind::StreamOrBranch { name, .. } => {
-                    name == "_"
-                        || matches!(
-                            scope.get(&name),
-                            Some(Value::Form(_) | Value::Function(_) | Value::Stream(_))
-                        )
-                }
-                _ => false,
-            });
-            if is_router {
-                Ok(Value::Router(sentences.clone()))
-            } else {
-                let mut form = FormInstance::new("AnonymousForm");
-                populate_form_members(&mut form, sentences, scope)?;
-                Ok(Value::Form(Arc::new(RwLock::new(form))))
-            }
-        }
-        _ => Err(format!("Невозможно вычислить токен: {token:?}")),
-    }
-}
-
-pub fn populate_form_members(
-    form: &mut FormInstance,
-    sentences: &[Sentence],
-    scope: &mut Scope,
-) -> Result<(), String> {
-    for s in sentences {
-        match classify_sentence(s) {
-            SemanticKind::FormDef { name, body, tail } => {
-                let mut sub = FormInstance::new(&name);
-                populate_form_members(&mut sub, &body, scope)?;
-                let mut val = Value::Form(Arc::new(RwLock::new(sub)));
-                if !tail.is_empty() {
-                    val = eval_operator_tail(val, &tail, scope)?;
-                }
-                form.set_field(&name, val);
-            }
-            SemanticKind::Binding { key, value } => {
-                let v = match value.as_slice() {
-                    [Token::Path(p)]
-                    if matches!(
-                            p.as_str(),
-                            "String" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "File" | "Any"
-                        ) =>
-                        {
-                            Value::Symbol(p.clone())
+pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String> {
+    match expr {
+        LirExpr::None => Ok(Value::None),
+        LirExpr::Int(i) => Ok(Value::Int(*i)),
+        LirExpr::Float(f) => Ok(Value::Float(*f)),
+        LirExpr::Bool(b) => Ok(Value::Bool(*b)),
+        LirExpr::Byte(b) => Ok(Value::Byte(*b)),
+        LirExpr::Str(s) => Ok(Value::String(s.clone())),
+        LirExpr::Symbol(s) => Ok(Value::Symbol(s.clone())),
+        LirExpr::Money(m) => Ok(Value::Money(m.clone())),
+        LirExpr::Percent(p) => Ok(Value::Percent(*p)),
+        LirExpr::Date(d) => Ok(Value::Date(d.clone())),
+        LirExpr::Duration(d) => Ok(Value::Duration(d.clone())),
+        LirExpr::InterpStr(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                match part {
+                    LirInterpPart::Lit(s) => out.push_str(s),
+                    LirInterpPart::Expr(key) => {
+                        if let Ok(val) = eval_path(key, scope) {
+                            out.push_str(&val.to_string());
+                        } else if let Ok(sents) = parse_code(key) {
+                            if let Some(first) = sents.first() {
+                                if let Ok(val) = eval_sentence(first, scope) {
+                                    out.push_str(&val.to_string());
+                                    continue;
+                                }
+                            }
+                            out.push_str(&format!("{{{key}}}"));
+                        } else {
+                            out.push_str(&format!("{{{key}}}"));
                         }
-                    _ => eval_expression(&value, scope)?,
-                };
-                form.set_field(&key, v);
-            }
-            SemanticKind::TupleBinding { tuple, value } => {
-                if let Some(first_sent) = tuple.first() {
-                    let k = eval_sentence(first_sent, scope)?.to_string();
-                    let v = eval_expression(&value, scope)?;
-                    form.set_field(&k, v);
+                    }
                 }
             }
-            SemanticKind::StreamOrBranch { name, stream } => {
-                form.set_field(&name, Value::Stream(stream));
-            }
-            SemanticKind::FunctionDef {
-                name, args, body, ..
-            } => {
-                let env_arc = Arc::new(RwLock::new(scope.clone()));
-                let func = Arc::new(FunctionInstance {
-                    name: name.clone(),
-                    body: FunctionBody::UserDefined {
-                        args,
+            Ok(Value::String(out))
+        }
+        LirExpr::Ident(path) => eval_path(path, scope),
+        LirExpr::Tuple(items) => {
+            let vals = items
+                .iter()
+                .map(|e| eval_lir_expr(e, scope))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tuple(vals))
+        }
+        LirExpr::Range(a, b) => match (eval_lir_expr(a, scope)?, eval_lir_expr(b, scope)?) {
+            (Value::Int(x), Value::Int(y)) => Ok(Value::Range(x, y)),
+            (Value::String(x), Value::String(y)) => Ok(Value::Range(
+                x.chars().next().unwrap_or('a') as i64,
+                y.chars().next().unwrap_or('z') as i64,
+            )),
+            _ => Ok(Value::Range(0, 0)),
+        },
+        LirExpr::StructInit { type_name, fields } => {
+            let mut form = match scope.get(type_name) {
+                Some(Value::Form(proto_arc)) => {
+                    let base = proto_arc.read().unwrap().clone();
+                    let mut child = base.clone();
+                    child.ancestors.insert(type_name.clone(), base);
+                    child
+                }
+                _ => FormInstance::new(type_name),
+            };
+            form.type_name = type_name.clone();
+            for (k, v_expr) in fields {
+                let v = match v_expr {
+                    LirExpr::Lambda {
+                        params,
                         body,
-                        captured_env: env_arc,
-                        overrides: HashMap::new(),
-                        partial_args: Vec::new(),
+                        raw_args,
+                        raw_body,
+                    } if raw_args.is_empty() && params.as_slice() == ["_"] => Value::Stream {
+                        stmts: body.clone(),
+                        raw: raw_body.clone(),
                     },
-                });
-                form.methods.insert(name, func);
-            }
-            SemanticKind::OperatorMethod { op, args, rest } => {
-                let body = match rest.first() {
-                    Some(Token::Group('[', b)) => b.clone(),
-                    _ => vec![rest],
+                    _ => eval_lir_expr(v_expr, scope)?,
                 };
-                let func = Arc::new(FunctionInstance {
-                    name: op.clone(),
-                    body: FunctionBody::UserDefined {
-                        args,
-                        body,
+                form.set_field(k, v);
+            }
+            Ok(Value::Form(Arc::new(RwLock::new(form))))
+        }
+        LirExpr::Unary { op, expr: inner } => {
+            let v = eval_lir_expr(inner, scope)?;
+            match (op.as_str(), v) {
+                ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+                _ => Err(format!("Унарный оператор '{op}' не применим")),
+            }
+        }
+        LirExpr::Binary { left, op, right } => {
+            let lhs = eval_lir_expr(left, scope)?;
+            if op == "/" {
+                if let (Value::Form(f_arc), LirExpr::Ident(path_str)) = (&lhs, right.as_ref()) {
+                    let sub = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
+                    return Ok(Value::Form(Arc::new(RwLock::new(sub))));
+                }
+            }
+            let rhs = eval_lir_expr(right, scope)?;
+            eval_binary_op_in_scope(lhs, op, rhs, scope)
+        }
+        LirExpr::Call { callee, args } => eval_lir_call(callee, args, None, scope),
+        LirExpr::Pipe { input, op, step } => {
+            let inp = eval_lir_expr(input, scope)?;
+            eval_lir_pipe_step(inp, op.clone(), step, scope)
+        }
+        LirExpr::Router { input, branches } => {
+            // Если роутер используется как значение (например, в `Meta.Rewrite({ ... })`),
+            // где `_` ещё не привязан в скоупе — возвращаем `Value::Router(branches)`
+            if matches!(input.as_ref(), LirExpr::Ident(id) if id == "_") && scope.get("_").is_none()
+            {
+                return Ok(Value::Router(branches.clone()));
+            }
+            let inp = eval_lir_expr(input, scope)?;
+            eval_lir_router(branches, inp, scope)
+        }
+        LirExpr::Lambda {
+            params,
+            body,
+            raw_args,
+            raw_body,
+        } => {
+            if raw_args.is_empty() && params.as_slice() == ["_"] {
+                Ok(Value::Stream {
+                    stmts: body.clone(),
+                    raw: raw_body.clone(),
+                })
+            } else {
+                Ok(Value::Function(Arc::new(FunctionInstance {
+                    name: "Lambda".into(),
+                    body: FunctionBody::LirDefined {
+                        args: raw_args.clone(),
+                        stmts: body.clone(),
+                        raw_body: raw_body.clone(),
                         captured_env: Arc::new(RwLock::new(scope.clone())),
                         overrides: HashMap::new(),
                         partial_args: Vec::new(),
                     },
-                });
-                form.methods.insert(op, func);
+                })))
             }
-            _ => {}
         }
     }
-    Ok(())
 }
+
+fn eval_lir_pipe_step(
+    input: Value,
+    op: PipeOp,
+    step: &LirExpr,
+    scope: &mut Scope,
+) -> Result<Value, String> {
+    if matches!(input, Value::None) && op != PipeOp::Filter {
+        return Ok(Value::None);
+    }
+
+    match op {
+        PipeOp::Dot => eval_lir_pipe_target(input, step, scope),
+        PipeOp::Tap => {
+            let _ = eval_lir_pipe_target(input.clone(), step, scope)?;
+            Ok(input)
+        }
+        PipeOp::Enrich => {
+            if let Ok(target) = eval_lir_expr(step, scope) {
+                if !callable_accepts_input(&target, &input, scope) {
+                    return Ok(input);
+                }
+            }
+            let enriched = eval_lir_pipe_target(input.clone(), step, scope)?;
+            if matches!(enriched, Value::None) {
+                Ok(Value::None)
+            } else {
+                eval_binary_op_in_scope(input, "&", enriched, scope)
+            }
+        }
+        PipeOp::Filter => {
+            if matches!(input, Value::None) {
+                return Ok(Value::None);
+            }
+            let pred = eval_lir_expr(step, scope)?;
+            match apply_callable(pred, input.clone(), scope)? {
+                Value::Bool(true) => Ok(input),
+                _ => Ok(Value::None),
+            }
+        }
+        PipeOp::Parallel => {
+            let LirExpr::StructInit { fields, .. } = step else {
+                return Err("Оператор .| ожидает блок {}".into());
+            };
+            let mut handles = Vec::new();
+            for (branch_name, branch_expr) in fields {
+                let b_name = branch_name.clone();
+                let b_expr = branch_expr.clone();
+                let in_clone = input.clone();
+                let parent = Arc::new(RwLock::new(scope.clone()));
+                handles.push(thread::spawn(move || -> Result<(String, Value), String> {
+                    let mut l_scope = Scope::child(parent);
+                    l_scope.set("_", in_clone.clone());
+                    if let Value::Form(f) = &in_clone {
+                        l_scope.unpack_form(f, true);
+                    }
+                    let evaluated = eval_lir_expr(&b_expr, &mut l_scope)?;
+                    let res = match evaluated {
+                        Value::Stream { stmts, .. } => {
+                            unwrap_done(eval_lir_stmts(&stmts, Some(in_clone), &mut l_scope)?)
+                        }
+                        other => unwrap_done(other),
+                    };
+                    Ok((b_name, res))
+                }));
+            }
+            let mut merged = FormInstance::new("ParallelResult");
+            for h in handles {
+                if let Ok(Ok((k, v))) = h.join() {
+                    merged.set_field(&k, v);
+                }
+            }
+            Ok(Value::Form(Arc::new(RwLock::new(merged))))
+        }
+    }
+}
+
+fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Result<Value, String> {
+    if let LirExpr::Call { callee, args } = step {
+        return eval_lir_call(callee, args, Some(input), scope);
+    }
+
+    let normalized_input = if matches!(step, LirExpr::Ident(p) if p == "Meta.StepsOf") {
+        if let Value::Function(func_arc) = &input {
+            if let FunctionBody::LirDefined {
+                stmts, raw_body, ..
+            } = &func_arc.body
+            {
+                Value::Stream {
+                    stmts: stmts.clone(),
+                    raw: raw_body.clone(),
+                }
+            } else {
+                input
+            }
+        } else {
+            input
+        }
+    } else {
+        input
+    };
+
+    let mut t_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+    t_scope.set("_", normalized_input.clone());
+    if let Value::Form(f_arc) = &normalized_input {
+        t_scope.unpack_form(f_arc, true);
+    }
+    let target = eval_lir_expr(step, &mut t_scope)?;
+    apply_callable(target, normalized_input, scope)
+}
+
+pub fn eval_lir_call(
+    fn_name: &str,
+    call_args: &[LirExpr],
+    piped_first: Option<Value>,
+    scope: &mut Scope,
+) -> Result<Value, String> {
+    if fn_name == "Compose" {
+        if let Some(LirExpr::Lambda { raw_body, .. }) = call_args.first() {
+            return eval_compose_call(&[vec![Token::Group('[', raw_body.clone())]], scope);
+        }
+    }
+
+    let mut evaluated = Vec::new();
+    if let Some(first) = piped_first {
+        evaluated.push(first);
+    }
+    for a in call_args {
+        evaluated.push(eval_lir_expr(a, scope)?);
+    }
+
+    let arg = match evaluated.len() {
+        0 => Value::None,
+        1 => evaluated.remove(0),
+        _ => Value::Tuple(evaluated),
+    };
+
+    if let Some((obj_path, method_name)) = fn_name.rsplit_once('.') {
+        if let Ok(obj_val) = eval_path(obj_path, scope) {
+            match obj_val {
+                Value::Form(f_arc) => {
+                    let snap = f_arc.read().unwrap().clone();
+                    if let Some(method) = snap.methods.get(method_name) {
+                        return invoke_form_method(&snap, method, arg, scope);
+                    }
+                }
+                Value::Atom(atom_arc) => match method_name {
+                    "Swap" => {
+                        let current_val = atom_arc.lock().unwrap().clone();
+                        let next_val = apply_callable(arg, current_val, scope)?;
+                        *atom_arc.lock().unwrap() = next_val.clone();
+                        return Ok(next_val);
+                    }
+                    "Read" => {
+                        return Ok(atom_arc.lock().unwrap().clone());
+                    }
+                    _ => {}
+                },
+                Value::Channel(chan_arc) => match method_name {
+                    "Send" => {
+                        chan_arc.lock().unwrap().push_back(arg);
+                        return Ok(Value::None);
+                    }
+                    "Recv" => {
+                        return Ok(match chan_arc.lock().unwrap().pop_front() {
+                            Some(v) => make_some(v),
+                            None => make_empty_form("None"),
+                        });
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+
+    if let Ok(func) = eval_path(fn_name, scope) {
+        if let Value::Symbol(tag) = func {
+            let mut node = FormInstance::new(&tag);
+            node.set_field("Args", arg);
+            return Ok(Value::Form(Arc::new(RwLock::new(node))));
+        }
+        apply_callable(func, arg, scope)
+    } else {
+        Err(format!("Функция '{fn_name}' не найдена"))
+    }
+}
+
+pub fn eval_lir_router(
+    branches: &[LirBranch],
+    arg: Value,
+    scope: &mut Scope,
+) -> Result<Value, String> {
+    for branch in branches {
+        let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+        b_scope.set("_", arg.clone());
+        if let Value::Form(f) = &arg {
+            b_scope.unpack_form(f, true);
+        }
+
+        let matched = match &branch.cond {
+            LirPattern::Wildcard => true,
+            LirPattern::TypeMatch(type_name) => match_type_or_wildcard(type_name, &arg, &mut b_scope),
+            LirPattern::LiteralMatch(lit_expr) => arg == eval_lir_expr(lit_expr, &mut b_scope)?,
+            LirPattern::RangeMatch(a, b) => {
+                let r = eval_lir_expr(&LirExpr::Range(a.clone(), b.clone()), &mut b_scope)?;
+                matches!(apply_callable(r, arg.clone(), &mut b_scope), Ok(Value::Bool(true)))
+            }
+            LirPattern::Predicate(pred_expr) => {
+                matches!(eval_lir_expr(pred_expr, &mut b_scope)?, Value::Bool(true))
+            }
+            LirPattern::TupleMatch(elems) => match_lir_tuple_pattern(elems, &arg, &mut b_scope)?,
+            LirPattern::FieldMatch(field_pats) => {
+                if let Value::Form(f_arc) = &arg {
+                    let f = f_arc.read().unwrap();
+                    let mut ok = true;
+                    for (key, pat_val) in field_pats {
+                        let Some(actual) = f.get_field(key) else {
+                            ok = false;
+                            break;
+                        };
+                        match pat_val {
+                            LirFieldPatValue::Expr(ex) => {
+                                if actual != eval_lir_expr(ex, &mut b_scope)? {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            LirFieldPatValue::Tuple(t_elems) => {
+                                if !match_lir_tuple_pattern(t_elems, &actual, &mut b_scope)? {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    ok
+                } else {
+                    false
+                }
+            }
+        };
+
+        if matched {
+            return eval_lir_stmts(&branch.body, Some(arg), &mut b_scope);
+        }
+    }
+    Ok(Value::None)
+}
+
+fn match_lir_tuple_pattern(
+    elems: &[LirTuplePatElem],
+    actual: &Value,
+    scope: &mut Scope,
+) -> Result<bool, String> {
+    let items = match actual {
+        Value::Tuple(v) => v.clone(),
+        other => vec![other.clone()],
+    };
+    if elems.len() != items.len() {
+        return Ok(false);
+    }
+    for (pat, act_val) in elems.iter().zip(items.iter()) {
+        match pat {
+            LirTuplePatElem::Wildcard => {}
+            LirTuplePatElem::Bind(v) => scope.set(v, act_val.clone()),
+            LirTuplePatElem::Exact(ex) => {
+                if act_val != &eval_lir_expr(ex, scope)? {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+// =============================================================================
+// 4. РАЗРЕШЕНИЕ ПУТЕЙ, МЕТОДОВ И РЕАКТИВНЫХ ПОЛЕЙ
+// =============================================================================
 
 pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
     if path == "_" {
@@ -510,8 +803,8 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
                         return Err(format!("Метод '{seg}()' не найден в {}", snap.type_name));
                     }
                 } else if let Some(val) = snap.get_field(seg) {
-                    if let Value::Stream(sents) = val {
-                        eval_reactive_field(&snap, form_arc.clone(), &sents, scope)?
+                    if let Value::Stream { stmts, raw } = val {
+                        eval_reactive_field(&snap, form_arc.clone(), &stmts, &raw, scope)?
                     } else {
                         val
                     }
@@ -528,8 +821,8 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
                         .get(i)
                         .ok_or("Индекс поля вне диапазона")?;
                     let v = snap.fields.get(fname).unwrap().clone();
-                    if let Value::Stream(sents) = v {
-                        eval_reactive_field(&snap, form_arc.clone(), &sents, scope)?
+                    if let Value::Stream { stmts, raw } = v {
+                        eval_reactive_field(&snap, form_arc.clone(), &stmts, &raw, scope)?
                     } else {
                         v
                     }
@@ -574,36 +867,41 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
 }
 
 fn find_ancestor_recursive(form: &FormInstance, target: &str) -> Option<FormInstance> {
-    form.ancestors
-        .get(target)
-        .cloned()
-        .or_else(|| {
-            form.ancestors
-                .values()
-                .find_map(|a| find_ancestor_recursive(a, target))
-        })
+    form.ancestors.get(target).cloned().or_else(|| {
+        form.ancestors
+            .values()
+            .find_map(|a| find_ancestor_recursive(a, target))
+    })
 }
 
 fn eval_reactive_field(
     snap: &FormInstance,
     form_arc: Arc<RwLock<FormInstance>>,
-    stream_sents: &[Sentence],
+    stmts: &[LirStmt],
+    raw_sents: &[Sentence],
     scope: &mut Scope,
 ) -> Result<Value, String> {
-    if stream_uses_free_underscore(stream_sents) {
-        return Ok(Value::Stream(stream_sents.to_vec()));
+    if stream_uses_free_underscore(raw_sents) {
+        return Ok(Value::Stream {
+            stmts: stmts.to_vec(),
+            raw: raw_sents.to_vec(),
+        });
     }
     let mut r_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
     r_scope.set("Self", Value::Form(form_arc));
 
     for fname in &snap.field_order {
         if let Some(fval) = snap.fields.get(fname) {
-            if let Value::Stream(dep_sents) = fval {
-                if dep_sents == stream_sents {
+            if let Value::Stream {
+                stmts: dep_stmts,
+                raw: dep_raw,
+            } = fval
+            {
+                if dep_raw == raw_sents {
                     break;
                 }
-                if !stream_uses_free_underscore(dep_sents) {
-                    if let Ok(comp) = eval_stream_body(dep_sents, None, &mut r_scope) {
+                if !stream_uses_free_underscore(dep_raw) {
+                    if let Ok(comp) = eval_lir_stmts(dep_stmts, None, &mut r_scope) {
                         r_scope.set(fname, unwrap_done(comp));
                     }
                 }
@@ -612,7 +910,7 @@ fn eval_reactive_field(
             }
         }
     }
-    Ok(unwrap_done(eval_stream_body(stream_sents, None, &mut r_scope)?))
+    Ok(unwrap_done(eval_lir_stmts(stmts, None, &mut r_scope)?))
 }
 
 pub fn stream_uses_free_underscore(sents: &[Sentence]) -> bool {
@@ -637,9 +935,9 @@ pub fn invoke_form_method(
             };
             f(args_vec, scope)
         }
-        FunctionBody::UserDefined {
+        FunctionBody::LirDefined {
             args,
-            body,
+            stmts,
             captured_env,
             overrides,
             ..
@@ -652,7 +950,7 @@ pub fn invoke_form_method(
                 call_scope.set(k, v.clone());
             }
             bind_arguments(args, &arg, &mut call_scope)?;
-            Ok(unwrap_done(eval_stream_body(body, Some(arg), &mut call_scope)?))
+            Ok(unwrap_done(eval_lir_stmts(stmts, Some(arg), &mut call_scope)?))
         }
         FunctionBody::Composed(f1, f2) => {
             let mid = apply_callable(f1.clone(), arg, scope)?;
@@ -662,7 +960,7 @@ pub fn invoke_form_method(
 }
 
 // =============================================================================
-// 4. АРИФМЕТИКА, ВАЛЮТА И АЛГЕБРА ТИПОВ (&, |, /)
+// 5. АРИФМЕТИКА, ВАЛЮТА И АЛГЕБРА ТИПОВ (&, |, /)
 // =============================================================================
 
 fn parse_money(raw: &str) -> Option<(String, f64)> {
@@ -736,7 +1034,6 @@ pub fn eval_binary_op_in_scope(
         (Value::Bool(a), "||", Value::Bool(b)) => Ok(Value::Bool(a || b)),
         (Value::String(a), "+", Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
 
-        // 1. Слияние форм `&` (Закон 2: Lineage + фиксация коллизий)
         (Value::Form(f1), "&", Value::Form(f2)) => {
             let (r1, r2) = (f1.read().unwrap(), f2.read().unwrap());
             if r2.type_name == "Public" || r2.type_name == "Private" {
@@ -795,8 +1092,7 @@ pub fn eval_binary_op_in_scope(
             Ok(Value::Form(Arc::new(RwLock::new(merged))))
         }
 
-        // 2. Уточнение типа `User & IsAdult`
-        (Value::Form(f1), "&", pred @ (Value::Function(_) | Value::Stream(_))) => {
+        (Value::Form(f1), "&", pred @ (Value::Function(_) | Value::Stream { .. })) => {
             let mut refined = f1.read().unwrap().clone();
             refined
                 .ancestors
@@ -804,21 +1100,21 @@ pub fn eval_binary_op_in_scope(
             refined.predicates.push(pred);
             Ok(Value::Form(Arc::new(RwLock::new(refined))))
         }
-        (Value::Symbol(base_sym), "&", pred @ (Value::Function(_) | Value::Stream(_))) => {
+        (Value::Symbol(base_sym), "&", pred @ (Value::Function(_) | Value::Stream { .. })) => {
             let mut refined = FormInstance::new(&base_sym);
             refined.predicates.push(pred);
             Ok(Value::Form(Arc::new(RwLock::new(refined))))
         }
 
-        // 3. Перепривязка именованных слотов функции `Connect & { Port 9090 }`
         (Value::Function(func_arc), "&", Value::Form(ov_arc)) => {
             let ov = ov_arc.read().unwrap();
             if ov.type_name == "Public" || ov.type_name == "Private" {
                 return Ok(Value::Function(func_arc));
             }
-            if let FunctionBody::UserDefined {
+            if let FunctionBody::LirDefined {
                 args,
-                body,
+                stmts,
+                raw_body,
                 captured_env,
                 overrides,
                 partial_args,
@@ -828,9 +1124,10 @@ pub fn eval_binary_op_in_scope(
                 new_ov.extend(ov.fields.clone());
                 Ok(Value::Function(Arc::new(FunctionInstance {
                     name: func_arc.name.clone(),
-                    body: FunctionBody::UserDefined {
+                    body: FunctionBody::LirDefined {
                         args: args.clone(),
-                        body: body.clone(),
+                        stmts: stmts.clone(),
+                        raw_body: raw_body.clone(),
                         captured_env: captured_env.clone(),
                         overrides: new_ov,
                         partial_args: partial_args.clone(),
@@ -841,20 +1138,17 @@ pub fn eval_binary_op_in_scope(
             }
         }
 
-        // 4. Композиция потоков `Step1 & Step2`
         (
-            f1 @ (Value::Function(_) | Value::Stream(_)),
+            f1 @ (Value::Function(_) | Value::Stream { .. }),
             "&",
-            f2 @ (Value::Function(_) | Value::Stream(_)),
+            f2 @ (Value::Function(_) | Value::Stream { .. }),
         ) => Ok(Value::Function(Arc::new(FunctionInstance {
             name: "ComposedStream".into(),
             body: FunctionBody::Composed(f1, f2),
         }))),
 
-        // 5. Метаданные видимости `Val & Private`
         (val, "&", Value::Form(_)) => Ok(val),
 
-        // 6. Объединение `A | B`
         (left_val, "|", right_val) => {
             let mut u = FormInstance::new("UnionType");
             for v in [left_val, right_val] {
@@ -870,7 +1164,6 @@ pub fn eval_binary_op_in_scope(
             Ok(Value::Form(Arc::new(RwLock::new(u))))
         }
 
-        // 7. Вычитание `/` для Форм и Карт (`ConfigMap / "host"`, `Combined / 'Name'`)
         (Value::Form(f), "/", Value::Symbol(sym) | Value::String(sym)) => {
             let mut form = f.read().unwrap().clone();
             form.remove_field(&sym);
@@ -956,253 +1249,14 @@ pub fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> Fo
 }
 
 // =============================================================================
-// 5. ВЫРАЖЕНИЯ, ПАЙПЛАЙНЫ И ТРИ ЖЕЛЕЗНЫХ ЗАКОНА
+// 6. APPLY CALLABLE & LAW 3 (OUTCOME BYPASS)
 // =============================================================================
-
-pub fn eval_expression(tokens: &[Token], scope: &mut Scope) -> Result<Value, String> {
-    if tokens.is_empty() {
-        return Ok(Value::None);
-    }
-
-    if has_pipe_op(tokens) {
-        let (head, steps) = split_pipeline(tokens);
-        let mut current = eval_expression(&head, scope)?;
-        for step in steps {
-            current = eval_pipe_step(current, step, scope)?;
-        }
-        return Ok(current);
-    }
-
-    if let [Token::Op(op), rest @ ..] = tokens {
-        if op == "!" && !rest.is_empty() {
-            return match eval_expression(rest, scope)? {
-                Value::Bool(b) => Ok(Value::Bool(!b)),
-                v => Err(format!("Оператор '!' не применим к {v:?}")),
-            };
-        }
-    }
-
-    if let [Token::Path(fn_name), Token::Group(')', args)] = tokens {
-        return eval_call_expr(fn_name, args, None, scope);
-    }
-
-    // Ровно 2 токена `TypeName { ... }` — инстанцирование формы.
-    // Если токенов больше (например, `User { ... } & Cloud { ... }`),
-    // они будут корректно разбиты по бинарному оператору в `eval_infix_tokens`!
-    if let [Token::Path(type_name), Token::Group('{', sentences)] = tokens {
-        let mut form = match scope.get(type_name) {
-            Some(Value::Form(proto_arc)) => {
-                let base = proto_arc.read().unwrap().clone();
-                let mut child = base.clone();
-                child.ancestors.insert(type_name.clone(), base);
-                child
-            }
-            _ => FormInstance::new(type_name),
-        };
-        form.type_name = type_name.clone();
-        populate_form_members(&mut form, sentences, scope)?;
-        return Ok(Value::Form(Arc::new(RwLock::new(form))));
-    }
-
-    if tokens.len() == 1 {
-        return eval_token(&tokens[0], scope);
-    }
-
-    eval_infix_tokens(tokens, scope)
-}
-
-fn op_precedence(op: &str) -> u8 {
-    match op {
-        "|" => 1,
-        "&" | "/" => 2,
-        "||" => 3,
-        "&&" => 4,
-        "==" | "!=" | ">" | "<" | ">=" | "<=" => 5,
-        "+" | "-" | "<<" | ">>" => 6,
-        "*" | "%" => 7,
-        "**" => 8,
-        _ => 0,
-    }
-}
-
-fn eval_infix_tokens(tokens: &[Token], scope: &mut Scope) -> Result<Value, String> {
-    let mut lowest_idx = None;
-    let mut lowest_prec = u8::MAX;
-
-    for (i, tok) in tokens.iter().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        if let Token::Op(op) = tok {
-            let prec = if op == "/" {
-                let is_form = matches!(
-                    tokens.first(),
-                    Some(Token::Path(p)) if matches!(scope.get(p), Some(Value::Form(_)))
-                );
-                if is_form { 2 } else { 7 }
-            } else {
-                op_precedence(op)
-            };
-            if prec > 0 && prec <= lowest_prec {
-                lowest_prec = prec;
-                lowest_idx = Some(i);
-            }
-        }
-    }
-
-    if let Some(idx) = lowest_idx {
-        if let Token::Op(op) = &tokens[idx] {
-            let left = eval_expression(&tokens[..idx], scope)?;
-            let rhs_tokens = &tokens[idx + 1..];
-            if op == "/" {
-                if let (Value::Form(f_arc), [Token::Path(path_str)]) = (&left, rhs_tokens) {
-                    let sub = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
-                    return Ok(Value::Form(Arc::new(RwLock::new(sub))));
-                }
-            }
-            let right = eval_expression(rhs_tokens, scope)?;
-            return eval_binary_op_in_scope(left, op, right, scope);
-        }
-    }
-    eval_token(&tokens[0], scope)
-}
-
-pub fn eval_operator_tail(
-    mut current: Value,
-    tail: &[Token],
-    scope: &mut Scope,
-) -> Result<Value, String> {
-    let mut i = 0;
-    while i < tail.len() {
-        if let Token::Op(op) = &tail[i] {
-            let next_op_offset = tail[i + 1..]
-                .iter()
-                .position(|t| matches!(t, Token::Op(_)))
-                .map(|pos| i + 1 + pos)
-                .unwrap_or(tail.len());
-            let rhs_slice = &tail[i + 1..next_op_offset];
-
-            if op == "/" {
-                if let (Value::Form(f_arc), [Token::Path(path_str)]) = (&current, rhs_slice) {
-                    let new_val = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
-                    current = Value::Form(Arc::new(RwLock::new(new_val)));
-                    i = next_op_offset;
-                    continue;
-                }
-            }
-            let rhs = eval_expression(rhs_slice, scope)?;
-            current = eval_binary_op_in_scope(current, op, rhs, scope)?;
-            i = next_op_offset;
-        } else {
-            i += 1;
-        }
-    }
-    Ok(current)
-}
-
-fn eval_pipe_step(input: Value, step: PipeStep, scope: &mut Scope) -> Result<Value, String> {
-    if matches!(input, Value::None) && step.op != PipeOp::Filter {
-        return Ok(Value::None);
-    }
-
-    match step.op {
-        PipeOp::Dot => eval_pipe_target(input, &step.expr, scope),
-        PipeOp::Tap => {
-            let _ = eval_pipe_target(input.clone(), &step.expr, scope)?;
-            Ok(input)
-        }
-        PipeOp::Enrich => {
-            if let Ok(target) = eval_expression(&step.expr, scope) {
-                if !callable_accepts_input(&target, &input, scope) {
-                    return Ok(input);
-                }
-            }
-            let enriched = eval_pipe_target(input.clone(), &step.expr, scope)?;
-            if matches!(enriched, Value::None) {
-                Ok(Value::None)
-            } else {
-                eval_binary_op_in_scope(input, "&", enriched, scope)
-            }
-        }
-        PipeOp::Filter => {
-            if matches!(input, Value::None) {
-                return Ok(Value::None);
-            }
-            let pred = eval_expression(&step.expr, scope)?;
-            match apply_callable(pred, input.clone(), scope)? {
-                Value::Bool(true) => Ok(input),
-                _ => Ok(Value::None),
-            }
-        }
-        PipeOp::Parallel => {
-            let Some(Token::Group('{', branches)) = step.expr.first() else {
-                return Err("Оператор .| ожидает блок {}".into());
-            };
-            let mut handles = Vec::new();
-            for branch in branches {
-                let b_clone = branch.clone();
-                let in_clone = input.clone();
-                let parent = Arc::new(RwLock::new(scope.clone()));
-                handles.push(thread::spawn(move || -> Result<(String, Value), String> {
-                    let mut l_scope = Scope::child(parent);
-                    l_scope.set("_", in_clone.clone());
-                    if let Value::Form(f) = &in_clone {
-                        l_scope.unpack_form(f, true);
-                    }
-                    match classify_sentence(&b_clone) {
-                        SemanticKind::StreamOrBranch { name, stream } => Ok((
-                            name,
-                            unwrap_done(eval_stream_body(&stream, Some(in_clone), &mut l_scope)?),
-                        )),
-                        _ => Ok(("Result".into(), eval_sentence(&b_clone, &mut l_scope)?)),
-                    }
-                }));
-            }
-            let mut merged = FormInstance::new("ParallelResult");
-            for h in handles {
-                if let Ok(Ok((k, v))) = h.join() {
-                    merged.set_field(&k, v);
-                }
-            }
-            Ok(Value::Form(Arc::new(RwLock::new(merged))))
-        }
-    }
-}
-
-fn eval_pipe_target(input: Value, expr: &[Token], scope: &mut Scope) -> Result<Value, String> {
-    if let [Token::Path(fn_name), Token::Group(')', call_args)] = expr {
-        return eval_call_expr(fn_name, call_args, Some(input), scope);
-    }
-    // Если вызывается `SampleStream . Meta.StepsOf`, а `SampleStream` хранится как `Value::Function`,
-    // конвертируем его тело обратно в `Value::Stream`, чтобы `Meta.StepsOf` видел все шаги потока!
-    let normalized_input = if matches!(expr, [Token::Path(p)] if p == "Meta.StepsOf") {
-        if let Value::Function(func_arc) = &input {
-            if let FunctionBody::UserDefined { body, .. } = &func_arc.body {
-                Value::Stream(body.clone())
-            } else {
-                input
-            }
-        } else {
-            input
-        }
-    } else {
-        input
-    };
-
-    let mut t_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-    t_scope.set("_", normalized_input.clone());
-    if let Value::Form(f_arc) = &normalized_input {
-        t_scope.unpack_form(f_arc, true);
-    }
-    let target = eval_expression(expr, &mut t_scope)?;
-    apply_callable(target, normalized_input, scope)
-}
 
 fn callable_accepts_input(callable: &Value, input: &Value, scope: &mut Scope) -> bool {
     let Value::Function(func_arc) = callable else {
         return true;
     };
-    let FunctionBody::UserDefined {
+    let FunctionBody::LirDefined {
         args, partial_args, ..
     } = &func_arc.body
     else {
@@ -1250,11 +1304,11 @@ fn value_matches_type_tokens(val: &Value, tokens: &[Token], scope: &mut Scope) -
                         let vf = val_arc.read().unwrap();
                         if !vf.has_lineage(t_name) {
                             let matches_union = matches!(
-                            scope.get(t_name),
-                            Some(Value::Form(u_arc)) if u_arc.read().unwrap().union_variants.iter().any(|v| {
-                                matches!(v, Value::Form(vf2) if vf.has_lineage(&vf2.read().unwrap().type_name))
-                            })
-                        );
+                                scope.get(t_name),
+                                Some(Value::Form(u_arc)) if u_arc.read().unwrap().union_variants.iter().any(|v| {
+                                    matches!(v, Value::Form(vf2) if vf.has_lineage(&vf2.read().unwrap().type_name))
+                                })
+                            );
                             if !matches_union {
                                 return false;
                             }
@@ -1292,9 +1346,10 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                 };
                 f(args_vec, scope)
             }
-            FunctionBody::UserDefined {
+            FunctionBody::LirDefined {
                 args,
-                body,
+                stmts,
+                raw_body,
                 captured_env,
                 overrides,
                 partial_args,
@@ -1306,7 +1361,7 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                     other => combined.push(other.clone()),
                 }
 
-                // Поддержка Partial Application (Раздел 4.3: `AddTen AddTwo(10)`)
+                // Partial Application (Раздел 4.3: `AddTen AddTwo(10)`)
                 if !combined.is_empty() && combined.len() < args.len() && !matches!(arg, Value::None)
                 {
                     let has_missing_required = args.iter().skip(combined.len()).any(|s| {
@@ -1316,9 +1371,10 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                     if has_missing_required {
                         return Ok(Value::Function(Arc::new(FunctionInstance {
                             name: format!("{}_partial", func.name),
-                            body: FunctionBody::UserDefined {
+                            body: FunctionBody::LirDefined {
                                 args: args.clone(),
-                                body: body.clone(),
+                                stmts: stmts.clone(),
+                                raw_body: raw_body.clone(),
                                 captured_env: captured_env.clone(),
                                 overrides: overrides.clone(),
                                 partial_args: combined,
@@ -1339,9 +1395,7 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                 for (k, v) in overrides {
                     call_scope.set(k, v.clone());
                 }
-                let res = eval_stream_body(body, Some(packed_arg), &mut call_scope)?;
-                // Для лямбд сохраняем `Value::Done` (чтобы `Fold` получил сигнал остановки),
-                // а для обычных именованных функций снимаем обертку `Done`.
+                let res = eval_lir_stmts(stmts, Some(packed_arg), &mut call_scope)?;
                 if func.name == "Lambda" {
                     Ok(res)
                 } else {
@@ -1353,15 +1407,15 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                 apply_callable(f2.clone(), mid, scope)
             }
         },
-        Value::Stream(sentences) => {
+        Value::Stream { stmts, .. } => {
             let mut s_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
             s_scope.set("_", arg.clone());
             if let Value::Form(f_arc) = &arg {
                 s_scope.unpack_form(f_arc, true);
             }
-            eval_stream_body(&sentences, Some(arg), &mut s_scope)
+            eval_lir_stmts(&stmts, Some(arg), &mut s_scope)
         }
-        Value::Router(branches) => eval_router(&branches, arg, scope),
+        Value::Router(branches) => eval_lir_router(&branches, arg, scope),
         Value::Range(start, end) => match arg {
             Value::Int(v) => Ok(Value::Bool(v >= start && v <= end)),
             Value::String(s) => {
@@ -1386,10 +1440,10 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                 return Ok(Value::Bool(matched));
             }
             for key in &router.field_order {
-                if let Some(Value::Stream(body)) = router.fields.get(key) {
+                if let Some(Value::Stream { stmts, .. }) = router.fields.get(key) {
                     let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
                     if match_type_or_wildcard(key, &arg, &mut b_scope) {
-                        return eval_stream_body(body, Some(arg), &mut b_scope);
+                        return eval_lir_stmts(stmts, Some(arg), &mut b_scope);
                     }
                 }
             }
@@ -1397,180 +1451,6 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
         }
         _ => Err(format!("Значение {callable:?} не может быть вызвано")),
     }
-}
-
-pub fn eval_call_expr(
-    fn_name: &str,
-    call_args: &[Sentence],
-    piped_first: Option<Value>,
-    scope: &mut Scope,
-) -> Result<Value, String> {
-    if fn_name == "Compose" {
-        return eval_compose_call(call_args, scope);
-    }
-
-    let mut evaluated = Vec::new();
-    if let Some(first) = piped_first {
-        evaluated.push(first);
-    }
-    for a in call_args {
-        evaluated.push(eval_sentence(a, scope)?);
-    }
-
-    let arg = match evaluated.len() {
-        0 => Value::None,
-        1 => evaluated.remove(0),
-        _ => Value::Tuple(evaluated),
-    };
-
-    if let Some((obj_path, method_name)) = fn_name.rsplit_once('.') {
-        if let Ok(obj_val) = eval_path(obj_path, scope) {
-            match obj_val {
-                Value::Form(f_arc) => {
-                    let snap = f_arc.read().unwrap().clone();
-                    if let Some(method) = snap.methods.get(method_name) {
-                        return invoke_form_method(&snap, method, arg, scope);
-                    }
-                }
-                Value::Atom(atom_arc) => match method_name {
-                    "Swap" => {
-                        let current_val = atom_arc.lock().unwrap().clone();
-                        let next_val = apply_callable(arg, current_val, scope)?;
-                        *atom_arc.lock().unwrap() = next_val.clone();
-                        return Ok(next_val);
-                    }
-                    "Read" => {
-                        return Ok(atom_arc.lock().unwrap().clone());
-                    }
-                    _ => {}
-                },
-                Value::Channel(chan_arc) => match method_name {
-                    "Send" => {
-                        chan_arc.lock().unwrap().push_back(arg);
-                        return Ok(Value::None);
-                    }
-                    "Recv" => {
-                        return Ok(match chan_arc.lock().unwrap().pop_front() {
-                            Some(v) => make_some(v),
-                            None => make_empty_form("None"),
-                        });
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    }
-
-    if let Ok(func) = eval_path(fn_name, scope) {
-        if let Value::Symbol(tag) = func {
-            let mut node = FormInstance::new(&tag);
-            node.set_field("Args", arg);
-            return Ok(Value::Form(Arc::new(RwLock::new(node))));
-        }
-        apply_callable(func, arg, scope)
-    } else {
-        Err(format!("Функция '{fn_name}' не найдена"))
-    }
-}
-
-fn eval_router(branches: &[Sentence], arg: Value, scope: &mut Scope) -> Result<Value, String> {
-    for branch in branches {
-        match classify_sentence(branch) {
-            SemanticKind::PatternBranch { pattern, body } => {
-                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                b_scope.set("_", arg.clone());
-                if let Value::Form(f) = &arg {
-                    b_scope.unpack_form(f, true);
-                }
-                let matched = match pattern {
-                    Token::Lit(lit) => arg == eval_literal(&lit, &mut b_scope),
-                    Token::Range(a, b) => {
-                        let r = eval_token(&Token::Range(a, b), &mut b_scope)?;
-                        matches!(
-                            apply_callable(r, arg.clone(), &mut b_scope),
-                            Ok(Value::Bool(true))
-                        )
-                    }
-                    Token::Group('[', pred_sents) => {
-                        matches!(
-                            eval_stream_body(&pred_sents, Some(arg.clone()), &mut b_scope)?,
-                            Value::Bool(true)
-                        )
-                    }
-                    Token::Group('{', field_pats) => {
-                        if let Value::Form(f_arc) = &arg {
-                            let f = f_arc.read().unwrap();
-                            let mut ok = true;
-                            for fp in field_pats {
-                                if let SemanticKind::Binding { key, value } = classify_sentence(&fp)
-                                {
-                                    let Some(actual) = f.get_field(&key) else {
-                                        ok = false;
-                                        break;
-                                    };
-                                    if let [Token::Group('(' | ')', t_pats)] = value.as_slice() {
-                                        if !match_tuple_pattern(t_pats, &actual, &mut b_scope)? {
-                                            ok = false;
-                                            break;
-                                        }
-                                    } else if actual != eval_expression(&value, &mut b_scope)? {
-                                        ok = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            ok
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                };
-                if matched {
-                    return eval_stream_body(&body, Some(arg), &mut b_scope);
-                }
-            }
-            SemanticKind::LambdaOrTupleBranch { args, body } => {
-                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                b_scope.set("_", arg.clone());
-                if match_tuple_pattern(&args, &arg, &mut b_scope)? {
-                    return eval_stream_body(&body, Some(arg), &mut b_scope);
-                }
-            }
-            SemanticKind::StreamOrBranch { name, stream } => {
-                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                if match_type_or_wildcard(&name, &arg, &mut b_scope) {
-                    return eval_stream_body(&stream, Some(arg), &mut b_scope);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(Value::None)
-}
-
-pub fn match_tuple_pattern(
-    pat_sents: &[Sentence],
-    actual: &Value,
-    scope: &mut Scope,
-) -> Result<bool, String> {
-    let items = match actual {
-        Value::Tuple(v) => v.clone(),
-        other => vec![other.clone()],
-    };
-    if pat_sents.len() != items.len() {
-        return Ok(false);
-    }
-    for (pat_s, act_val) in pat_sents.iter().zip(items.iter()) {
-        match pat_s.as_slice() {
-            [Token::Path(v)] if v == "_" => {}
-            [Token::Path(v)] => scope.set(v, act_val.clone()),
-            _ if act_val != &eval_sentence(pat_s, scope)? => return Ok(false),
-            _ => {}
-        }
-    }
-    Ok(true)
 }
 
 fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) -> bool {
@@ -1638,6 +1518,7 @@ fn bind_arguments(
         other => vec![other.clone()],
     };
 
+    let dummy_hir = HirModule::default();
     for (idx, param_sent) in arg_defs.iter().enumerate() {
         let provided = items.get(idx).cloned();
         match param_sent.as_slice() {
@@ -1661,7 +1542,8 @@ fn bind_arguments(
                 if let Some(val) = provided {
                     scope.set(param_name, val);
                 } else if !rest.is_empty() {
-                    let def_val = eval_expression(rest, scope)?;
+                    let lir_def = lower_tokens_to_expr(rest, &dummy_hir);
+                    let def_val = eval_lir_expr(&lir_def, scope)?;
                     scope.set(param_name, def_val);
                 } else {
                     scope.set(param_name, Value::None);
@@ -1673,46 +1555,147 @@ fn bind_arguments(
     Ok(())
 }
 
-pub fn eval_stream_body(
-    body: &[Sentence],
-    input: Option<Value>,
+// =============================================================================
+// 7. ОБРАБОТКА ПРЕДЛОЖЕНИЙ (ЧЕРЕЗ ПОНИЖЕНИЕ В LIR) И ЗАПУСК LIR-МОДУЛЯ
+// =============================================================================
+
+pub fn populate_form_members(
+    form: &mut FormInstance,
+    sentences: &[Sentence],
     scope: &mut Scope,
-) -> Result<Value, String> {
-    if let Some(inp) = input {
-        scope.set("_", inp);
-    }
-    let mut last = Value::None;
-    for s in body {
-        last = eval_sentence(s, scope)?;
-        // ВАЖНО: пробрасываем `Value::Done(val)` вверх без снятия обертки,
-        // чтобы `Done` из вложенного роутера доходил до `Fold`!
-        if let Value::Done(_) = last {
-            return Ok(last);
-        }
-        if let Value::Form(f_arc) = &last {
-            let f = f_arc.read().unwrap();
-            if f.type_name == "Done" {
-                if let Some(v) = f.get_field("Value") {
-                    return Ok(Value::Done(Box::new(v)));
+) -> Result<(), String> {
+    let dummy_hir = HirModule::default();
+    for s in sentences {
+        match classify_sentence(s) {
+            SemanticKind::FormDef { name, body, tail } => {
+                let mut sub = FormInstance::new(&name);
+                populate_form_members(&mut sub, &body, scope)?;
+                let mut val = Value::Form(Arc::new(RwLock::new(sub)));
+                if !tail.is_empty() {
+                    val = eval_operator_tail(val, &tail, scope)?;
+                }
+                form.set_field(&name, val);
+            }
+            SemanticKind::Binding { key, value } => {
+                let v = match value.as_slice() {
+                    [Token::Path(p)]
+                    if matches!(
+                            p.as_str(),
+                            "String" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "File" | "Any"
+                        ) =>
+                        {
+                            Value::Symbol(p.clone())
+                        }
+                    _ => {
+                        let lir_e = lower_tokens_to_expr(&value, &dummy_hir);
+                        eval_lir_expr(&lir_e, scope)?
+                    }
+                };
+                form.set_field(&key, v);
+            }
+            SemanticKind::TupleBinding { tuple, value } => {
+                if let Some(first_sent) = tuple.first() {
+                    let k = eval_sentence(first_sent, scope)?.to_string();
+                    let lir_e = lower_tokens_to_expr(&value, &dummy_hir);
+                    let v = eval_lir_expr(&lir_e, scope)?;
+                    form.set_field(&k, v);
                 }
             }
+            SemanticKind::StreamOrBranch { name, stream } => {
+                form.set_field(
+                    &name,
+                    Value::Stream {
+                        stmts: lower_body_to_stmts(&stream, &dummy_hir),
+                        raw: stream,
+                    },
+                );
+            }
+            SemanticKind::FunctionDef {
+                name, args, body, ..
+            } => {
+                let env_arc = Arc::new(RwLock::new(scope.clone()));
+                let func = Arc::new(FunctionInstance {
+                    name: name.clone(),
+                    body: FunctionBody::LirDefined {
+                        args,
+                        stmts: lower_body_to_stmts(&body, &dummy_hir),
+                        raw_body: body,
+                        captured_env: env_arc,
+                        overrides: HashMap::new(),
+                        partial_args: Vec::new(),
+                    },
+                });
+                form.methods.insert(name, func);
+            }
+            SemanticKind::OperatorMethod { op, args, rest } => {
+                let body = match rest.first() {
+                    Some(Token::Group('[', b)) => b.clone(),
+                    _ => vec![rest],
+                };
+                let func = Arc::new(FunctionInstance {
+                    name: op.clone(),
+                    body: FunctionBody::LirDefined {
+                        args,
+                        stmts: lower_body_to_stmts(&body, &dummy_hir),
+                        raw_body: body,
+                        captured_env: Arc::new(RwLock::new(scope.clone())),
+                        overrides: HashMap::new(),
+                        partial_args: Vec::new(),
+                    },
+                });
+                form.methods.insert(op, func);
+            }
+            _ => {}
         }
     }
-    Ok(last)
+    Ok(())
 }
 
-// =============================================================================
-// 6. ОБРАБОТКА ПРЕДЛОЖЕНИЙ (SENTENCES) И ЗАПУСК МОДУЛЯ
-// =============================================================================
+pub fn eval_operator_tail(
+    mut current: Value,
+    tail: &[Token],
+    scope: &mut Scope,
+) -> Result<Value, String> {
+    let dummy_hir = HirModule::default();
+    let mut i = 0;
+    while i < tail.len() {
+        if let Token::Op(op) = &tail[i] {
+            let next_op_offset = tail[i + 1..]
+                .iter()
+                .position(|t| matches!(t, Token::Op(_)))
+                .map(|pos| i + 1 + pos)
+                .unwrap_or(tail.len());
+            let rhs_slice = &tail[i + 1..next_op_offset];
+
+            if op == "/" {
+                if let (Value::Form(f_arc), [Token::Path(path_str)]) = (&current, rhs_slice) {
+                    let new_val = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
+                    current = Value::Form(Arc::new(RwLock::new(new_val)));
+                    i = next_op_offset;
+                    continue;
+                }
+            }
+            let lir_rhs = lower_tokens_to_expr(rhs_slice, &dummy_hir);
+            let rhs = eval_lir_expr(&lir_rhs, scope)?;
+            current = eval_binary_op_in_scope(current, op, rhs, scope)?;
+            i = next_op_offset;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(current)
+}
 
 pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, String> {
+    let dummy_hir = HirModule::default();
     match classify_sentence(sentence) {
         SemanticKind::LambdaOrTupleBranch { args, body } => {
             Ok(Value::Function(Arc::new(FunctionInstance {
                 name: "Lambda".into(),
-                body: FunctionBody::UserDefined {
+                body: FunctionBody::LirDefined {
                     args,
-                    body,
+                    stmts: lower_body_to_stmts(&body, &dummy_hir),
+                    raw_body: body,
                     captured_env: Arc::new(RwLock::new(scope.clone())),
                     overrides: HashMap::new(),
                     partial_args: Vec::new(),
@@ -1723,9 +1706,10 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
             let env_arc = Arc::new(RwLock::new(scope.clone()));
             let val = Value::Function(Arc::new(FunctionInstance {
                 name: name.clone(),
-                body: FunctionBody::UserDefined {
+                body: FunctionBody::LirDefined {
                     args: Vec::new(),
-                    body: stream,
+                    stmts: lower_body_to_stmts(&stream, &dummy_hir),
+                    raw_body: stream,
                     captured_env: env_arc.clone(),
                     overrides: HashMap::new(),
                     partial_args: Vec::new(),
@@ -1745,19 +1729,30 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
                     {
                         Value::Symbol(key.clone())
                     }
-                _ => eval_expression(&value, scope)?,
+                _ => {
+                    let lir_e = lower_tokens_to_expr(&value, &dummy_hir);
+                    eval_lir_expr(&lir_e, scope)?
+                }
             };
             scope.set(&key, val.clone());
             Ok(val)
         }
         SemanticKind::TupleBinding { tuple, value } => {
-            // Если после первой скобочной группы `(V1 + V2)` идет оператор `* 2.0`,
-            // то это не деструктуризация кортежа, а инфиксное выражение `(V1 + V2) * 2.0`!
             if matches!(value.first(), Some(Token::Op(_))) {
-                return eval_expression(sentence, scope);
+                let lir_e = lower_tokens_to_expr(sentence, &dummy_hir);
+                return eval_lir_expr(&lir_e, scope);
             }
-            let val = eval_expression(&value, scope)?;
-            let _ = match_tuple_pattern(&tuple, &val, scope)?;
+            let lir_e = lower_tokens_to_expr(&value, &dummy_hir);
+            let val = eval_lir_expr(&lir_e, scope)?;
+            if let Value::Tuple(items) = &val {
+                for (pat_s, act_val) in tuple.iter().zip(items.iter()) {
+                    if let [Token::Path(v)] = pat_s.as_slice() {
+                        if v != "_" {
+                            scope.set(v, act_val.clone());
+                        }
+                    }
+                }
+            }
             Ok(val)
         }
         SemanticKind::FormDef { name, body, tail } => {
@@ -1826,7 +1821,8 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
             Ok(val)
         }
         SemanticKind::AlgebraicDef { name, expr } => {
-            let val = eval_expression(&expr, scope)?;
+            let lir_e = lower_tokens_to_expr(&expr, &dummy_hir);
+            let val = eval_lir_expr(&lir_e, scope)?;
             if let Value::Form(f_arc) = &val {
                 let mut fw = f_arc.write().unwrap();
                 let snap = fw.clone();
@@ -1844,9 +1840,10 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
             let env_arc = Arc::new(RwLock::new(scope.clone()));
             let val = Value::Function(Arc::new(FunctionInstance {
                 name: name.clone(),
-                body: FunctionBody::UserDefined {
+                body: FunctionBody::LirDefined {
                     args,
-                    body,
+                    stmts: lower_body_to_stmts(&body, &dummy_hir),
+                    raw_body: body,
                     captured_env: env_arc.clone(),
                     overrides: HashMap::new(),
                     partial_args: Vec::new(),
@@ -1856,7 +1853,10 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
             scope.set(&name, val.clone());
             Ok(val)
         }
-        SemanticKind::CallExpr { name, args } => eval_call_expr(&name, &args, None, scope),
+        SemanticKind::CallExpr { .. } | SemanticKind::Expression(_) => {
+            let lir_e = lower_tokens_to_expr(sentence, &dummy_hir);
+            eval_lir_expr(&lir_e, scope)
+        }
         SemanticKind::Pipeline(tokens) => {
             if let [Token::Path(form_name), Token::Group('{', body), Token::Op(op), Token::Path(macro_name)] =
                 tokens.as_slice()
@@ -1874,18 +1874,18 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
                     return Ok(transformed);
                 }
             }
-            eval_expression(&tokens, scope)
+            let lir_e = lower_tokens_to_expr(&tokens, &dummy_hir);
+            eval_lir_expr(&lir_e, scope)
         }
-        SemanticKind::Expression(tokens) => eval_expression(&tokens, scope),
         _ => Ok(Value::None),
     }
 }
 
-pub fn run_hir_module(hir: &HirModule) -> Result<Value, String> {
+pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
     let mut global_scope = create_global_scope();
 
     let mut last_val = Value::None;
-    for sentence in &hir.top_level_sentences {
+    for sentence in &lir.raw_sentences {
         last_val = eval_sentence(sentence, &mut global_scope)?;
     }
 
@@ -1896,8 +1896,14 @@ pub fn run_hir_module(hir: &HirModule) -> Result<Value, String> {
     Ok(last_val)
 }
 
+pub fn run_hir_module(hir: &HirModule) -> Result<Value, String> {
+    let lir = lower_hir_to_lir(hir);
+    run_lir_module(&lir)
+}
+
 pub fn run_program(source: &str) -> Result<Value, String> {
     let sentences = parse_code(source).map_err(|e| format!("Ошибка парсинга:\n{e}"))?;
     let hir = lower_to_hir(&sentences);
-    run_hir_module(&hir)
+    let lir = lower_hir_to_lir(&hir);
+    run_lir_module(&lir)
 }

@@ -1,5 +1,5 @@
 // =============================================================================
-// RAZOMY LANGUAGE V4.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS
+// RAZOMY LANGUAGE V4.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (`.rl`)
 // =============================================================================
 // 1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
 // {} — Form   (Key-Value: Data structures, Routing tables, Pattern Matching, Modules, Maps).
@@ -945,7 +945,7 @@ UpgradedSystem ComplexSystem . Meta.Rewrite({
 18. IMPORTS, MODULE ENCAPSULATION (`& Public`, `/`) & NATIVE WRAPPERS
 #
 
-// 1. Standard & Relative Imports (Native C/Rust/JS libraries are wrapped as normal `.rz` modules)
+// 1. Standard & Relative Imports (Native C/Rust/JS libraries are wrapped as normal `.rl` modules)
 Base          root.base          // Named module import
 (String, Int) root.base          // Element destructuring import via Tuple `()`
 _             root.base          // Wildcard import (all)
