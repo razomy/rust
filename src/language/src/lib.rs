@@ -1,5 +1,6 @@
 mod analyzer;
 mod runtime;
+mod hir;
 
 use pest::Parser;
 use pest_derive::Parser;

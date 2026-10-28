@@ -951,12 +951,35 @@ pub fn create_global_scope() -> Scope {
     scope
 }
 
-pub fn run_program(source: &str) -> Result<Value, String> {
-    let sentences = parse_code(source).map_err(|e| format!("Ошибка парсинга:\n{e}"))?;
+// Добавь этот импорт в начало src/runtime.rs:
+use crate::hir::{lower_to_hir, HirModule};
+
+// И замени функцию run_program в конце src/runtime.rs на эти две:
+pub fn run_hir_module(hir: &HirModule) -> Result<Value, String> {
     let mut global_scope = create_global_scope();
 
+    // 1. Предварительно создаем все формы из статически разрешенного HIR (включая слияния & и вычитания /)
+    for form_name in &hir.form_order {
+        if form_name == "Shell" {
+            continue;
+        }
+        if let Some(hir_form) = hir.forms.get(form_name) {
+            let mut inst = FormInstance::new(form_name);
+            for fname in &hir_form.field_order {
+                if let Some(hf) = hir_form.fields.get(fname) {
+                    if !hf.default_expr.is_empty() {
+                        let val = eval_expression(&hf.default_expr, &mut global_scope)?;
+                        inst.set_field(fname, val);
+                    }
+                }
+            }
+            global_scope.set(form_name, Value::Form(Arc::new(RwLock::new(inst))));
+        }
+    }
+
+    // 2. Выполняем предложения верхнего уровня
     let mut last_val = Value::None;
-    for sentence in &sentences {
+    for sentence in &hir.top_level_sentences {
         last_val = eval_sentence(sentence, &mut global_scope)?;
     }
 
@@ -965,4 +988,10 @@ pub fn run_program(source: &str) -> Result<Value, String> {
     }
 
     Ok(last_val)
+}
+
+pub fn run_program(source: &str) -> Result<Value, String> {
+    let sentences = parse_code(source).map_err(|e| format!("Ошибка парсинга:\n{e}"))?;
+    let hir = lower_to_hir(&sentences);
+    run_hir_module(&hir)
 }

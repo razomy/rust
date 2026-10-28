@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod runtime;
+pub mod hir;
 
 // Подключаем ваш парсер из корня (или lib.rs)
 pub use razomy_parser::*;
