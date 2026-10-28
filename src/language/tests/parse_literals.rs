@@ -1,4 +1,4 @@
-use razomy_parser::{parse_code, Literal, Token};
+use razomy_language::parser::{parse_code, Literal, Token};
 
 #[test]
 fn micro_lit_int_positive_and_negative() {

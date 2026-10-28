@@ -1,4 +1,4 @@
-use razomy_parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
+use razomy_language::parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
 use std::fs;
 
 // --- ШАГ 1: Комментарии, пустые строки и символ '#' внутри комментария ---

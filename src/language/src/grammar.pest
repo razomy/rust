@@ -28,12 +28,15 @@ pipe_nl = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
 SEP = _{ "," | (!pipe_nl ~ NEWLINE) }
 
 statements = _{ ( "," | NEWLINE )* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ ( "," | NEWLINE )* }
-sentence   = { token ~ (pipe_nl? ~ token)* }
+
+// ВАЖНО: callable_op (`+(Other Vec2)`) разрешен ТОЛЬКО в начале предложения (head_token)!
+// В середине предложения бинарный оператор перед `(` обязан иметь пробел: `A + (B)`.
+sentence   = { head_token ~ (pipe_nl? ~ tail_token)* }
 
 // =============================================================================
 // ТОКЕНЫ (СТРОГИЙ ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
 // =============================================================================
-token = _{
+head_token = _{
     group
   | range_expr
   | string_lit
@@ -41,6 +44,18 @@ token = _{
   | rich_literal
   | number_lit
   | callable_op
+  | operator
+  | callable_path
+  | path
+}
+
+tail_token = _{
+    group
+  | range_expr
+  | string_lit
+  | symbol_lit
+  | rich_literal
+  | number_lit
   | operator
   | callable_path
   | path
@@ -56,8 +71,8 @@ paren_group   = { "(" ~ statements ~ ")" }
 string_lit = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\{" | "\\}" | (!"\"" ~ ANY) )* ~ "\"" }
 symbol_lit = @{ "'" ~ ( "\\'" | "\\\\" | (!"'" ~ ANY) )* ~ "'" }
 
-// 3. Диапазоны (Ranges): 1..10, 1..Limit, "0".."9", "a".."z"
-range_atom = _{ string_lit | symbol_lit | number_lit | ident_seg }
+// 3. Диапазоны (Ranges): 1..10, 1..Limit, 1..Config.Max, "0".."9", "a".."z"
+range_atom = _{ string_lit | symbol_lit | number_lit | path_core }
 range_expr = ${ range_atom ~ ".." ~ range_atom }
 
 // 4. Богатые самотипизированные литералы (Rich Human Literals — без пробелов)
@@ -101,7 +116,7 @@ color_lit    = @{ "#" ~ ASCII_HEX_DIGIT{3, 8} ~ !(ASCII_ALPHANUMERIC | "_") }
 number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !".")) }
 
 // 6. Операторы:
-// - `callable_op`: перегрузка оператора `+(Other Vec2)`, `<(Other) Bool` (слитно с `(`, проверяется через `&"("`)
+// - `callable_op`: перегрузка оператора `+(Other Vec2)`, `<(Other) Bool` (слитно с `(`, только в начале sentence)
 // - `operator`: бинарные операторы (отделяются пробелом) и унарный `!` (примыкает плотно)
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
 callable_op = @{ overload_op ~ &"(" }
@@ -121,14 +136,12 @@ operator = @{
     )
 }
 
-// 7. Слитные пути, вызовы и идентификаторы:
-// - `callable_path`: `Name` в `Name(Args)` — атомарный lookahead `&"("` проверяет, что `(` идет БЕЗ пробела,
-//   но НЕ поглощает саму скобку `(`, поэтому внутри `(...)` пробелы работают штатно!
-// - `path`: `Name`, `User.Name`, `JonnDoyName3.-1`, `_.Age`, `State.Read().Count`
+// 7. Слитные пути, вызовы и идентификаторы (поддержка цепочек A.B().C().D):
 PATH_END      = _{ &(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "}" | EOI) }
-callable_path = @{ path_core ~ !("()" ~ ".") ~ &"(" }
-path          = @{ path_core ~ ("()" ~ ("." ~ (ident_seg | index_seg))+)? ~ PATH_END }
-path_core     = _{ primary_ident ~ ("." ~ (ident_seg | index_seg))* }
-primary_ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-ident_seg     = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-index_seg     = @{ "-"? ~ ASCII_DIGIT+ }
+callable_path = @{ path_core ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ !("()" ~ ".") ~ &"(" }
+path          = @{ path_core ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ PATH_END }
+// ВАЖНО: path_core атомарный `@`, чтобы внутри `range_expr` (например, `1..Limit` или `1..Config.Max`)
+// он возвращался как единый токен `Rule::path_core`!
+path_core     = @{ ident ~ ("." ~ (ident | index_seg))* }
+ident         = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+index_seg     = _{ "-"? ~ ASCII_DIGIT+ }

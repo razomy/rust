@@ -1,4 +1,4 @@
-use razomy_parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
+use razomy_language::parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
 
 #[test]
 fn micro_range_int_to_int() {

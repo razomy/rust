@@ -3,8 +3,8 @@
 // RAZOMY V4.7 — FULL SHOWCASE: HIR STATIC ANALYZER + DATAFLOW RUNTIME
 // =============================================================================
 
-use razomy_parser::analyzer::analyze_source;
-use razomy_parser::runtime::run_program;
+use razomy_language::analyzer::analyze_source;
+use razomy_language::runtime::run_program;
 
 fn main() {
     let source_code = r#"

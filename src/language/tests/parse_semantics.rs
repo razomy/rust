@@ -1,4 +1,4 @@
-use razomy_parser::{
+use razomy_language::parser::{
     classify_sentence, parse_code, split_pipeline, Literal, PipeOp, SemanticKind, Token,
 };
 

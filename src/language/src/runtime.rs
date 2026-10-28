@@ -1,17 +1,21 @@
 // src/runtime.rs
 // =============================================================================
-// RAZOMY V4.7 — THREAD-SAFE INTERPRETER & DATAFLOW RUNTIME ENGINE
+// RAZOMY V4.7 — CORE RUNTIME ENGINE (SYSTEM KERNEL)
+// Потокобезопасное ядро: Value, Scope, Законы 1–3, Lineage, Пайплайны и Роутеры.
 // =============================================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use crate::hir::{lower_to_hir, HirModule};
-use crate::{
+use crate::parser::{
     classify_sentence, has_pipe_op, parse_code, split_pipeline, Literal, PipeOp, PipeStep,
     SemanticKind, Sentence, Token,
+};
+use crate::runtime_ext::{
+    create_global_scope, eval_compose_call, make_empty_form, make_some,
 };
 
 // =============================================================================
@@ -35,9 +39,10 @@ pub enum Value {
     Tuple(Vec<Value>),
     Form(Arc<RwLock<FormInstance>>),
     Stream(Vec<Sentence>),
-    Router(Vec<Sentence>), // Блок маршрутизации и паттерн-матчинга `{ ... }`
+    Router(Vec<Sentence>),
     Function(Arc<FunctionInstance>),
     Atom(Arc<Mutex<Value>>),
+    Channel(Arc<Mutex<VecDeque<Value>>>),
     Done(Box<Value>),
 }
 
@@ -60,10 +65,10 @@ impl PartialEq for Value {
             (Value::Range(a1, a2), Value::Range(b1, b2)) => a1 == b1 && a2 == b2,
             (Value::Tuple(a), Value::Tuple(b)) => a == b,
             (Value::Form(f1), Value::Form(f2)) => {
-                let r1 = f1.read().unwrap();
-                let r2 = f2.read().unwrap();
+                let (r1, r2) = (f1.read().unwrap(), f2.read().unwrap());
                 r1.type_name == r2.type_name && r1.fields == r2.fields
             }
+            (Value::Done(a), Value::Done(b)) => a == b,
             _ => false,
         }
     }
@@ -76,10 +81,10 @@ pub struct FormInstance {
     pub field_order: Vec<String>,
     pub field_origins: HashMap<String, String>,
     pub methods: HashMap<String, Arc<FunctionInstance>>,
-    pub ancestors: HashMap<String, FormInstance>, // Закон 2: Полная история Lineage
+    pub ancestors: HashMap<String, FormInstance>,
     pub ambiguous_fields: HashMap<String, Vec<String>>,
-    pub predicates: Vec<Value>,     // Предикаты уточнения (`User & IsAdult`)
-    pub union_variants: Vec<Value>, // Варианты объединения (`'admin' | 'manager'`, `Circle | Rect`)
+    pub predicates: Vec<Value>,
+    pub union_variants: Vec<Value>,
 }
 
 impl FormInstance {
@@ -107,8 +112,14 @@ impl FormInstance {
             self.field_order.push(key.to_string());
         }
         self.fields.insert(key.to_string(), val);
-        self.field_origins
-            .insert(key.to_string(), origin.to_string());
+        self.field_origins.insert(key.to_string(), origin.to_string());
+        self.ambiguous_fields.remove(key);
+    }
+
+    pub fn remove_field(&mut self, key: &str) {
+        self.fields.remove(key);
+        self.field_order.retain(|k| k != key);
+        self.field_origins.remove(key);
         self.ambiguous_fields.remove(key);
     }
 
@@ -117,15 +128,9 @@ impl FormInstance {
     }
 
     pub fn has_lineage(&self, target_type: &str) -> bool {
-        if self.type_name == target_type || self.ancestors.contains_key(target_type) {
-            return true;
-        }
-        for anc in self.ancestors.values() {
-            if anc.has_lineage(target_type) {
-                return true;
-            }
-        }
-        false
+        self.type_name == target_type
+            || self.ancestors.contains_key(target_type)
+            || self.ancestors.values().any(|a| a.has_lineage(target_type))
     }
 }
 
@@ -138,6 +143,7 @@ pub enum FunctionBody {
         body: Vec<Sentence>,
         captured_env: Arc<RwLock<Scope>>,
         overrides: HashMap<String, Value>,
+        partial_args: Vec<Value>,
     },
     Composed(Value, Value),
     Native(NativeFn),
@@ -165,30 +171,24 @@ impl fmt::Debug for Value {
             Value::Duration(d) => write!(f, "{d}"),
             Value::Range(a, b) => write!(f, "{a}..{b}"),
             Value::Tuple(items) => {
-                write!(f, "(")?;
-                for (i, it) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{it:?}")?;
-                }
-                write!(f, ")")
+                let s: Vec<String> = items.iter().map(|it| format!("{it:?}")).collect();
+                write!(f, "({})", s.join(", "))
             }
             Value::Form(form) => {
                 let form = form.read().unwrap();
-                write!(f, "{} {{ ", form.type_name)?;
-                for key in &form.field_order {
-                    if let Some(val) = form.fields.get(key) {
-                        write!(f, "{key}: {val:?}, ")?;
-                    }
-                }
-                write!(f, "}}")
+                let pairs: Vec<String> = form
+                    .field_order
+                    .iter()
+                    .filter_map(|k| form.fields.get(k).map(|v| format!("{k}: {v:?}")))
+                    .collect();
+                write!(f, "{} {{ {} }}", form.type_name, pairs.join(", "))
             }
             Value::Stream(_) => write!(f, "[Stream]"),
             Value::Router(_) => write!(f, "{{Router}}"),
             Value::Function(func) => write!(f, "Fn({})", func.name),
             Value::Atom(a) => write!(f, "Atom({:?})", a.lock().unwrap()),
-            Value::Done(v) => write!(f, "Done({:?})", v),
+            Value::Channel(_) => write!(f, "Channel"),
+            Value::Done(v) => write!(f, "Done({v:?})"),
         }
     }
 }
@@ -203,7 +203,7 @@ impl fmt::Display for Value {
 }
 
 // =============================================================================
-// 2. ОБЛАСТЬ ВИДИМОСТИ (SCOPE)
+// 2. ОБЛАСТЬ ВИДИМОСТИ (SCOPE) И ПРОЕКЦИЯ ПОЛЕЙ (ЗАКОН 1)
 // =============================================================================
 
 #[derive(Clone, Default)]
@@ -214,10 +214,7 @@ pub struct Scope {
 
 impl Scope {
     pub fn new() -> Self {
-        Self {
-            parent: None,
-            bindings: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub fn child(parent: Arc<RwLock<Scope>>) -> Self {
@@ -228,22 +225,56 @@ impl Scope {
     }
 
     pub fn get(&self, name: &str) -> Option<Value> {
-        if let Some(val) = self.bindings.get(name) {
-            return Some(val.clone());
-        }
-        if let Some(parent) = &self.parent {
-            return parent.read().unwrap().get(name);
-        }
-        None
+        self.bindings
+            .get(name)
+            .cloned()
+            .or_else(|| self.parent.as_ref()?.read().unwrap().get(name))
     }
 
     pub fn set(&mut self, name: &str, val: Value) {
         self.bindings.insert(name.to_string(), val);
     }
+
+    /// Единый метод проекции полей формы в скоуп (Закон 1a/1b/1c + предки Закона 2)
+    pub fn unpack_form(&mut self, form_arc: &Arc<RwLock<FormInstance>>, eval_reactive: bool) {
+        let form = form_arc.read().unwrap().clone();
+        for fname in &form.field_order {
+            if form.ambiguous_fields.contains_key(fname) {
+                continue;
+            }
+            if let Some(val) = form.fields.get(fname) {
+                if eval_reactive {
+                    if let Value::Stream(sents) = val {
+                        if !stream_uses_free_underscore(sents) {
+                            if let Ok(comp) = eval_stream_body(sents, None, self) {
+                                self.set(fname, unwrap_done(comp));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                self.set(fname, val.clone());
+            }
+        }
+        for (anc_name, anc_inst) in &form.ancestors {
+            self.set(
+                anc_name,
+                Value::Form(Arc::new(RwLock::new(anc_inst.clone()))),
+            );
+        }
+    }
+}
+
+#[inline]
+fn unwrap_done(v: Value) -> Value {
+    match v {
+        Value::Done(inner) => *inner,
+        other => other,
+    }
 }
 
 // =============================================================================
-// 3. ВЫЧИСЛИТЕЛЬ ВЫРАЖЕНИЙ, ИНТЕРПОЛЯЦИИ И ПУТЕЙ
+// 3. ВЫЧИСЛЕНИЕ ТОКЕНОВ, ИНТЕРПОЛЯЦИИ И СЛИТНЫХ ПУТЕЙ
 // =============================================================================
 
 pub fn eval_literal(lit: &Literal, scope: &mut Scope) -> Value {
@@ -252,24 +283,23 @@ pub fn eval_literal(lit: &Literal, scope: &mut Scope) -> Value {
         Literal::Float(f) => Value::Float(*f),
         Literal::Bool(b) => Value::Bool(*b),
         Literal::Byte(b) => Value::Byte(*b),
-        Literal::String(s) => Value::String(interpolate_string(s, scope)),
-        Literal::Url(u) => Value::String(interpolate_string(u, scope)),
-        Literal::File(f) => Value::String(interpolate_string(f, scope)),
+        Literal::String(s) | Literal::Url(s) | Literal::File(s) => {
+            Value::String(interpolate_string(s, scope))
+        }
         Literal::Symbol(s) => Value::Symbol(s.clone()),
         Literal::Money(m) => Value::Money(m.clone()),
         Literal::Percent(p) => Value::Percent(*p),
         Literal::Date(d) => Value::Date(d.clone()),
         Literal::Duration(d) => Value::Duration(d.clone()),
-        Literal::Coord(c) => Value::String(c.clone()),
-        Literal::Color(c) => Value::String(c.clone()),
-        Literal::IpAddr(ip) => Value::String(ip.clone()),
-        Literal::Version(v) => Value::String(v.clone()),
-        Literal::Email(e) => Value::String(e.clone()),
-        Literal::Time(t) => Value::String(t.clone()),
+        Literal::Coord(c)
+        | Literal::Color(c)
+        | Literal::IpAddr(c)
+        | Literal::Version(c)
+        | Literal::Email(c)
+        | Literal::Time(c) => Value::String(c.clone()),
     }
 }
 
-/// Интерполяция строк с поддержкой путей `{Name}`, `{U.Name}`, `{State.Read().Count}`
 fn interpolate_string(raw: &str, scope: &mut Scope) -> String {
     let mut out = String::new();
     let mut chars = raw.chars().peekable();
@@ -279,18 +309,18 @@ fn interpolate_string(raw: &str, scope: &mut Scope) -> String {
                 out.push(next_c);
             }
         } else if c == '{' {
-            let mut key = String::new();
-            for sub in chars.by_ref() {
-                if sub == '}' {
-                    break;
-                }
-                key.push(sub);
-            }
+            let key: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
             let trimmed = key.trim();
             if let Ok(val) = eval_path(trimmed, scope) {
                 out.push_str(&val.to_string());
-            } else if let Some(val) = scope.get(trimmed) {
-                out.push_str(&val.to_string());
+            } else if let Ok(sents) = parse_code(trimmed) {
+                if let Some(first) = sents.first() {
+                    if let Ok(val) = eval_sentence(first, scope) {
+                        out.push_str(&val.to_string());
+                        continue;
+                    }
+                }
+                out.push_str(&format!("{{{key}}}"));
             } else {
                 out.push_str(&format!("{{{key}}}"));
             }
@@ -306,43 +336,39 @@ pub fn eval_token(token: &Token, scope: &mut Scope) -> Result<Value, String> {
         Token::Lit(lit) => Ok(eval_literal(lit, scope)),
         Token::Path(path) => eval_path(path, scope),
         Token::Range(start_tok, end_tok) => {
-            let s_val = eval_token(start_tok, scope)?;
-            let e_val = eval_token(end_tok, scope)?;
-            match (s_val, e_val) {
+            match (eval_token(start_tok, scope)?, eval_token(end_tok, scope)?) {
                 (Value::Int(a), Value::Int(b)) => Ok(Value::Range(a, b)),
+                (Value::String(a), Value::String(b)) => Ok(Value::Range(
+                    a.chars().next().unwrap_or('a') as i64,
+                    b.chars().next().unwrap_or('z') as i64,
+                )),
                 _ => Ok(Value::Range(0, 0)),
             }
         }
-        Token::Group('(', sentences) | Token::Group(')', sentences) => {
-            if sentences.is_empty() {
-                Ok(Value::Tuple(vec![]))
-            } else if sentences.len() == 1 {
-                eval_sentence(&sentences[0], scope)
-            } else {
-                let mut items = Vec::new();
-                for s in sentences {
-                    items.push(eval_sentence(s, scope)?);
-                }
-                Ok(Value::Tuple(items))
-            }
-        }
+        Token::Group('(' | ')', sentences) => match sentences.as_slice() {
+            [] => Ok(Value::Tuple(vec![])),
+            [single] => eval_sentence(single, scope),
+            many => Ok(Value::Tuple(
+                many.iter()
+                    .map(|s| eval_sentence(s, scope))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+        },
         Token::Group('[', sentences) => Ok(Value::Stream(sentences.clone())),
         Token::Group('{', sentences) => {
-            let is_router = sentences.iter().any(|s| {
-                matches!(
-                    classify_sentence(s),
-                    SemanticKind::PatternBranch { .. } | SemanticKind::LambdaOrTupleBranch { .. }
-                ) || matches!(
-                    classify_sentence(s),
-                    SemanticKind::StreamOrBranch { ref name, .. }
-                        if name == "_"
-                            || matches!(
-                                scope.get(name),
-                                Some(Value::Form(_) | Value::Function(_) | Value::Stream(_))
-                            )
-                )
+            let is_router = sentences.iter().any(|s| match classify_sentence(s) {
+                SemanticKind::PatternBranch { .. } | SemanticKind::LambdaOrTupleBranch { .. } => {
+                    true
+                }
+                SemanticKind::StreamOrBranch { name, .. } => {
+                    name == "_"
+                        || matches!(
+                            scope.get(&name),
+                            Some(Value::Form(_) | Value::Function(_) | Value::Stream(_))
+                        )
+                }
+                _ => false,
             });
-
             if is_router {
                 Ok(Value::Router(sentences.clone()))
             } else {
@@ -362,33 +388,54 @@ pub fn populate_form_members(
 ) -> Result<(), String> {
     for s in sentences {
         match classify_sentence(s) {
+            SemanticKind::FormDef { name, body, tail } => {
+                let mut sub = FormInstance::new(&name);
+                populate_form_members(&mut sub, &body, scope)?;
+                let mut val = Value::Form(Arc::new(RwLock::new(sub)));
+                if !tail.is_empty() {
+                    val = eval_operator_tail(val, &tail, scope)?;
+                }
+                form.set_field(&name, val);
+            }
             SemanticKind::Binding { key, value } => {
-                let v = eval_expression(&value, scope)?;
+                let v = match value.as_slice() {
+                    [Token::Path(p)]
+                    if matches!(
+                            p.as_str(),
+                            "String" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "File" | "Any"
+                        ) =>
+                        {
+                            Value::Symbol(p.clone())
+                        }
+                    _ => eval_expression(&value, scope)?,
+                };
                 form.set_field(&key, v);
             }
-            SemanticKind::StreamOrBranch {
-                name: field_name,
-                stream,
-            } => {
-                form.set_field(&field_name, Value::Stream(stream));
+            SemanticKind::TupleBinding { tuple, value } => {
+                if let Some(first_sent) = tuple.first() {
+                    let k = eval_sentence(first_sent, scope)?.to_string();
+                    let v = eval_expression(&value, scope)?;
+                    form.set_field(&k, v);
+                }
+            }
+            SemanticKind::StreamOrBranch { name, stream } => {
+                form.set_field(&name, Value::Stream(stream));
             }
             SemanticKind::FunctionDef {
-                name: method_name,
-                args,
-                body,
-                ..
+                name, args, body, ..
             } => {
+                let env_arc = Arc::new(RwLock::new(scope.clone()));
                 let func = Arc::new(FunctionInstance {
-                    name: method_name.clone(),
+                    name: name.clone(),
                     body: FunctionBody::UserDefined {
                         args,
                         body,
-                        captured_env: Arc::new(RwLock::new(scope.clone())),
+                        captured_env: env_arc,
                         overrides: HashMap::new(),
+                        partial_args: Vec::new(),
                     },
                 });
-                form.methods.insert(method_name.clone(), func.clone());
-                form.set_field(&method_name, Value::Function(func));
+                form.methods.insert(name, func);
             }
             SemanticKind::OperatorMethod { op, args, rest } => {
                 let body = match rest.first() {
@@ -402,6 +449,7 @@ pub fn populate_form_members(
                         body,
                         captured_env: Arc::new(RwLock::new(scope.clone())),
                         overrides: HashMap::new(),
+                        partial_args: Vec::new(),
                     },
                 });
                 form.methods.insert(op, func);
@@ -416,109 +464,96 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
     if path == "_" {
         return scope
             .get("_")
-            .ok_or_else(|| "Контекст `_` не определен в текущем потоке".into());
+            .ok_or_else(|| "Контекст `_` не определен".into());
     }
 
     let segments: Vec<&str> = path.split('.').collect();
-    let root_raw = segments[0];
-    let (root_name, root_is_call) = root_raw
+    let (root_name, root_call) = segments[0]
         .strip_suffix("()")
         .map(|s| (s, true))
-        .unwrap_or((root_raw, false));
+        .unwrap_or((segments[0], false));
 
     let mut current = if let Some(val) = scope.get(root_name) {
-        if root_is_call {
+        if root_call {
             apply_callable(val, Value::None, scope)?
         } else {
             val
         }
     } else if segments.len() == 1 {
-        // Имя примитивного типа или тега в описании спецификации (`String`, `Int`)
         return Ok(Value::Symbol(root_name.to_string()));
     } else {
         return Err(format!("Неопределенный идентификатор: '{root_name}'"));
     };
 
     for seg_raw in &segments[1..] {
-        let (seg, is_zero_arg_call) = seg_raw
+        let (seg, is_call) = seg_raw
             .strip_suffix("()")
             .map(|s| (s, true))
             .unwrap_or((*seg_raw, false));
 
-        let next_val = match &current {
+        current = match &current {
             Value::Form(form_arc) => {
-                let form_snapshot = form_arc.read().unwrap().clone();
-
-                // Проверка Закона 2: Запрет прямого чтения коллизионного поля без пути предка
-                if let Some(origins) = form_snapshot.ambiguous_fields.get(seg) {
+                let snap = form_arc.read().unwrap().clone();
+                if let Some(origins) = snap.ambiguous_fields.get(seg) {
                     return Err(format!(
-                        "Нарушение Закона 2 (Lineage): Поле '{seg}' в '{}' неоднозначно (коллизия предков: {}). Используйте явный путь предка!",
-                        form_snapshot.type_name,
+                        "Нарушение Закона 2 (Lineage): Поле '{seg}' в '{}' неоднозначно ({}).",
+                        snap.type_name,
                         origins.join(" & ")
                     ));
                 }
-
-                if is_zero_arg_call {
-                    if let Some(method) = form_snapshot.methods.get(seg) {
-                        invoke_form_method(&form_snapshot, method, Value::None, scope)?
+                if is_call {
+                    if let Some(m) = snap.methods.get(seg) {
+                        invoke_form_method(&snap, m, Value::None, scope)?
                     } else if seg == "Read" {
-                        form_snapshot.get_field("Value").unwrap_or(Value::None)
+                        snap.get_field("Value").unwrap_or(Value::None)
                     } else {
-                        return Err(format!(
-                            "Метод '{seg}()' не найден в форме {}",
-                            form_snapshot.type_name
-                        ));
+                        return Err(format!("Метод '{seg}()' не найден в {}", snap.type_name));
                     }
-                } else if let Some(val) = form_snapshot.get_field(seg) {
-                    // Закон 1a: Реактивное поле пересчитывается на лету при каждом чтении!
-                    if let Value::Stream(stream_sents) = val {
-                        eval_reactive_field(&form_snapshot, form_arc.clone(), &stream_sents, scope)?
+                } else if let Some(val) = snap.get_field(seg) {
+                    if let Value::Stream(sents) = val {
+                        eval_reactive_field(&snap, form_arc.clone(), &sents, scope)?
                     } else {
                         val
                     }
-                } else if let Some(method) = form_snapshot.methods.get(seg) {
-                    Value::Function(method.clone())
+                } else if let Some(m) = snap.methods.get(seg) {
+                    Value::Function(m.clone())
                 } else if let Ok(idx) = seg.parse::<i32>() {
                     let i = if idx < 0 {
-                        (form_snapshot.field_order.len() as i32 + idx) as usize
+                        (snap.field_order.len() as i32 + idx) as usize
                     } else {
                         idx as usize
                     };
-                    if let Some(field_name) = form_snapshot.field_order.get(i) {
-                        let v = form_snapshot.fields.get(field_name).unwrap().clone();
-                        if let Value::Stream(stream_sents) = v {
-                            eval_reactive_field(
-                                &form_snapshot,
-                                form_arc.clone(),
-                                &stream_sents,
-                                scope,
-                            )?
-                        } else {
-                            v
-                        }
+                    let fname = snap
+                        .field_order
+                        .get(i)
+                        .ok_or("Индекс поля вне диапазона")?;
+                    let v = snap.fields.get(fname).unwrap().clone();
+                    if let Value::Stream(sents) = v {
+                        eval_reactive_field(&snap, form_arc.clone(), &sents, scope)?
                     } else {
-                        return Err(format!("Индекс {idx} вне диапазона полей формы"));
+                        v
                     }
-                } else if let Some(ancestor) = find_ancestor_recursive(&form_snapshot, seg) {
-                    Value::Form(Arc::new(RwLock::new(ancestor)))
+                } else if let Some(anc) = find_ancestor_recursive(&snap, seg) {
+                    Value::Form(Arc::new(RwLock::new(anc)))
                 } else {
                     return Err(format!(
-                        "Поле или предок '{seg}' не найдено в форме {}",
-                        form_snapshot.type_name
+                        "Поле или предок '{seg}' не найден в {}",
+                        snap.type_name
                     ));
                 }
             }
-            Value::Atom(atom_arc) => {
-                if seg == "Read" && is_zero_arg_call {
-                    atom_arc.lock().unwrap().clone()
-                } else if seg == "Value" {
-                    atom_arc.lock().unwrap().clone()
-                } else {
-                    return Err(format!("Неизвестный метод атома: {seg}"));
-                }
-            }
+            Value::Atom(a) if seg == "Read" || seg == "Value" => a.lock().unwrap().clone(),
+            Value::Channel(q) if seg == "Recv" && is_call => match q.lock().unwrap().pop_front() {
+                Some(v) => make_some(v),
+                None => make_empty_form("None"),
+            },
             Value::Tuple(items) => {
-                if let Ok(idx) = seg.parse::<i32>() {
+                if seg == "Length" {
+                    Value::Int(items.len() as i64)
+                } else {
+                    let idx: i32 = seg
+                        .parse()
+                        .map_err(|_| format!("Ожидался индекс кортежа, получено '{seg}'"))?;
                     let i = if idx < 0 {
                         (items.len() as i32 + idx) as usize
                     } else {
@@ -527,96 +562,97 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
                     items
                         .get(i)
                         .cloned()
-                        .ok_or_else(|| format!("Индекс {idx} вне границ кортежа"))?
-                } else {
-                    return Err(format!(
-                        "Нельзя обратиться по строковому ключу '{seg}' к кортежу"
-                    ));
+                        .ok_or("Индекс вне границ кортежа")?
                 }
             }
             Value::String(s) if seg == "Length" => Value::Int(s.chars().count() as i64),
-            _ => {
-                return Err(format!(
-                    "Нельзя получить поле '{seg}' из не-структурного значения {current:?}"
-                ))
-            }
+            _ => return Err(format!("Нельзя получить '{seg}' из {current:?}")),
         };
-
-        current = next_val;
     }
 
     Ok(current)
 }
 
 fn find_ancestor_recursive(form: &FormInstance, target: &str) -> Option<FormInstance> {
-    if let Some(anc) = form.ancestors.get(target) {
-        return Some(anc.clone());
-    }
-    for anc in form.ancestors.values() {
-        if let Some(deep) = find_ancestor_recursive(anc, target) {
-            return Some(deep);
-        }
-    }
-    None
+    form.ancestors
+        .get(target)
+        .cloned()
+        .or_else(|| {
+            form.ancestors
+                .values()
+                .find_map(|a| find_ancestor_recursive(a, target))
+        })
 }
 
 fn eval_reactive_field(
-    form_snapshot: &FormInstance,
+    snap: &FormInstance,
     form_arc: Arc<RwLock<FormInstance>>,
     stream_sents: &[Sentence],
     scope: &mut Scope,
 ) -> Result<Value, String> {
-    let mut reactive_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-    reactive_scope.set("Self", Value::Form(form_arc.clone()));
-    // Закон 1a: Проецируем все поля формы (включая каскадные реактивные поля!)
-    for fname in &form_snapshot.field_order {
-        if let Some(fval) = form_snapshot.fields.get(fname) {
+    if stream_uses_free_underscore(stream_sents) {
+        return Ok(Value::Stream(stream_sents.to_vec()));
+    }
+    let mut r_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+    r_scope.set("Self", Value::Form(form_arc));
+
+    for fname in &snap.field_order {
+        if let Some(fval) = snap.fields.get(fname) {
             if let Value::Stream(dep_sents) = fval {
-                if dep_sents != stream_sents {
-                    if let Ok(computed) =
-                        eval_reactive_field(form_snapshot, form_arc.clone(), dep_sents, scope)
-                    {
-                        reactive_scope.set(fname, computed);
+                if dep_sents == stream_sents {
+                    break;
+                }
+                if !stream_uses_free_underscore(dep_sents) {
+                    if let Ok(comp) = eval_stream_body(dep_sents, None, &mut r_scope) {
+                        r_scope.set(fname, unwrap_done(comp));
                     }
                 }
             } else {
-                reactive_scope.set(fname, fval.clone());
+                r_scope.set(fname, fval.clone());
             }
         }
     }
-    eval_stream_body(
-        stream_sents,
-        Some(Value::Form(form_arc)),
-        &mut reactive_scope,
-    )
+    Ok(unwrap_done(eval_stream_body(stream_sents, None, &mut r_scope)?))
 }
 
-fn invoke_form_method(
-    form_snapshot: &FormInstance,
+pub fn stream_uses_free_underscore(sents: &[Sentence]) -> bool {
+    sents.iter().any(|s| {
+        s.iter()
+            .any(|tok| matches!(tok, Token::Path(p) if p == "_" || p.starts_with("_.")))
+    })
+}
+
+pub fn invoke_form_method(
+    snap: &FormInstance,
     method: &Arc<FunctionInstance>,
     arg: Value,
     scope: &mut Scope,
 ) -> Result<Value, String> {
     match &method.body {
-        FunctionBody::Native(native_fn) => native_fn(vec![arg], scope),
+        FunctionBody::Native(f) => {
+            let args_vec = match arg {
+                Value::Tuple(items) => items,
+                Value::None => vec![],
+                other => vec![other],
+            };
+            f(args_vec, scope)
+        }
         FunctionBody::UserDefined {
             args,
             body,
             captured_env,
             overrides,
+            ..
         } => {
             let mut call_scope = Scope::child(captured_env.clone());
-            let self_val = Value::Form(Arc::new(RwLock::new(form_snapshot.clone())));
-            call_scope.set("Self", self_val.clone());
-            // Закон 1a: Поля формы доступны напрямую в ее методах и операторах!
-            for (k, v) in &form_snapshot.fields {
-                call_scope.set(k, v.clone());
-            }
+            let self_arc = Arc::new(RwLock::new(snap.clone()));
+            call_scope.set("Self", Value::Form(self_arc.clone()));
+            call_scope.unpack_form(&self_arc, true);
             for (k, v) in overrides {
                 call_scope.set(k, v.clone());
             }
             bind_arguments(args, &arg, &mut call_scope)?;
-            eval_stream_body(body, Some(arg), &mut call_scope)
+            Ok(unwrap_done(eval_stream_body(body, Some(arg), &mut call_scope)?))
         }
         FunctionBody::Composed(f1, f2) => {
             let mid = apply_callable(f1.clone(), arg, scope)?;
@@ -625,16 +661,13 @@ fn invoke_form_method(
     }
 }
 
-// --- Вспомогательный парсер валюты (`$100.00`, `USD$500.00`) ---
+// =============================================================================
+// 4. АРИФМЕТИКА, ВАЛЮТА И АЛГЕБРА ТИПОВ (&, |, /)
+// =============================================================================
+
 fn parse_money(raw: &str) -> Option<(String, f64)> {
     let idx = raw.find('$')?;
-    let prefix = &raw[..=idx];
-    let num: f64 = raw[idx + 1..].parse().ok()?;
-    Some((prefix.to_string(), num))
-}
-
-fn format_money(prefix: &str, amount: f64) -> Value {
-    Value::Money(format!("{prefix}{amount:.2}"))
+    Some((raw[..=idx].to_string(), raw[idx + 1..].parse().ok()?))
 }
 
 pub fn eval_binary_op_in_scope(
@@ -643,162 +676,126 @@ pub fn eval_binary_op_in_scope(
     right: Value,
     scope: &mut Scope,
 ) -> Result<Value, String> {
-    // 1. Проверяем перегрузку операторов внутри Формы (`Vec2 { +(Other Vec2) [...] }`)
     if let Value::Form(ref f_arc) = left {
-        let f_snap = f_arc.read().unwrap().clone();
-        if let Some(method) = f_snap.methods.get(op) {
-            return invoke_form_method(&f_snap, method, right, scope);
+        let snap = f_arc.read().unwrap().clone();
+        if let Some(m) = snap.methods.get(op) {
+            return invoke_form_method(&snap, m, right, scope);
         }
     }
 
+    if op == "==" {
+        return Ok(Value::Bool(left == right));
+    }
+    if op == "!=" {
+        return Ok(Value::Bool(left != right));
+    }
+
     match (left, op, right) {
-        // Целые числа
-        (Value::Int(a), "+", Value::Int(b)) => Ok(Value::Int(a + b)),
-        (Value::Int(a), "-", Value::Int(b)) => Ok(Value::Int(a - b)),
-        (Value::Int(a), "*", Value::Int(b)) => Ok(Value::Int(a * b)),
-        (Value::Int(a), "/", Value::Int(b)) => {
-            if b == 0 {
-                Err("Деление на ноль".into())
-            } else {
-                Ok(Value::Int(a / b))
-            }
-        }
-        (Value::Int(a), "%", Value::Int(b)) => Ok(Value::Int(a % b)),
-        (Value::Int(a), "**", Value::Int(b)) => Ok(Value::Int(a.pow(b.max(0) as u32))),
-        (Value::Int(a), "<<", Value::Int(b)) => Ok(Value::Int(a << b)),
-        (Value::Int(a), ">>", Value::Int(b)) => Ok(Value::Int(a >> b)),
+        (Value::Int(a), op, Value::Int(b)) => match op {
+            "+" => Ok(Value::Int(a + b)),
+            "-" => Ok(Value::Int(a - b)),
+            "*" => Ok(Value::Int(a * b)),
+            "/" => (b != 0)
+                .then(|| Value::Int(a / b))
+                .ok_or_else(|| "Деление на ноль".into()),
+            "%" => Ok(Value::Int(a % b)),
+            "**" => Ok(Value::Int(a.pow(b.max(0) as u32))),
+            "<<" => Ok(Value::Int(a << b)),
+            ">>" => Ok(Value::Int(a >> b)),
+            ">" => Ok(Value::Bool(a > b)),
+            "<" => Ok(Value::Bool(a < b)),
+            ">=" => Ok(Value::Bool(a >= b)),
+            "<=" => Ok(Value::Bool(a <= b)),
+            _ => Err(format!("Неизвестный оператор Int: {op}")),
+        },
+        (Value::Float(a), op, Value::Float(b)) => eval_float_op(a, op, b),
+        (Value::Int(a), op, Value::Float(b)) => eval_float_op(a as f64, op, b),
+        (Value::Float(a), op, Value::Int(b)) => eval_float_op(a, op, b as f64),
 
-        // Вещественные числа и смешанная арифметика Int/Float
-        (Value::Float(a), "+", Value::Float(b)) => Ok(Value::Float(a + b)),
-        (Value::Float(a), "-", Value::Float(b)) => Ok(Value::Float(a - b)),
-        (Value::Float(a), "*", Value::Float(b)) => Ok(Value::Float(a * b)),
-        (Value::Float(a), "/", Value::Float(b)) => Ok(Value::Float(a / b)),
-        (Value::Float(a), "**", Value::Float(b)) => Ok(Value::Float(a.powf(b))),
-
-        (Value::Int(a), "+", Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
-        (Value::Float(a), "+", Value::Int(b)) => Ok(Value::Float(a + b as f64)),
-        (Value::Int(a), "-", Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
-        (Value::Float(a), "-", Value::Int(b)) => Ok(Value::Float(a - b as f64)),
-        (Value::Int(a), "*", Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
-        (Value::Float(a), "*", Value::Int(b)) => Ok(Value::Float(a * b as f64)),
-        (Value::Int(a), "/", Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
-        (Value::Float(a), "/", Value::Int(b)) => Ok(Value::Float(a / b as f64)),
-
-        // Валюта (Money) и Проценты (Percent): Раздел 1 и Раздел 9 (Reactive Invoice)
         (Value::Money(m), "*", Value::Int(q)) | (Value::Int(q), "*", Value::Money(m)) => {
-            let (pref, val) = parse_money(&m).ok_or("Некорректный формат Money")?;
-            Ok(format_money(&pref, val * (q as f64)))
+            let (p, v) = parse_money(&m).ok_or("Некорректный Money")?;
+            Ok(Value::Money(format!("{p}{:.2}", v * q as f64)))
         }
         (Value::Money(m), "*", Value::Float(q)) | (Value::Float(q), "*", Value::Money(m)) => {
-            let (pref, val) = parse_money(&m).ok_or("Некорректный формат Money")?;
-            Ok(format_money(&pref, val * q))
+            let (p, v) = parse_money(&m).ok_or("Некорректный Money")?;
+            Ok(Value::Money(format!("{p}{:.2}", v * q)))
         }
-        (Value::Money(m), "*", Value::Percent(p)) | (Value::Percent(p), "*", Value::Money(m)) => {
-            let (pref, val) = parse_money(&m).ok_or("Некорректный формат Money")?;
-            Ok(format_money(&pref, val * (p / 100.0)))
+        (Value::Money(m), "*", Value::Percent(pct))
+        | (Value::Percent(pct), "*", Value::Money(m)) => {
+            let (p, v) = parse_money(&m).ok_or("Некорректный Money")?;
+            Ok(Value::Money(format!("{p}{:.2}", v * (pct / 100.0))))
         }
-        (Value::Money(m1), "+", Value::Money(m2)) => {
-            let (pref, v1) = parse_money(&m1).ok_or("Некорректный формат Money")?;
-            let (_, v2) = parse_money(&m2).ok_or("Некорректный формат Money")?;
-            Ok(format_money(&pref, v1 + v2))
+        (Value::Money(m1), op @ ("+" | "-"), Value::Money(m2)) => {
+            let (p, v1) = parse_money(&m1).ok_or("Некорректный Money")?;
+            let (_, v2) = parse_money(&m2).ok_or("Некорректный Money")?;
+            let res = if op == "+" { v1 + v2 } else { v1 - v2 };
+            Ok(Value::Money(format!("{p}{res:.2}")))
         }
-        (Value::Money(m1), "-", Value::Money(m2)) => {
-            let (pref, v1) = parse_money(&m1).ok_or("Некорректный формат Money")?;
-            let (_, v2) = parse_money(&m2).ok_or("Некорректный формат Money")?;
-            Ok(format_money(&pref, v1 - v2))
-        }
-
-        // Сравнения
-        (Value::Int(a), ">=", Value::Int(b)) => Ok(Value::Bool(a >= b)),
-        (Value::Int(a), "<=", Value::Int(b)) => Ok(Value::Bool(a <= b)),
-        (Value::Int(a), ">", Value::Int(b)) => Ok(Value::Bool(a > b)),
-        (Value::Int(a), "<", Value::Int(b)) => Ok(Value::Bool(a < b)),
-
-        (Value::Float(a), ">=", Value::Float(b)) => Ok(Value::Bool(a >= b)),
-        (Value::Float(a), "<=", Value::Float(b)) => Ok(Value::Bool(a <= b)),
-        (Value::Float(a), ">", Value::Float(b)) => Ok(Value::Bool(a > b)),
-        (Value::Float(a), "<", Value::Float(b)) => Ok(Value::Bool(a < b)),
-
-        (a, "==", b) => Ok(Value::Bool(a == b)),
-        (a, "!=", b) => Ok(Value::Bool(a != b)),
 
         (Value::Bool(a), "&&", Value::Bool(b)) => Ok(Value::Bool(a && b)),
         (Value::Bool(a), "||", Value::Bool(b)) => Ok(Value::Bool(a || b)),
-
         (Value::String(a), "+", Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
 
-        // 1. Слияние форм `&` (Закон 2: Полное сохранение Lineage и фиксация коллизий)
+        // 1. Слияние форм `&` (Закон 2: Lineage + фиксация коллизий)
         (Value::Form(f1), "&", Value::Form(f2)) => {
-            let f1_read = f1.read().unwrap();
-            let f2_read = f2.read().unwrap();
-
-            let is_override = f2_read.type_name == "AnonymousForm";
-            let new_type_name = if is_override {
-                f1_read.type_name.clone()
+            let (r1, r2) = (f1.read().unwrap(), f2.read().unwrap());
+            if r2.type_name == "Public" || r2.type_name == "Private" {
+                return Ok(Value::Form(f1.clone()));
+            }
+            let is_override = r2.type_name == "AnonymousForm";
+            let new_name = if is_override {
+                r1.type_name.clone()
             } else {
-                format!("{}+{}", f1_read.type_name, f2_read.type_name)
+                format!("{}+{}", r1.type_name, r2.type_name)
             };
 
-            let mut merged = FormInstance::new(&new_type_name);
-            merged.ancestors = f1_read.ancestors.clone();
-            for (k, v) in &f2_read.ancestors {
-                merged.ancestors.insert(k.clone(), v.clone());
-            }
-            merged
-                .ancestors
-                .insert(f1_read.type_name.clone(), f1_read.clone());
+            let mut merged = FormInstance::new(&new_name);
+            merged.ancestors = r1.ancestors.clone();
+            merged.ancestors.extend(r2.ancestors.clone());
+            merged.ancestors.insert(r1.type_name.clone(), r1.clone());
             if !is_override {
-                merged
-                    .ancestors
-                    .insert(f2_read.type_name.clone(), f2_read.clone());
+                merged.ancestors.insert(r2.type_name.clone(), r2.clone());
             }
+            merged.methods = r1.methods.clone();
+            merged.methods.extend(r2.methods.clone());
+            merged.predicates = r1.predicates.clone();
+            merged.predicates.extend(r2.predicates.clone());
+            merged.ambiguous_fields = r1.ambiguous_fields.clone();
 
-            merged.methods = f1_read.methods.clone();
-            for (m_name, m_fn) in &f2_read.methods {
-                merged.methods.insert(m_name.clone(), m_fn.clone());
-            }
-            merged.predicates = f1_read.predicates.clone();
-            merged.predicates.extend(f2_read.predicates.clone());
-            merged.ambiguous_fields = f1_read.ambiguous_fields.clone();
-
-            for k in &f1_read.field_order {
-                let orig = f1_read
+            for k in &r1.field_order {
+                let orig = r1
                     .field_origins
                     .get(k)
                     .cloned()
-                    .unwrap_or_else(|| f1_read.type_name.clone());
-                merged.set_field_with_origin(k, f1_read.fields.get(k).unwrap().clone(), &orig);
+                    .unwrap_or_else(|| r1.type_name.clone());
+                merged.set_field_with_origin(k, r1.fields[k].clone(), &orig);
             }
-
-            for k in &f2_read.field_order {
-                let rhs_orig = f2_read
+            for k in &r2.field_order {
+                let rhs_orig = r2
                     .field_origins
                     .get(k)
                     .cloned()
-                    .unwrap_or_else(|| f2_read.type_name.clone());
-                let rhs_val = f2_read.fields.get(k).unwrap().clone();
-
+                    .unwrap_or_else(|| r2.type_name.clone());
+                let rhs_val = r2.fields[k].clone();
                 if is_override {
-                    // Анонимный блок `& { Quantity 5 }` переопределяет значение поля без коллизии
-                    merged.set_field_with_origin(k, rhs_val, &f1_read.type_name);
+                    merged.set_field_with_origin(k, rhs_val, &r1.type_name);
                 } else if let Some(lhs_orig) = merged.field_origins.get(k).cloned() {
                     if lhs_orig != rhs_orig {
                         merged
                             .ambiguous_fields
                             .entry(k.clone())
                             .or_insert_with(|| vec![lhs_orig])
-                            .push(rhs_orig.clone());
+                            .push(rhs_orig);
                     }
                     merged.fields.insert(k.clone(), rhs_val);
                 } else {
                     merged.set_field_with_origin(k, rhs_val, &rhs_orig);
                 }
             }
-
             Ok(Value::Form(Arc::new(RwLock::new(merged))))
         }
 
-        // 2. Уточняющий тип (Refinement Type): `Adult User & IsAdult` или `EmailStr String & [ ... ]`
+        // 2. Уточнение типа `User & IsAdult`
         (Value::Form(f1), "&", pred @ (Value::Function(_) | Value::Stream(_))) => {
             let mut refined = f1.read().unwrap().clone();
             refined
@@ -813,27 +810,30 @@ pub fn eval_binary_op_in_scope(
             Ok(Value::Form(Arc::new(RwLock::new(refined))))
         }
 
-        // 3. Перепривязка именованных аргументов функции: `Connect & { Port 9090, Tls true }`
-        (Value::Function(func_arc), "&", Value::Form(override_arc)) => {
-            let override_form = override_arc.read().unwrap();
+        // 3. Перепривязка именованных слотов функции `Connect & { Port 9090 }`
+        (Value::Function(func_arc), "&", Value::Form(ov_arc)) => {
+            let ov = ov_arc.read().unwrap();
+            if ov.type_name == "Public" || ov.type_name == "Private" {
+                return Ok(Value::Function(func_arc));
+            }
             if let FunctionBody::UserDefined {
                 args,
                 body,
                 captured_env,
                 overrides,
+                partial_args,
             } = &func_arc.body
             {
-                let mut new_overrides = overrides.clone();
-                for (k, v) in &override_form.fields {
-                    new_overrides.insert(k.clone(), v.clone());
-                }
+                let mut new_ov = overrides.clone();
+                new_ov.extend(ov.fields.clone());
                 Ok(Value::Function(Arc::new(FunctionInstance {
                     name: func_arc.name.clone(),
                     body: FunctionBody::UserDefined {
                         args: args.clone(),
                         body: body.clone(),
                         captured_env: captured_env.clone(),
-                        overrides: new_overrides,
+                        overrides: new_ov,
+                        partial_args: partial_args.clone(),
                     },
                 })))
             } else {
@@ -841,7 +841,7 @@ pub fn eval_binary_op_in_scope(
             }
         }
 
-        // 4. Композиция потоков и функций: `Step1 & Step2`, `Trim & ToUpper`
+        // 4. Композиция потоков `Step1 & Step2`
         (
             f1 @ (Value::Function(_) | Value::Stream(_)),
             "&",
@@ -851,44 +851,40 @@ pub fn eval_binary_op_in_scope(
             body: FunctionBody::Composed(f1, f2),
         }))),
 
-        // 5. Метаданные видимости `Val & Private` / `Val & Public` -> возвращает само значение
+        // 5. Метаданные видимости `Val & Private`
         (val, "&", Value::Form(_)) => Ok(val),
 
-        // 6. Объединение типов и тегов `A | B` (`'admin' | 'manager'`, `Circle | Rect`)
+        // 6. Объединение `A | B`
         (left_val, "|", right_val) => {
-            let mut union_form = FormInstance::new("UnionType");
+            let mut u = FormInstance::new("UnionType");
             for v in [left_val, right_val] {
                 if let Value::Form(f_arc) = &v {
-                    let f_read = f_arc.read().unwrap();
-                    if !f_read.union_variants.is_empty() {
-                        union_form
-                            .union_variants
-                            .extend(f_read.union_variants.clone());
+                    let fr = f_arc.read().unwrap();
+                    if !fr.union_variants.is_empty() {
+                        u.union_variants.extend(fr.union_variants.clone());
                         continue;
                     }
                 }
-                union_form.union_variants.push(v);
+                u.union_variants.push(v);
             }
-            Ok(Value::Form(Arc::new(RwLock::new(union_form))))
+            Ok(Value::Form(Arc::new(RwLock::new(u))))
         }
 
-        // 7. Алгебраическое вычитание полей и предков `/` (Раздел 2 и 8)
+        // 7. Вычитание `/` для Форм и Карт (`ConfigMap / "host"`, `Combined / 'Name'`)
         (Value::Form(f), "/", Value::Symbol(sym) | Value::String(sym)) => {
             let mut form = f.read().unwrap().clone();
-            form.fields.remove(&sym);
-            form.field_order.retain(|k| k != &sym);
-            form.field_origins.remove(&sym);
-            form.ambiguous_fields.remove(&sym);
+            form.remove_field(&sym);
+            form.methods.remove(&sym);
             for anc in form.ancestors.values_mut() {
-                anc.fields.remove(&sym);
-                anc.field_order.retain(|k| k != &sym);
+                anc.remove_field(&sym);
             }
             Ok(Value::Form(Arc::new(RwLock::new(form))))
         }
         (Value::Form(f), "/", Value::Form(rhs_arc)) => {
             let rhs_name = rhs_arc.read().unwrap().type_name.clone();
-            let form = subtract_ancestor_or_path(&f.read().unwrap(), &rhs_name);
-            Ok(Value::Form(Arc::new(RwLock::new(form))))
+            Ok(Value::Form(Arc::new(RwLock::new(
+                subtract_ancestor_or_path(&f.read().unwrap(), &rhs_name),
+            ))))
         }
 
         (a, op, b) => Err(format!(
@@ -897,58 +893,62 @@ pub fn eval_binary_op_in_scope(
     }
 }
 
-/// Вычитание конкретного поля предка (`UserAndCloud / User.Name`) или целого предка (`UserAndCloud / Cloud`)
-fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> FormInstance {
+fn eval_float_op(a: f64, op: &str, b: f64) -> Result<Value, String> {
+    match op {
+        "+" => Ok(Value::Float(a + b)),
+        "-" => Ok(Value::Float(a - b)),
+        "*" => Ok(Value::Float(a * b)),
+        "/" => Ok(Value::Float(a / b)),
+        "**" => Ok(Value::Float(a.powf(b))),
+        ">" => Ok(Value::Bool(a > b)),
+        "<" => Ok(Value::Bool(a < b)),
+        ">=" => Ok(Value::Bool(a >= b)),
+        "<=" => Ok(Value::Bool(a <= b)),
+        _ => Err(format!("Неизвестный оператор Float: {op}")),
+    }
+}
+
+pub fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> FormInstance {
     let mut form = source.clone();
     if let Some((anc_name, field_name)) = target_path.split_once('.') {
-        // Случай C: `UserAndCloud / User.Name` -> снимает коллизию и активирует значение оставшегося предка!
         if let Some(anc) = form.ancestors.get_mut(anc_name) {
-            anc.fields.remove(field_name);
-            anc.field_order.retain(|k| k != field_name);
+            anc.remove_field(field_name);
         }
         if let Some(origins) = form.ambiguous_fields.get_mut(field_name) {
             origins.retain(|o| o != anc_name);
             if origins.len() == 1 {
-                let remaining_anc = origins[0].clone();
+                let winner = origins[0].clone();
                 form.ambiguous_fields.remove(field_name);
                 form.field_origins
-                    .insert(field_name.to_string(), remaining_anc.clone());
-                if let Some(rem_inst) = form.ancestors.get(&remaining_anc) {
-                    if let Some(rem_val) = rem_inst.get_field(field_name) {
-                        form.fields.insert(field_name.to_string(), rem_val);
-                    }
+                    .insert(field_name.to_string(), winner.clone());
+                if let Some(val) = form
+                    .ancestors
+                    .get(&winner)
+                    .and_then(|a| a.get_field(field_name))
+                {
+                    form.fields.insert(field_name.to_string(), val);
                 }
             } else if origins.is_empty() {
-                form.ambiguous_fields.remove(field_name);
-                form.fields.remove(field_name);
-                form.field_order.retain(|k| k != field_name);
+                form.remove_field(field_name);
             }
         } else {
-            form.fields.remove(field_name);
-            form.field_order.retain(|k| k != field_name);
-            form.field_origins.remove(field_name);
+            form.remove_field(field_name);
         }
     } else {
-        // Случай E: `UserAndCloud / Cloud` -> удаляет весь срез предка Cloud и его поля
         form.ancestors.remove(target_path);
-        let keys_to_check: Vec<String> = form.field_order.clone();
-        for k in keys_to_check {
+        for k in form.field_order.clone() {
             if let Some(origins) = form.ambiguous_fields.get_mut(&k) {
                 origins.retain(|o| o != target_path);
                 if origins.len() == 1 {
                     let winner = origins[0].clone();
                     form.ambiguous_fields.remove(&k);
                     form.field_origins.insert(k.clone(), winner.clone());
-                    if let Some(w_inst) = form.ancestors.get(&winner) {
-                        if let Some(w_val) = w_inst.get_field(&k) {
-                            form.fields.insert(k.clone(), w_val);
-                        }
+                    if let Some(val) = form.ancestors.get(&winner).and_then(|a| a.get_field(&k)) {
+                        form.fields.insert(k.clone(), val);
                     }
                 }
-            } else if form.field_origins.get(&k).map(|s| s.as_str()) == Some(target_path) {
-                form.fields.remove(&k);
-                form.field_order.retain(|f| f != &k);
-                form.field_origins.remove(&k);
+            } else if form.field_origins.get(&k).map(String::as_str) == Some(target_path) {
+                form.remove_field(&k);
             }
         }
     }
@@ -956,7 +956,7 @@ fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> FormIn
 }
 
 // =============================================================================
-// 4. ПАЙПЛАЙНЫ, МАРШРУТИЗАТОР И ТРИ ЖЕЛЕЗНЫХ ЗАКОНА
+// 5. ВЫРАЖЕНИЯ, ПАЙПЛАЙНЫ И ТРИ ЖЕЛЕЗНЫХ ЗАКОНА
 // =============================================================================
 
 pub fn eval_expression(tokens: &[Token], scope: &mut Scope) -> Result<Value, String> {
@@ -964,7 +964,6 @@ pub fn eval_expression(tokens: &[Token], scope: &mut Scope) -> Result<Value, Str
         return Ok(Value::None);
     }
 
-    // 1. Пайплайны данных (`.`, `.>`, `.&`, `.?`, `.|`)
     if has_pipe_op(tokens) {
         let (head, steps) = split_pipeline(tokens);
         let mut current = eval_expression(&head, scope)?;
@@ -974,51 +973,41 @@ pub fn eval_expression(tokens: &[Token], scope: &mut Scope) -> Result<Value, Str
         return Ok(current);
     }
 
-    // 2. Унарный оператор `!X`
     if let [Token::Op(op), rest @ ..] = tokens {
         if op == "!" && !rest.is_empty() {
-            let val = eval_expression(rest, scope)?;
-            return match val {
+            return match eval_expression(rest, scope)? {
                 Value::Bool(b) => Ok(Value::Bool(!b)),
-                _ => Err(format!("Унарный оператор '!' не применим к {val:?}")),
+                v => Err(format!("Оператор '!' не применим к {v:?}")),
             };
         }
     }
 
-    // 3. Вызов функции `Connect("db.internal")`, `RunBuild()`, `Heading("...")`
     if let [Token::Path(fn_name), Token::Group(')', args)] = tokens {
         return eval_call_expr(fn_name, args, None, scope);
     }
 
-    // 4. Инстанцирование именованной формы (с возможным хвостом `&` или `/`):
-    // `User { Name "Alice", Age 22 }` или `JonnName { ParentName JonnDoy } & { ParentName "JonnDoyBoy" }`
-    if tokens.len() >= 2 {
-        if let (Token::Path(type_name), Token::Group('{', sentences)) = (&tokens[0], &tokens[1]) {
-            let mut form = if let Some(Value::Form(proto_arc)) = scope.get(type_name) {
-                let base_inst = proto_arc.read().unwrap().clone();
-                let mut child = base_inst.clone();
-                child.ancestors.insert(type_name.clone(), base_inst);
+    // Ровно 2 токена `TypeName { ... }` — инстанцирование формы.
+    // Если токенов больше (например, `User { ... } & Cloud { ... }`),
+    // они будут корректно разбиты по бинарному оператору в `eval_infix_tokens`!
+    if let [Token::Path(type_name), Token::Group('{', sentences)] = tokens {
+        let mut form = match scope.get(type_name) {
+            Some(Value::Form(proto_arc)) => {
+                let base = proto_arc.read().unwrap().clone();
+                let mut child = base.clone();
+                child.ancestors.insert(type_name.clone(), base);
                 child
-            } else {
-                FormInstance::new(type_name)
-            };
-            form.type_name = type_name.clone();
-            populate_form_members(&mut form, sentences, scope)?;
-
-            let mut current = Value::Form(Arc::new(RwLock::new(form)));
-            if tokens.len() > 2 {
-                current = eval_operator_tail(current, &tokens[2..], scope)?;
             }
-            return Ok(current);
-        }
+            _ => FormInstance::new(type_name),
+        };
+        form.type_name = type_name.clone();
+        populate_form_members(&mut form, sentences, scope)?;
+        return Ok(Value::Form(Arc::new(RwLock::new(form))));
     }
 
-    // 5. Одиночный токен
     if tokens.len() == 1 {
         return eval_token(&tokens[0], scope);
     }
 
-    // 6. Выражение с бинарными операторами и приоритетами (`3.14 * R * R`, `A + B`, `User & Cart`, `User / User.PasswordHash`)
     eval_infix_tokens(tokens, scope)
 }
 
@@ -1037,27 +1026,23 @@ fn op_precedence(op: &str) -> u8 {
 }
 
 fn eval_infix_tokens(tokens: &[Token], scope: &mut Scope) -> Result<Value, String> {
-    // Находим оператор с наименьшим приоритетом (вычисляем слева направо)
-    let mut lowest_idx: Option<usize> = None;
-    let mut lowest_prec: u8 = u8::MAX;
+    let mut lowest_idx = None;
+    let mut lowest_prec = u8::MAX;
 
     for (i, tok) in tokens.iter().enumerate() {
         if i == 0 {
             continue;
         }
         if let Token::Op(op) = tok {
-            // Если `/` применяется к числам — у него приоритет мультипликативный (7), если к формам — алгебраический (2)
             let prec = if op == "/" {
-                if matches!(tokens.first(), Some(Token::Path(p)) if scope.get(p).map(|v| matches!(v, Value::Form(_))).unwrap_or(false))
-                {
-                    2
-                } else {
-                    7
-                }
+                let is_form = matches!(
+                    tokens.first(),
+                    Some(Token::Path(p)) if matches!(scope.get(p), Some(Value::Form(_)))
+                );
+                if is_form { 2 } else { 7 }
             } else {
                 op_precedence(op)
             };
-
             if prec > 0 && prec <= lowest_prec {
                 lowest_prec = prec;
                 lowest_idx = Some(i);
@@ -1069,20 +1054,16 @@ fn eval_infix_tokens(tokens: &[Token], scope: &mut Scope) -> Result<Value, Strin
         if let Token::Op(op) = &tokens[idx] {
             let left = eval_expression(&tokens[..idx], scope)?;
             let rhs_tokens = &tokens[idx + 1..];
-
-            // Специальная обработка структурного вычитания по пути: `User / User.PasswordHash` или `UserAndCloud / Cloud`
             if op == "/" {
                 if let (Value::Form(f_arc), [Token::Path(path_str)]) = (&left, rhs_tokens) {
-                    let updated = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
-                    return Ok(Value::Form(Arc::new(RwLock::new(updated))));
+                    let sub = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
+                    return Ok(Value::Form(Arc::new(RwLock::new(sub))));
                 }
             }
-
             let right = eval_expression(rhs_tokens, scope)?;
             return eval_binary_op_in_scope(left, op, right, scope);
         }
     }
-
     eval_token(&tokens[0], scope)
 }
 
@@ -1094,28 +1075,32 @@ pub fn eval_operator_tail(
     let mut i = 0;
     while i < tail.len() {
         if let Token::Op(op) = &tail[i] {
-            if let Some(rhs_tok) = tail.get(i + 1) {
-                if op == "/" {
-                    if let (Value::Form(f_arc), Token::Path(path_str)) = (&current, rhs_tok) {
-                        let updated = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
-                        current = Value::Form(Arc::new(RwLock::new(updated)));
-                        i += 2;
-                        continue;
-                    }
+            let next_op_offset = tail[i + 1..]
+                .iter()
+                .position(|t| matches!(t, Token::Op(_)))
+                .map(|pos| i + 1 + pos)
+                .unwrap_or(tail.len());
+            let rhs_slice = &tail[i + 1..next_op_offset];
+
+            if op == "/" {
+                if let (Value::Form(f_arc), [Token::Path(path_str)]) = (&current, rhs_slice) {
+                    let new_val = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
+                    current = Value::Form(Arc::new(RwLock::new(new_val)));
+                    i = next_op_offset;
+                    continue;
                 }
-                let rhs = eval_token(rhs_tok, scope)?;
-                current = eval_binary_op_in_scope(current, op, rhs, scope)?;
-                i += 2;
-                continue;
             }
+            let rhs = eval_expression(rhs_slice, scope)?;
+            current = eval_binary_op_in_scope(current, op, rhs, scope)?;
+            i = next_op_offset;
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     Ok(current)
 }
 
 fn eval_pipe_step(input: Value, step: PipeStep, scope: &mut Scope) -> Result<Value, String> {
-    // Закон 3 (Railway-free): Автоматический пропуск None
     if matches!(input, Value::None) && step.op != PipeOp::Filter {
         return Ok(Value::None);
     }
@@ -1127,8 +1112,6 @@ fn eval_pipe_step(input: Value, step: PipeStep, scope: &mut Scope) -> Result<Val
             Ok(input)
         }
         PipeOp::Enrich => {
-            // Закон 3: Если целевая функция обогащения (`.& Db.FindCart`) не принимает текущий тип,
-            // пропускаем шаг без вызова!
             if let Ok(target) = eval_expression(&step.expr, scope) {
                 if !callable_accepts_input(&target, &input, scope) {
                     return Ok(input);
@@ -1146,166 +1129,142 @@ fn eval_pipe_step(input: Value, step: PipeStep, scope: &mut Scope) -> Result<Val
                 return Ok(Value::None);
             }
             let pred = eval_expression(&step.expr, scope)?;
-            let res = apply_callable(pred, input.clone(), scope)?;
-            match res {
+            match apply_callable(pred, input.clone(), scope)? {
                 Value::Bool(true) => Ok(input),
                 _ => Ok(Value::None),
             }
         }
         PipeOp::Parallel => {
-            if let Some(Token::Group('{', branches)) = step.expr.first() {
-                let mut handles: Vec<std::thread::JoinHandle<Result<(String, Value), String>>> = Vec::new();
-                for branch in branches {
-                    let branch_clone = branch.clone();
-                    let input_clone = input.clone();
-                    let parent_scope = Arc::new(RwLock::new(scope.clone()));
-
-                    let handle = thread::spawn(move || {
-                        let mut local_scope = Scope::child(parent_scope);
-                        local_scope.set("_", input_clone.clone());
-                        if let Value::Form(f) = &input_clone {
-                            for (k, v) in &f.read().unwrap().fields {
-                                local_scope.set(k, v.clone());
-                            }
-                        }
-                        match classify_sentence(&branch_clone) {
-                            SemanticKind::StreamOrBranch { name, stream } => {
-                                let v = eval_stream_body(
-                                    &stream,
-                                    Some(input_clone),
-                                    &mut local_scope,
-                                )?;
-                                Ok((name, v))
-                            }
-                            _ => {
-                                let v = eval_sentence(&branch_clone, &mut local_scope)?;
-                                Ok(("Result".to_string(), v))
-                            }
-                        }
-                    });
-                    handles.push(handle);
-                }
-
-                let mut merged = FormInstance::new("ParallelResult");
-                for h in handles {
-                    if let Ok(Ok((field_name, val))) = h.join() {
-                        merged.set_field(&field_name, val);
+            let Some(Token::Group('{', branches)) = step.expr.first() else {
+                return Err("Оператор .| ожидает блок {}".into());
+            };
+            let mut handles = Vec::new();
+            for branch in branches {
+                let b_clone = branch.clone();
+                let in_clone = input.clone();
+                let parent = Arc::new(RwLock::new(scope.clone()));
+                handles.push(thread::spawn(move || -> Result<(String, Value), String> {
+                    let mut l_scope = Scope::child(parent);
+                    l_scope.set("_", in_clone.clone());
+                    if let Value::Form(f) = &in_clone {
+                        l_scope.unpack_form(f, true);
                     }
-                }
-                Ok(Value::Form(Arc::new(RwLock::new(merged))))
-            } else {
-                Err("Оператор .| ожидает блок {}".into())
+                    match classify_sentence(&b_clone) {
+                        SemanticKind::StreamOrBranch { name, stream } => Ok((
+                            name,
+                            unwrap_done(eval_stream_body(&stream, Some(in_clone), &mut l_scope)?),
+                        )),
+                        _ => Ok(("Result".into(), eval_sentence(&b_clone, &mut l_scope)?)),
+                    }
+                }));
             }
+            let mut merged = FormInstance::new("ParallelResult");
+            for h in handles {
+                if let Ok(Ok((k, v))) = h.join() {
+                    merged.set_field(&k, v);
+                }
+            }
+            Ok(Value::Form(Arc::new(RwLock::new(merged))))
         }
     }
 }
 
-/// Вычисляет шаг пайплайна с поддержкой UFCS `A . Fn(B, C)` и предикатов диапазонов `Val . (1..100)`
 fn eval_pipe_target(input: Value, expr: &[Token], scope: &mut Scope) -> Result<Value, String> {
-    // UFCS: `Items . Fold(0, (Acc, N) [ ... ])` или `Line . Split(" ")`
     if let [Token::Path(fn_name), Token::Group(')', call_args)] = expr {
         return eval_call_expr(fn_name, call_args, Some(input), scope);
     }
-
-    let mut target_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-    target_scope.set("_", input.clone());
-    if let Value::Form(f_arc) = &input {
-        for (k, v) in &f_arc.read().unwrap().fields {
-            target_scope.set(k, v.clone());
+    // Если вызывается `SampleStream . Meta.StepsOf`, а `SampleStream` хранится как `Value::Function`,
+    // конвертируем его тело обратно в `Value::Stream`, чтобы `Meta.StepsOf` видел все шаги потока!
+    let normalized_input = if matches!(expr, [Token::Path(p)] if p == "Meta.StepsOf") {
+        if let Value::Function(func_arc) = &input {
+            if let FunctionBody::UserDefined { body, .. } = &func_arc.body {
+                Value::Stream(body.clone())
+            } else {
+                input
+            }
+        } else {
+            input
         }
-    }
+    } else {
+        input
+    };
 
-    let target = eval_expression(expr, &mut target_scope)?;
-    apply_callable(target, input, scope)
+    let mut t_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+    t_scope.set("_", normalized_input.clone());
+    if let Value::Form(f_arc) = &normalized_input {
+        t_scope.unpack_form(f_arc, true);
+    }
+    let target = eval_expression(expr, &mut t_scope)?;
+    apply_callable(target, normalized_input, scope)
 }
 
-/// Проверка Закона 3 (Railway-free): Соответствует ли входное значение контракту первого параметра функции?
 fn callable_accepts_input(callable: &Value, input: &Value, scope: &mut Scope) -> bool {
-    if let Value::Function(func_arc) = callable {
-        if let FunctionBody::UserDefined { args, .. } = &func_arc.body {
-            if let Some(first_param) = args.first() {
-                let type_tokens: &[Token] = match first_param.as_slice() {
-                    [Token::Path(single)] => {
-                        let is_type = scope
-                            .get(single)
-                            .map(|v| matches!(v, Value::Form(_)))
-                            .unwrap_or(false);
-                        if is_type {
-                            first_param.as_slice()
-                        } else {
-                            &[]
-                        }
-                    }
-                    [Token::Path(_), Token::Op(op), ..]
-                    if op == "&" || op == "|" || op == "/" =>
-                        {
-                            first_param.as_slice()
-                        }
-                    [Token::Path(_), rest @ ..] => {
-                        // Если второй токен — это дефолтный литерал `Host "localhost"`, то это не ограничение типа Формы
-                        if matches!(rest.first(), Some(Token::Lit(_) | Token::Group(_, _))) {
-                            &[]
-                        } else {
-                            rest
-                        }
-                    }
-                    _ => &[],
-                };
+    let Value::Function(func_arc) = callable else {
+        return true;
+    };
+    let FunctionBody::UserDefined {
+        args, partial_args, ..
+    } = &func_arc.body
+    else {
+        return true;
+    };
+    let Some(first_param) = args.get(partial_args.len()) else {
+        return true;
+    };
 
-                if !type_tokens.is_empty() {
-                    return value_matches_type_tokens(input, type_tokens, scope);
-                }
+    let type_tokens: &[Token] = match first_param.as_slice() {
+        [Token::Path(single)] => {
+            if matches!(scope.get(single), Some(Value::Form(_))) {
+                first_param.as_slice()
+            } else {
+                &[]
             }
         }
-    }
-    true
+        [Token::Path(_), Token::Op(op), ..] if matches!(op.as_str(), "&" | "|" | "/") => {
+            first_param.as_slice()
+        }
+        [Token::Path(_), rest @ ..] => {
+            if matches!(rest.first(), Some(Token::Lit(_) | Token::Group(_, _))) {
+                &[]
+            } else {
+                rest
+            }
+        }
+        _ => &[],
+    };
+
+    type_tokens.is_empty() || value_matches_type_tokens(input, type_tokens, scope)
 }
 
 fn value_matches_type_tokens(val: &Value, tokens: &[Token], scope: &mut Scope) -> bool {
     let mut i = 0;
     while i < tokens.len() {
         match &tokens[i] {
-            Token::Path(type_name) => {
-                // Игнорируем базовые примитивные аннотации вроде `String`, `Int`, `Any`
-                if matches!(
-                    type_name.as_str(),
-                    "String" | "Int" | "Float" | "Bool" | "Any" | "Tuple" | "File"
-                ) {
-                    return true;
-                }
-                if let Value::Form(val_arc) = val {
-                    let val_form = val_arc.read().unwrap();
-                    if !val_form.has_lineage(type_name) {
-                        // Проверим, не является ли `type_name` Union-типом (`Shape Circle | Rect`)
-                        if let Some(Value::Form(target_arc)) = scope.get(type_name) {
-                            let target_form = target_arc.read().unwrap();
-                            if !target_form.union_variants.is_empty() {
-                                let matches_union = target_form.union_variants.iter().any(|v| {
-                                    if let Value::Form(vf) = v {
-                                        val_form.has_lineage(&vf.read().unwrap().type_name)
-                                    } else {
-                                        false
-                                    }
-                                });
-                                if !matches_union {
-                                    return false;
-                                }
-                            } else {
+            Token::Path(t_name)
+            if !matches!(
+                    t_name.as_str(),
+                    "String" | "Int" | "Float" | "Bool" | "Any" | "Tuple" | "File" | "List"
+                ) =>
+                {
+                    if let Value::Form(val_arc) = val {
+                        let vf = val_arc.read().unwrap();
+                        if !vf.has_lineage(t_name) {
+                            let matches_union = matches!(
+                            scope.get(t_name),
+                            Some(Value::Form(u_arc)) if u_arc.read().unwrap().union_variants.iter().any(|v| {
+                                matches!(v, Value::Form(vf2) if vf.has_lineage(&vf2.read().unwrap().type_name))
+                            })
+                        );
+                            if !matches_union {
                                 return false;
                             }
-                        } else {
-                            return false;
                         }
                     }
                 }
-            }
             Token::Op(op) if op == "/" => {
-                // `Order / Cancelled` -> запрещает вход формы, имеющей предка `Cancelled`
-                if let Some(Token::Path(forbidden)) = tokens.get(i + 1) {
-                    if let Value::Form(val_arc) = val {
-                        if val_arc.read().unwrap().has_lineage(forbidden) {
-                            return false;
-                        }
+                if let (Some(Token::Path(forb)), Value::Form(val_arc)) = (tokens.get(i + 1), val) {
+                    if val_arc.read().unwrap().has_lineage(forb) {
+                        return false;
                     }
                 }
                 i += 2;
@@ -1319,34 +1278,75 @@ fn value_matches_type_tokens(val: &Value, tokens: &[Token], scope: &mut Scope) -
 }
 
 pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<Value, String> {
-    // Закон 3 (Outcome Bypass): Если входное значение является альтернативной веткой Union (например, `OutOfStock`
-    // вместо ожидаемого `Order & Reserved`), функция автоматически пропускается!
     if !callable_accepts_input(&callable, &arg, scope) {
         return Ok(arg);
     }
 
     match callable {
         Value::Function(func) => match &func.body {
-            FunctionBody::Native(native_fn) => {
+            FunctionBody::Native(f) => {
                 let args_vec = match arg {
                     Value::Tuple(items) => items,
                     Value::None => vec![],
                     other => vec![other],
                 };
-                native_fn(args_vec, scope)
+                f(args_vec, scope)
             }
             FunctionBody::UserDefined {
                 args,
                 body,
                 captured_env,
                 overrides,
+                partial_args,
             } => {
+                let mut combined = partial_args.clone();
+                match &arg {
+                    Value::Tuple(items) if args.len() > 1 => combined.extend(items.clone()),
+                    Value::None => {}
+                    other => combined.push(other.clone()),
+                }
+
+                // Поддержка Partial Application (Раздел 4.3: `AddTen AddTwo(10)`)
+                if !combined.is_empty() && combined.len() < args.len() && !matches!(arg, Value::None)
+                {
+                    let has_missing_required = args.iter().skip(combined.len()).any(|s| {
+                        matches!(s.as_slice(), [Token::Path(_)])
+                            || (s.len() == 2 && matches!(s[1], Token::Path(_)))
+                    });
+                    if has_missing_required {
+                        return Ok(Value::Function(Arc::new(FunctionInstance {
+                            name: format!("{}_partial", func.name),
+                            body: FunctionBody::UserDefined {
+                                args: args.clone(),
+                                body: body.clone(),
+                                captured_env: captured_env.clone(),
+                                overrides: overrides.clone(),
+                                partial_args: combined,
+                            },
+                        })));
+                    }
+                }
+
                 let mut call_scope = Scope::child(captured_env.clone());
-                bind_arguments(args, &arg, &mut call_scope)?;
+                let packed_arg = if combined.is_empty() {
+                    Value::None
+                } else if combined.len() == 1 {
+                    combined.remove(0)
+                } else {
+                    Value::Tuple(combined)
+                };
+                bind_arguments(args, &packed_arg, &mut call_scope)?;
                 for (k, v) in overrides {
                     call_scope.set(k, v.clone());
                 }
-                eval_stream_body(body, Some(arg), &mut call_scope)
+                let res = eval_stream_body(body, Some(packed_arg), &mut call_scope)?;
+                // Для лямбд сохраняем `Value::Done` (чтобы `Fold` получил сигнал остановки),
+                // а для обычных именованных функций снимаем обертку `Done`.
+                if func.name == "Lambda" {
+                    Ok(res)
+                } else {
+                    Ok(unwrap_done(res))
+                }
             }
             FunctionBody::Composed(f1, f2) => {
                 let mid = apply_callable(f1.clone(), arg, scope)?;
@@ -1354,42 +1354,42 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             }
         },
         Value::Stream(sentences) => {
-            let mut stream_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-            stream_scope.set("_", arg.clone());
-            // Закон 1c: В анонимный поток `[ ... ]` поля входной формы проецируются автоматически!
-            if let Value::Form(form_arc) = &arg {
-                let form = form_arc.read().unwrap();
-                for (k, v) in &form.fields {
-                    if let Value::Stream(dep_sents) = v {
-                        if let Ok(computed) =
-                            eval_reactive_field(&form, form_arc.clone(), dep_sents, scope)
-                        {
-                            stream_scope.set(k, computed);
-                        }
-                    } else {
-                        stream_scope.set(k, v.clone());
-                    }
-                }
+            let mut s_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+            s_scope.set("_", arg.clone());
+            if let Value::Form(f_arc) = &arg {
+                s_scope.unpack_form(f_arc, true);
             }
-            eval_stream_body(&sentences, Some(arg), &mut stream_scope)
+            eval_stream_body(&sentences, Some(arg), &mut s_scope)
         }
         Value::Router(branches) => eval_router(&branches, arg, scope),
-        // Проверка вхождения в диапазон: `Val . (1..100)`
         Value::Range(start, end) => match arg {
             Value::Int(v) => Ok(Value::Bool(v >= start && v <= end)),
+            Value::String(s) => {
+                let ch = s.chars().next().unwrap_or('\0') as i64;
+                Ok(Value::Bool(ch >= start && ch <= end))
+            }
             _ => Ok(Value::Bool(false)),
         },
         Value::Form(router_arc) => {
             let router = router_arc.read().unwrap().clone();
-            // Проверка вхождения в Union: `_.Role . ('admin' | 'manager')`
+            if let Some(call_method) = router.methods.get("__call__") {
+                return invoke_form_method(&router, call_method, arg, scope);
+            }
             if !router.union_variants.is_empty() {
-                return Ok(Value::Bool(router.union_variants.contains(&arg)));
+                let matched = router.union_variants.iter().any(|v| match (v, &arg) {
+                    (Value::Range(a, b), Value::String(s)) => {
+                        let ch = s.chars().next().unwrap_or('\0') as i64;
+                        ch >= *a && ch <= *b
+                    }
+                    _ => v == &arg,
+                });
+                return Ok(Value::Bool(matched));
             }
             for key in &router.field_order {
                 if let Some(Value::Stream(body)) = router.fields.get(key) {
-                    let mut branch_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                    if match_type_or_wildcard(key, &arg, &mut branch_scope) {
-                        return eval_stream_body(body, Some(arg), &mut branch_scope);
+                    let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+                    if match_type_or_wildcard(key, &arg, &mut b_scope) {
+                        return eval_stream_body(body, Some(arg), &mut b_scope);
                     }
                 }
             }
@@ -1399,170 +1399,175 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
     }
 }
 
-fn eval_call_expr(
+pub fn eval_call_expr(
     fn_name: &str,
     call_args: &[Sentence],
-    piped_first_arg: Option<Value>,
+    piped_first: Option<Value>,
     scope: &mut Scope,
 ) -> Result<Value, String> {
-    let mut evaluated_args = Vec::new();
-    if let Some(first) = piped_first_arg {
-        evaluated_args.push(first);
-    }
-    for a in call_args {
-        evaluated_args.push(eval_sentence(a, scope)?);
+    if fn_name == "Compose" {
+        return eval_compose_call(call_args, scope);
     }
 
-    // Специальная поддержка `Atom.Swap(Transition)`
-    if let Some((obj_name, method_name)) = fn_name.split_once('.') {
-        if method_name == "Swap" {
-            if let Some(Value::Atom(atom_arc)) = scope.get(obj_name) {
-                let transition = evaluated_args.into_iter().next().unwrap_or(Value::None);
-                let current_val = atom_arc.lock().unwrap().clone();
-                let next_val = apply_callable(transition, current_val, scope)?;
-                *atom_arc.lock().unwrap() = next_val.clone();
-                return Ok(next_val);
-            } else if let Some(Value::Form(f_arc)) = scope.get(obj_name) {
-                let transition = evaluated_args.into_iter().next().unwrap_or(Value::None);
-                let current_val = f_arc
-                    .read()
-                    .unwrap()
-                    .get_field("Value")
-                    .unwrap_or(Value::None);
-                let next_val = apply_callable(transition, current_val, scope)?;
-                f_arc.write().unwrap().set_field("Value", next_val.clone());
-                return Ok(next_val);
+    let mut evaluated = Vec::new();
+    if let Some(first) = piped_first {
+        evaluated.push(first);
+    }
+    for a in call_args {
+        evaluated.push(eval_sentence(a, scope)?);
+    }
+
+    let arg = match evaluated.len() {
+        0 => Value::None,
+        1 => evaluated.remove(0),
+        _ => Value::Tuple(evaluated),
+    };
+
+    if let Some((obj_path, method_name)) = fn_name.rsplit_once('.') {
+        if let Ok(obj_val) = eval_path(obj_path, scope) {
+            match obj_val {
+                Value::Form(f_arc) => {
+                    let snap = f_arc.read().unwrap().clone();
+                    if let Some(method) = snap.methods.get(method_name) {
+                        return invoke_form_method(&snap, method, arg, scope);
+                    }
+                }
+                Value::Atom(atom_arc) => match method_name {
+                    "Swap" => {
+                        let current_val = atom_arc.lock().unwrap().clone();
+                        let next_val = apply_callable(arg, current_val, scope)?;
+                        *atom_arc.lock().unwrap() = next_val.clone();
+                        return Ok(next_val);
+                    }
+                    "Read" => {
+                        return Ok(atom_arc.lock().unwrap().clone());
+                    }
+                    _ => {}
+                },
+                Value::Channel(chan_arc) => match method_name {
+                    "Send" => {
+                        chan_arc.lock().unwrap().push_back(arg);
+                        return Ok(Value::None);
+                    }
+                    "Recv" => {
+                        return Ok(match chan_arc.lock().unwrap().pop_front() {
+                            Some(v) => make_some(v),
+                            None => make_empty_form("None"),
+                        });
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
     }
 
-    let func = eval_path(fn_name, scope)?;
-    let arg = if evaluated_args.is_empty() {
-        Value::None
-    } else if evaluated_args.len() == 1 {
-        evaluated_args.remove(0)
+    if let Ok(func) = eval_path(fn_name, scope) {
+        if let Value::Symbol(tag) = func {
+            let mut node = FormInstance::new(&tag);
+            node.set_field("Args", arg);
+            return Ok(Value::Form(Arc::new(RwLock::new(node))));
+        }
+        apply_callable(func, arg, scope)
     } else {
-        Value::Tuple(evaluated_args)
-    };
-    apply_callable(func, arg, scope)
+        Err(format!("Функция '{fn_name}' не найдена"))
+    }
 }
 
-/// Вычисление паттерн-матчинга `{ [ _ >= 18 ] [ ... ], (0, 0) [ ... ], User [ ... ], _ [ ... ] }`
 fn eval_router(branches: &[Sentence], arg: Value, scope: &mut Scope) -> Result<Value, String> {
     for branch in branches {
         match classify_sentence(branch) {
-            // 1. Ветка с предикатом `[ _ >= 18 ] [ ... ]`, структурой `{ Method 'GET', Path ("users", Id) }` или литералом `true [ ... ]`
             SemanticKind::PatternBranch { pattern, body } => {
-                let mut branch_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                branch_scope.set("_", arg.clone());
+                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+                b_scope.set("_", arg.clone());
                 if let Value::Form(f) = &arg {
-                    for (k, v) in &f.read().unwrap().fields {
-                        branch_scope.set(k, v.clone());
-                    }
+                    b_scope.unpack_form(f, true);
                 }
-
                 let matched = match pattern {
-                    Token::Lit(lit) => {
-                        let expected = eval_literal(&lit, &mut branch_scope);
-                        arg == expected
+                    Token::Lit(lit) => arg == eval_literal(&lit, &mut b_scope),
+                    Token::Range(a, b) => {
+                        let r = eval_token(&Token::Range(a, b), &mut b_scope)?;
+                        matches!(
+                            apply_callable(r, arg.clone(), &mut b_scope),
+                            Ok(Value::Bool(true))
+                        )
                     }
                     Token::Group('[', pred_sents) => {
-                        let res =
-                            eval_stream_body(&pred_sents, Some(arg.clone()), &mut branch_scope)?;
-                        matches!(res, Value::Bool(true))
+                        matches!(
+                            eval_stream_body(&pred_sents, Some(arg.clone()), &mut b_scope)?,
+                            Value::Bool(true)
+                        )
                     }
                     Token::Group('{', field_pats) => {
                         if let Value::Form(f_arc) = &arg {
                             let f = f_arc.read().unwrap();
-                            let mut all_ok = true;
+                            let mut ok = true;
                             for fp in field_pats {
                                 if let SemanticKind::Binding { key, value } = classify_sentence(&fp)
                                 {
-                                    let Some(actual_field) = f.get_field(&key) else {
-                                        all_ok = false;
+                                    let Some(actual) = f.get_field(&key) else {
+                                        ok = false;
                                         break;
                                     };
-                                    // Поддержка вложенной деструктуризации кортежа `Path ("users", Id)`
-                                    if let [Token::Group('(' | ')', tuple_pats)] = value.as_slice()
-                                    {
-                                        if !match_tuple_pattern(
-                                            tuple_pats,
-                                            &actual_field,
-                                            &mut branch_scope,
-                                        )? {
-                                            all_ok = false;
+                                    if let [Token::Group('(' | ')', t_pats)] = value.as_slice() {
+                                        if !match_tuple_pattern(t_pats, &actual, &mut b_scope)? {
+                                            ok = false;
                                             break;
                                         }
-                                    } else {
-                                        let expected = eval_expression(&value, &mut branch_scope)?;
-                                        if actual_field != expected {
-                                            all_ok = false;
-                                            break;
-                                        }
+                                    } else if actual != eval_expression(&value, &mut b_scope)? {
+                                        ok = false;
+                                        break;
                                     }
                                 }
                             }
-                            all_ok
+                            ok
                         } else {
                             false
                         }
                     }
                     _ => false,
                 };
-
                 if matched {
-                    return eval_stream_body(&body, Some(arg), &mut branch_scope);
+                    return eval_stream_body(&body, Some(arg), &mut b_scope);
                 }
             }
-
-            // 2. Ветка сопоставления кортежа `(0, 0) [ "FizzBuzz" ]`, `(0, _) [ "Fizz" ]`
             SemanticKind::LambdaOrTupleBranch { args, body } => {
-                let mut branch_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                branch_scope.set("_", arg.clone());
-                if match_tuple_pattern(&args, &arg, &mut branch_scope)? {
-                    return eval_stream_body(&body, Some(arg), &mut branch_scope);
+                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+                b_scope.set("_", arg.clone());
+                if match_tuple_pattern(&args, &arg, &mut b_scope)? {
+                    return eval_stream_body(&body, Some(arg), &mut b_scope);
                 }
             }
-
-            // 3. Ветка по имени типа `User [ ... ]`, `Adult [ ... ]` или дефолтная ветка `_ [ ... ]`
             SemanticKind::StreamOrBranch { name, stream } => {
-                let mut branch_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                if match_type_or_wildcard(&name, &arg, &mut branch_scope) {
-                    return eval_stream_body(&stream, Some(arg), &mut branch_scope);
+                let mut b_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+                if match_type_or_wildcard(&name, &arg, &mut b_scope) {
+                    return eval_stream_body(&stream, Some(arg), &mut b_scope);
                 }
             }
-
             _ => {}
         }
     }
     Ok(Value::None)
 }
 
-fn match_tuple_pattern(
+pub fn match_tuple_pattern(
     pat_sents: &[Sentence],
     actual: &Value,
     scope: &mut Scope,
 ) -> Result<bool, String> {
-    let actual_items = match actual {
-        Value::Tuple(items) => items.clone(),
+    let items = match actual {
+        Value::Tuple(v) => v.clone(),
         other => vec![other.clone()],
     };
-    if pat_sents.len() != actual_items.len() {
+    if pat_sents.len() != items.len() {
         return Ok(false);
     }
-    for (pat_s, act_val) in pat_sents.iter().zip(actual_items.iter()) {
+    for (pat_s, act_val) in pat_sents.iter().zip(items.iter()) {
         match pat_s.as_slice() {
-            [Token::Path(var_name)] if var_name == "_" => {}
-            [Token::Path(var_name)] => {
-                // Закон 1b: Извлечение переменной из кортежа `("users", Id)` в скоуп ветки!
-                scope.set(var_name, act_val.clone());
-            }
-            _ => {
-                let expected = eval_sentence(pat_s, scope)?;
-                if act_val != &expected {
-                    return Ok(false);
-                }
-            }
+            [Token::Path(v)] if v == "_" => {}
+            [Token::Path(v)] => scope.set(v, act_val.clone()),
+            _ if act_val != &eval_sentence(pat_s, scope)? => return Ok(false),
+            _ => {}
         }
     }
     Ok(true)
@@ -1573,25 +1578,24 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
         scope.set("_", val.clone());
         return true;
     }
+    if pattern_name == "None" && matches!(val, Value::None) {
+        return true;
+    }
     match val {
         Value::Form(form_arc) => {
             let form = form_arc.read().unwrap().clone();
             let mut matched = form.has_lineage(pattern_name);
 
-            // Если в скоупе определен уточняющий тип `Adult User & IsAdult`, проверяем его предков и предикаты!
-            if let Some(Value::Form(target_type_arc)) = scope.get(pattern_name) {
-                let target_type = target_type_arc.read().unwrap().clone();
-                if !matched {
-                    matched = target_type
-                        .ancestors
-                        .keys()
-                        .all(|anc| form.has_lineage(anc));
+            if let Some(Value::Form(target_arc)) = scope.get(pattern_name) {
+                let target = target_arc.read().unwrap().clone();
+                if !matched && !target.ancestors.is_empty() {
+                    matched = target.ancestors.keys().all(|anc| form.has_lineage(anc));
                 }
-                if matched && !target_type.predicates.is_empty() {
-                    for pred in &target_type.predicates {
-                        let mut pred_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
+                if matched {
+                    for pred in &target.predicates {
+                        let mut p_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
                         if !matches!(
-                            apply_callable(pred.clone(), val.clone(), &mut pred_scope),
+                            apply_callable(pred.clone(), val.clone(), &mut p_scope),
                             Ok(Value::Bool(true))
                         ) {
                             return false;
@@ -1601,19 +1605,8 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
             }
 
             if matched {
-                // Закон 1b: Проекция всех не-коллизионных полей в скоуп при матчинге по типу
-                for (k, v) in &form.fields {
-                    if !form.ambiguous_fields.contains_key(k) {
-                        scope.set(k, v.clone());
-                    }
-                }
-                // Также делаем доступными срезы предков для разрешения коллизий Закона 2 (`User.Id`, `Order.Id`)
-                for (anc_name, anc_inst) in &form.ancestors {
-                    scope.set(
-                        anc_name,
-                        Value::Form(Arc::new(RwLock::new(anc_inst.clone()))),
-                    );
-                }
+                scope.set("_", val.clone());
+                scope.unpack_form(form_arc, true);
                 return true;
             }
             false
@@ -1626,78 +1619,50 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
     }
 }
 
-/// Привязка аргументов с соблюдением Закона 1, Закона 1c и дефолтных значений
 fn bind_arguments(
     arg_defs: &[Sentence],
     incoming: &Value,
     scope: &mut Scope,
 ) -> Result<(), String> {
     scope.set("_", incoming.clone());
-
     if arg_defs.is_empty() {
-        // Без аргументов (поток) -> авто-распаковка формы
-        if let Value::Form(form_arc) = incoming {
-            let form = form_arc.read().unwrap();
-            for (k, v) in &form.fields {
-                if !form.ambiguous_fields.contains_key(k) {
-                    scope.set(k, v.clone());
-                }
-            }
+        if let Value::Form(f_arc) = incoming {
+            scope.unpack_form(f_arc, true);
         }
         return Ok(());
     }
 
-    // Если функция ожидает несколько параметров `(A, B)`, а пришел `Tuple(items)`
-    let incoming_items: Vec<Value> = match incoming {
-        Value::Tuple(items) if arg_defs.len() > 1 => items.clone(),
+    let items: Vec<Value> = match incoming {
+        Value::Tuple(v) if arg_defs.len() > 1 => v.clone(),
         Value::None => vec![],
         other => vec![other.clone()],
     };
 
     for (idx, param_sent) in arg_defs.iter().enumerate() {
-        let provided_val = incoming_items.get(idx).cloned();
-
+        let provided = items.get(idx).cloned();
         match param_sent.as_slice() {
-            // Закон 1c: Одиночный идентификатор `Fn(User)` или обычный слот `Fn(Msg)`
             [Token::Path(single)] => {
-                let val = provided_val.unwrap_or(Value::None);
-                let is_type = single
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
+                let val = provided.unwrap_or(Value::None);
+                let is_type = single.chars().next().map(char::is_uppercase).unwrap_or(false)
                     && matches!(val, Value::Form(_));
                 scope.set(single, val.clone());
                 if is_type {
-                    if let Value::Form(form_arc) = &val {
-                        let form = form_arc.read().unwrap();
-                        for (k, v) in &form.fields {
-                            if !form.ambiguous_fields.contains_key(k) {
-                                scope.set(k, v.clone());
-                            }
-                        }
+                    if let Value::Form(f_arc) = &val {
+                        scope.unpack_form(f_arc, true);
                     }
                 }
             }
-            // Закон 1c: Анонимный пересеченный слот `FinalizeBill(User & Cart)` -> распаковывает все поля!
-            [Token::Path(_), Token::Op(op), ..] if op == "&" || op == "|" => {
-                let val = provided_val.unwrap_or(Value::None);
-                if let Value::Form(form_arc) = &val {
-                    let form = form_arc.read().unwrap();
-                    for (k, v) in &form.fields {
-                        if !form.ambiguous_fields.contains_key(k) {
-                            scope.set(k, v.clone());
-                        }
-                    }
+            [Token::Path(_), Token::Op(op), ..] if matches!(op.as_str(), "&" | "|" | "/") => {
+                if let Some(Value::Form(f_arc)) = &provided {
+                    scope.unpack_form(f_arc, true);
                 }
             }
-            // Закон 1: Именованный параметр `Fn(U User)` или дефолтный `Connect(Host "localhost")`
             [Token::Path(param_name), rest @ ..] => {
-                if let Some(val) = provided_val {
+                if let Some(val) = provided {
                     scope.set(param_name, val);
                 } else if !rest.is_empty() {
-                    let default_val = eval_expression(rest, scope)?;
-                    scope.set(param_name, default_val);
+                    let def_val = eval_expression(rest, scope)?;
+                    scope.set(param_name, def_val);
                 } else {
                     scope.set(param_name, Value::None);
                 }
@@ -1705,11 +1670,10 @@ fn bind_arguments(
             _ => {}
         }
     }
-
     Ok(())
 }
 
-fn eval_stream_body(
+pub fn eval_stream_body(
     body: &[Sentence],
     input: Option<Value>,
     scope: &mut Scope,
@@ -1720,9 +1684,10 @@ fn eval_stream_body(
     let mut last = Value::None;
     for s in body {
         last = eval_sentence(s, scope)?;
-        // Функциональный ранний выход `Done { Value _ }`
-        if let Value::Done(val) = last {
-            return Ok(*val);
+        // ВАЖНО: пробрасываем `Value::Done(val)` вверх без снятия обертки,
+        // чтобы `Done` из вложенного роутера доходил до `Fold`!
+        if let Value::Done(_) = last {
+            return Ok(last);
         }
         if let Value::Form(f_arc) = &last {
             let f = f_arc.read().unwrap();
@@ -1737,55 +1702,74 @@ fn eval_stream_body(
 }
 
 // =============================================================================
-// 5. ОБРАБОТКА ПРЕДЛОЖЕНИЙ (SENTENCES)
+// 6. ОБРАБОТКА ПРЕДЛОЖЕНИЙ (SENTENCES) И ЗАПУСК МОДУЛЯ
 // =============================================================================
 
 pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, String> {
-    let kind = classify_sentence(sentence);
-
-    match kind {
+    match classify_sentence(sentence) {
         SemanticKind::LambdaOrTupleBranch { args, body } => {
-            let func = FunctionInstance {
+            Ok(Value::Function(Arc::new(FunctionInstance {
                 name: "Lambda".into(),
                 body: FunctionBody::UserDefined {
                     args,
                     body,
                     captured_env: Arc::new(RwLock::new(scope.clone())),
                     overrides: HashMap::new(),
+                    partial_args: Vec::new(),
                 },
-            };
-            Ok(Value::Function(Arc::new(func)))
+            })))
         }
-
         SemanticKind::StreamOrBranch { name, stream } => {
-            let func = FunctionInstance {
+            let env_arc = Arc::new(RwLock::new(scope.clone()));
+            let val = Value::Function(Arc::new(FunctionInstance {
                 name: name.clone(),
                 body: FunctionBody::UserDefined {
                     args: Vec::new(),
                     body: stream,
-                    captured_env: Arc::new(RwLock::new(scope.clone())),
+                    captured_env: env_arc.clone(),
                     overrides: HashMap::new(),
+                    partial_args: Vec::new(),
                 },
-            };
-            let val = Value::Function(Arc::new(func));
+            }));
+            env_arc.write().unwrap().set(&name, val.clone());
             scope.set(&name, val.clone());
             Ok(val)
         }
-
         SemanticKind::Binding { key, value } => {
-            let val = eval_expression(&value, scope)?;
+            let val = match value.as_slice() {
+                [Token::Path(p)]
+                if matches!(
+                        p.as_str(),
+                        "String" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "File" | "Any"
+                    ) =>
+                    {
+                        Value::Symbol(key.clone())
+                    }
+                _ => eval_expression(&value, scope)?,
+            };
             scope.set(&key, val.clone());
             Ok(val)
         }
-
         SemanticKind::TupleBinding { tuple, value } => {
+            // Если после первой скобочной группы `(V1 + V2)` идет оператор `* 2.0`,
+            // то это не деструктуризация кортежа, а инфиксное выражение `(V1 + V2) * 2.0`!
+            if matches!(value.first(), Some(Token::Op(_))) {
+                return eval_expression(sentence, scope);
+            }
             let val = eval_expression(&value, scope)?;
             let _ = match_tuple_pattern(&tuple, &val, scope)?;
             Ok(val)
         }
-
         SemanticKind::FormDef { name, body, tail } => {
-            let mut form = FormInstance::new(&name);
+            let mut form = match scope.get(&name) {
+                Some(Value::Form(prev_arc)) => {
+                    let prev = prev_arc.read().unwrap().clone();
+                    let mut next = prev.clone();
+                    next.ancestors.insert(name.clone(), prev);
+                    next
+                }
+                _ => FormInstance::new(&name),
+            };
             populate_form_members(&mut form, &body, scope)?;
             let mut val = Value::Form(Arc::new(RwLock::new(form)));
             if !tail.is_empty() {
@@ -1797,316 +1781,109 @@ pub fn eval_sentence(sentence: &Sentence, scope: &mut Scope) -> Result<Value, St
             scope.set(&name, val.clone());
             Ok(val)
         }
-
         SemanticKind::SubtypeFormDef {
             name,
             base,
             body,
             tail,
         } => {
-            let mut form = if let Some(Value::Form(base_arc)) = scope.get(&base) {
-                let base_inst = base_arc.read().unwrap().clone();
-                let mut child = base_inst.clone();
-                child.type_name = name.clone();
-                child.ancestors.insert(base.clone(), base_inst);
-                child
-            } else {
-                FormInstance::new(&name)
+            let mut form = match scope.get(&base) {
+                Some(Value::Form(base_arc)) => {
+                    let b_inst = base_arc.read().unwrap().clone();
+                    let mut child = b_inst.clone();
+                    child.type_name = name.clone();
+                    child.ancestors.insert(base.clone(), b_inst);
+                    child
+                }
+                _ => FormInstance::new(&name),
             };
-
             populate_form_members(&mut form, &body, scope)?;
             let mut val = Value::Form(Arc::new(RwLock::new(form)));
             if !tail.is_empty() {
                 val = eval_operator_tail(val, &tail, scope)?;
                 if let Value::Form(f_arc) = &val {
-                    f_arc.write().unwrap().type_name = name.clone();
+                    let mut fw = f_arc.write().unwrap();
+                    let snap = fw.clone();
+                    if snap.type_name == name {
+                        fw.ancestors.insert(name.clone(), snap);
+                    }
+                    fw.type_name = name.clone();
                 }
             }
             scope.set(&name, val.clone());
             Ok(val)
         }
-
+        SemanticKind::GenericDef { name, body, .. } => {
+            if name == "Map" && scope.get("Map").is_some() {
+                return Ok(scope.get("Map").unwrap());
+            }
+            let mut form = FormInstance::new(&name);
+            if let [Token::Group('{', f_body), ..] = body.as_slice() {
+                populate_form_members(&mut form, f_body, scope)?;
+            }
+            let val = Value::Form(Arc::new(RwLock::new(form)));
+            scope.set(&name, val.clone());
+            Ok(val)
+        }
         SemanticKind::AlgebraicDef { name, expr } => {
-            let mut val = eval_expression(&expr, scope)?;
+            let val = eval_expression(&expr, scope)?;
             if let Value::Form(f_arc) = &val {
-                let mut f_write = f_arc.write().unwrap();
-                let prev_clone = f_write.clone();
-                if prev_clone.type_name != "UnionType" && prev_clone.type_name != name {
-                    f_write
-                        .ancestors
-                        .insert(prev_clone.type_name.clone(), prev_clone);
+                let mut fw = f_arc.write().unwrap();
+                let snap = fw.clone();
+                if snap.type_name != "UnionType" && snap.type_name != name {
+                    fw.ancestors.insert(snap.type_name.clone(), snap);
                 }
-                f_write.type_name = name.clone();
+                fw.type_name = name.clone();
             }
             scope.set(&name, val.clone());
             Ok(val)
         }
-
         SemanticKind::FunctionDef {
             name, args, body, ..
         } => {
-            let func = FunctionInstance {
+            let env_arc = Arc::new(RwLock::new(scope.clone()));
+            let val = Value::Function(Arc::new(FunctionInstance {
                 name: name.clone(),
                 body: FunctionBody::UserDefined {
                     args,
                     body,
-                    captured_env: Arc::new(RwLock::new(scope.clone())),
+                    captured_env: env_arc.clone(),
                     overrides: HashMap::new(),
+                    partial_args: Vec::new(),
                 },
-            };
-            let val = Value::Function(Arc::new(func));
+            }));
+            env_arc.write().unwrap().set(&name, val.clone());
             scope.set(&name, val.clone());
             Ok(val)
         }
-
         SemanticKind::CallExpr { name, args } => eval_call_expr(&name, &args, None, scope),
-
-        SemanticKind::Pipeline(tokens) | SemanticKind::Expression(tokens) => {
+        SemanticKind::Pipeline(tokens) => {
+            if let [Token::Path(form_name), Token::Group('{', body), Token::Op(op), Token::Path(macro_name)] =
+                tokens.as_slice()
+            {
+                if op == "." {
+                    let mut form = FormInstance::new(form_name);
+                    populate_form_members(&mut form, body, scope)?;
+                    let form_val = Value::Form(Arc::new(RwLock::new(form)));
+                    let macro_fn = eval_path(macro_name, scope)?;
+                    let transformed = apply_callable(macro_fn, form_val, scope)?;
+                    if let Value::Form(f_arc) = &transformed {
+                        f_arc.write().unwrap().type_name = form_name.clone();
+                    }
+                    scope.set(form_name, transformed.clone());
+                    return Ok(transformed);
+                }
+            }
             eval_expression(&tokens, scope)
         }
-
+        SemanticKind::Expression(tokens) => eval_expression(&tokens, scope),
         _ => Ok(Value::None),
     }
-}
-
-// =============================================================================
-// 6. СТАНДАРТНАЯ БИБЛИОТЕКА И ЗАПУСК ПРОГРАММЫ
-// =============================================================================
-
-fn register_native_fn<F>(scope: &mut Scope, name: &str, f: F)
-where
-    F: Fn(Vec<Value>, &mut Scope) -> Result<Value, String> + Send + Sync + 'static,
-{
-    scope.set(
-        name,
-        Value::Function(Arc::new(FunctionInstance {
-            name: name.into(),
-            body: FunctionBody::Native(Arc::new(f)),
-        })),
-    );
-}
-
-fn expand_iterable(val: Value) -> Vec<Value> {
-    match val {
-        Value::Tuple(items) => items,
-        Value::Range(start, end) => (start..=end).map(Value::Int).collect(),
-        Value::None => vec![],
-        other => vec![other],
-    }
-}
-
-pub fn create_global_scope() -> Scope {
-    let mut scope = Scope::new();
-
-    // 1. Shell.Log и Shell.Exec
-    let mut shell = FormInstance::new("Shell");
-    let log_native: NativeFn = Arc::new(|args, _| {
-        if let Some(msg) = args.first() {
-            println!("{msg}");
-        }
-        Ok(Value::None)
-    });
-    let log_fn = Arc::new(FunctionInstance {
-        name: "Log".into(),
-        body: FunctionBody::Native(log_native),
-    });
-    shell.methods.insert("Log".into(), log_fn.clone());
-    shell.set_field("Log", Value::Function(log_fn));
-
-    let exec_native: NativeFn = Arc::new(|args, _| {
-        if let Some(cmd) = args.first() {
-            println!("[Exec]: {cmd}");
-        }
-        Ok(Value::String("success".into()))
-    });
-    let exec_fn = Arc::new(FunctionInstance {
-        name: "Exec".into(),
-        body: FunctionBody::Native(exec_native),
-    });
-    shell.methods.insert("Exec".into(), exec_fn.clone());
-    shell.set_field("Exec", Value::Function(exec_fn));
-
-    scope.set("Shell", Value::Form(Arc::new(RwLock::new(shell))));
-
-    // 2. Atom(T) и Done
-    register_native_fn(&mut scope, "Atom", |args, _| {
-        let initial = args.first().cloned().unwrap_or(Value::None);
-        Ok(Value::Atom(Arc::new(Mutex::new(initial))))
-    });
-    scope.set(
-        "Done",
-        Value::Form(Arc::new(RwLock::new(FormInstance::new("Done")))),
-    );
-
-    // 3. Встроенные функции работы со строками (`Trim`, `ToUpper`, `Split`, `Join`, `Length`)
-    register_native_fn(&mut scope, "Trim", |args, _| match args.first() {
-        Some(Value::String(s)) => Ok(Value::String(s.trim().to_string())),
-        other => Ok(other.cloned().unwrap_or(Value::None)),
-    });
-    register_native_fn(&mut scope, "ToUpper", |args, _| match args.first() {
-        Some(Value::String(s)) => Ok(Value::String(s.to_uppercase())),
-        other => Ok(other.cloned().unwrap_or(Value::None)),
-    });
-    register_native_fn(&mut scope, "Split", |args, _| {
-        if let (Some(Value::String(s)), Some(Value::String(delim))) = (args.first(), args.get(1)) {
-            let parts = s
-                .split(delim.as_str())
-                .map(|p| Value::String(p.to_string()))
-                .collect();
-            Ok(Value::Tuple(parts))
-        } else {
-            Ok(Value::Tuple(vec![]))
-        }
-    });
-    register_native_fn(&mut scope, "Join", |args, _| {
-        if let (Some(col), Some(Value::String(sep))) = (args.first(), args.get(1)) {
-            let items = expand_iterable(col.clone());
-            let joined = items
-                .into_iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(sep);
-            Ok(Value::String(joined))
-        } else {
-            Ok(Value::String(String::new()))
-        }
-    });
-    register_native_fn(&mut scope, "Length", |args, _| match args.first() {
-        Some(Value::String(s)) => Ok(Value::Int(s.chars().count() as i64)),
-        Some(Value::Tuple(items)) => Ok(Value::Int(items.len() as i64)),
-        _ => Ok(Value::Int(0)),
-    });
-
-    // 4. Функции коллекций и потоков (`Filter`, `Map`, `Fold` с поддержкой `Done`, `ForEach`, `Find`, `TakeWhile`)
-    register_native_fn(&mut scope, "Filter", |args, scope| {
-        if let (Some(col), Some(pred)) = (args.first(), args.get(1)) {
-            let mut out = Vec::new();
-            for item in expand_iterable(col.clone()) {
-                if matches!(
-                    apply_callable(pred.clone(), item.clone(), scope)?,
-                    Value::Bool(true)
-                ) {
-                    out.push(item);
-                }
-            }
-            Ok(Value::Tuple(out))
-        } else {
-            Ok(Value::Tuple(vec![]))
-        }
-    });
-
-    register_native_fn(&mut scope, "Map", |args, scope| {
-        if let (Some(col), Some(mapper)) = (args.first(), args.get(1)) {
-            let mut out = Vec::new();
-            for item in expand_iterable(col.clone()) {
-                out.push(apply_callable(mapper.clone(), item, scope)?);
-            }
-            Ok(Value::Tuple(out))
-        } else {
-            Ok(Value::Tuple(vec![]))
-        }
-    });
-
-    register_native_fn(&mut scope, "Fold", |args, scope| {
-        if let (Some(col), Some(init), Some(folder)) = (args.first(), args.get(1), args.get(2)) {
-            let mut acc = init.clone();
-            for item in expand_iterable(col.clone()) {
-                let step_res = apply_callable(
-                    folder.clone(),
-                    Value::Tuple(vec![acc, item]),
-                    scope,
-                )?;
-                match step_res {
-                    Value::Done(early_val) => return Ok(*early_val),
-                    Value::Form(f_arc) if f_arc.read().unwrap().type_name == "Done" => {
-                        return Ok(f_arc
-                            .read()
-                            .unwrap()
-                            .get_field("Value")
-                            .unwrap_or(Value::None));
-                    }
-                    normal => acc = normal,
-                }
-            }
-            Ok(acc)
-        } else {
-            Ok(Value::None)
-        }
-    });
-
-    register_native_fn(&mut scope, "ForEach", |args, scope| {
-        if let (Some(col), Some(action)) = (args.first(), args.get(1)) {
-            for item in expand_iterable(col.clone()) {
-                let _ = apply_callable(action.clone(), item, scope)?;
-            }
-        }
-        Ok(Value::None)
-    });
-
-    register_native_fn(&mut scope, "Find", |args, scope| {
-        if let (Some(col), Some(pred)) = (args.first(), args.get(1)) {
-            for item in expand_iterable(col.clone()) {
-                if matches!(
-                    apply_callable(pred.clone(), item.clone(), scope)?,
-                    Value::Bool(true)
-                ) {
-                    return Ok(item);
-                }
-            }
-        }
-        Ok(Value::None)
-    });
-
-    register_native_fn(&mut scope, "TakeWhile", |args, scope| {
-        if let (Some(col), Some(pred)) = (args.first(), args.get(1)) {
-            let mut out = Vec::new();
-            for item in expand_iterable(col.clone()) {
-                if matches!(
-                    apply_callable(pred.clone(), item.clone(), scope)?,
-                    Value::Bool(true)
-                ) {
-                    out.push(item);
-                } else {
-                    break;
-                }
-            }
-            Ok(Value::Tuple(out))
-        } else {
-            Ok(Value::Tuple(vec![]))
-        }
-    });
-
-    scope
 }
 
 pub fn run_hir_module(hir: &HirModule) -> Result<Value, String> {
     let mut global_scope = create_global_scope();
 
-    // 1. Предварительно создаем все формы из статически разрешенного HIR
-    for form_name in &hir.form_order {
-        if form_name == "Shell" {
-            continue;
-        }
-        if let Some(hir_form) = hir.forms.get(form_name) {
-            let mut inst = FormInstance::new(form_name);
-            for fname in &hir_form.field_order {
-                if let Some(hf) = hir_form.fields.get(fname) {
-                    if !hf.default_expr.is_empty() {
-                        if let Ok(val) = eval_expression(&hf.default_expr, &mut global_scope) {
-                            inst.set_field_with_origin(fname, val, &hf.origin_form);
-                        }
-                    }
-                    if hf.is_ambiguous {
-                        inst.ambiguous_fields
-                            .insert(fname.clone(), hf.conflicting_origins.clone());
-                    }
-                }
-            }
-            global_scope.set(form_name, Value::Form(Arc::new(RwLock::new(inst))));
-        }
-    }
-
-    // 2. Выполняем предложения верхнего уровня
     let mut last_val = Value::None;
     for sentence in &hir.top_level_sentences {
         last_val = eval_sentence(sentence, &mut global_scope)?;

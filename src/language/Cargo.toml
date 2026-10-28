@@ -1,15 +1,11 @@
 [package]
-name = "razomy_parser"
+name = "razomy_language"
 version = "0.4.7"
 edition = "2021"
 
 [lib]
-name = "razomy_parser"
+name = "razomy_language"
 path = "src/lib.rs"
-
-[[bin]]
-name = "razomy_cli"
-path = "src/main.rs"
 
 [dependencies]
 pest = "2.9.3"
