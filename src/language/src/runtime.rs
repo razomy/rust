@@ -1793,3 +1793,12 @@ pub fn run_program(source: &str) -> Result<Value, String> {
     let lir = lower_hir_to_lir(&hir);
     run_lir_module(&lir)
 }
+
+pub fn run_file(path: &std::path::Path) -> Result<Value, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| format!("Не удалось открыть '{}': {e}", path.display()))?;
+    let sentences = crate::parser::parse_code_with_imports(&source, path.parent())?;
+    let hir = lower_to_hir(&sentences);
+    let lir = lower_hir_to_lir(&hir);
+    run_lir_module(&lir)
+}

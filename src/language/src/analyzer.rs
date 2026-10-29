@@ -363,6 +363,22 @@ pub fn analyze_source(source: &str) -> AnalysisReport {
     report
 }
 
+pub fn analyze_source_with_path(source: &str, file_path: Option<&std::path::Path>) -> AnalysisReport {
+    let mut report = AnalysisReport::default();
+    let base_dir = file_path.and_then(|p| p.parent());
+    match crate::parser::parse_code_with_imports(source, base_dir) {
+        Ok(sentences) => analyze_from_hir(lower_to_hir(&sentences), &mut report),
+        Err(err) => report.diagnostics.push(Diagnostic {
+            severity: Severity::Error,
+            code: "E00_SYNTAX",
+            message: err,
+            context_symbol: None,
+            sentence_index: None,
+        }),
+    }
+    report
+}
+
 pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
     report.hir = hir;
 

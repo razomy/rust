@@ -2,10 +2,19 @@
 name = "razomy_language"
 version = "0.5.7"
 edition = "2021"
+default-run = "razomy"
 
 [lib]
 name = "razomy_language"
 path = "src/lib.rs"
+
+[[bin]]
+name = "razomy"
+path = "src/main.rs"
+
+[[bin]]
+name = "razomy-lsp"
+path = "src/bin/razomy_lsp.rs"
 
 [dependencies]
 pest = "2.9.3"

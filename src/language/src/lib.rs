@@ -7,3 +7,4 @@ pub mod lir;
 pub mod parser;
 pub mod runtime;
 pub mod runtime_ext;
+pub mod lsp;

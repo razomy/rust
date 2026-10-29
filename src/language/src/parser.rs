@@ -1,5 +1,7 @@
 use pest::Parser;
 use pest_derive::Parser;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
@@ -511,4 +513,216 @@ pub fn analyze_ast(sentences: &[Sentence], depth: usize) {
         let kind = classify_sentence(sentence);
         println!("{indent}{:?}", kind);
     }
+}
+
+// =============================================================================
+// РАЗРЕШЕНИЕ ИМПОРТОВ СОГЛАСНО РАЗДЕЛУ 21 СПЕЦИФИКАЦИИ V5.7
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportDirective {
+    /// Именованный модуль: `Base root.base`, `Http std.net.http`, `Models Path"./models"`
+    Namespaced {
+        alias: String,
+        source: ImportSource,
+    },
+    /// Деструктурирующий импорт: `(String, Int) root.base`
+    Destructured {
+        names: Vec<String>,
+        source: ImportSource,
+    },
+    /// Wildcard импорт: `_ root.base`, `_ base`, `_ Path"../../../base"`
+    Wildcard {
+        source: ImportSource,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportSource {
+    /// Точечный путь или идентификатор: `root.base`, `std.net.http`, `base`
+    ModulePath(String),
+    /// Файловый путь через типизированную строку `Path"..."` / `Path("...")`
+    FilePath(String),
+}
+
+/// Распознает источник импорта (либо литерал из `Path"..."`, либо путь модуля `root.base`)
+fn extract_import_source(tok: &Token, next_tok: Option<&Token>) -> Option<(ImportSource, usize)> {
+    match (tok, next_tok) {
+        // Path"..." преобразуется лексером в Path + Group(')', [["..."]])
+        (Token::Path(p), Some(Token::Group(')', args))) if p == "Path" => {
+            if let Some(Token::Lit(Literal::String(path_str) | Literal::RawString(path_str))) =
+                args.first().and_then(|s| s.first())
+            {
+                return Some((ImportSource::FilePath(path_str.clone()), 2));
+            }
+            None
+        }
+        // Обычный точечный путь или идентификатор модуля: `root.base`, `base`, `std.net.http`
+        (Token::Path(path_str), _) => Some((ImportSource::ModulePath(path_str.clone()), 1)),
+        _ => None,
+    }
+}
+
+/// Сопоставляет предложение Sentence с грамматикой импортов Razomy v5.7:
+/// 1) `_ <source>`                 -> Wildcard
+/// 2) `(A, B, C) <source>`         -> Destructured
+/// 3) `Alias <source>`             -> Namespaced
+pub fn extract_import(sent: &Sentence) -> Option<ImportDirective> {
+    match sent.as_slice() {
+        // 1. Wildcard-импорт: `_ root.base` или `_ Path"../base"`
+        [Token::Path(target), rest @ ..] if target == "_" && !rest.is_empty() => {
+            let next = rest.get(1);
+            let (source, _) = extract_import_source(&rest[0], next)?;
+            Some(ImportDirective::Wildcard { source })
+        }
+
+        // 2. Деструктурирующий импорт: `(String, Int) root.base`
+        [Token::Group('(', items), rest @ ..] if !rest.is_empty() => {
+            let next = rest.get(1);
+            let (source, _) = extract_import_source(&rest[0], next)?;
+
+            let mut names = Vec::new();
+            for item_sentence in items {
+                for t in item_sentence {
+                    if let Token::Path(name) = t {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            Some(ImportDirective::Destructured { names, source })
+        }
+
+        // 3. Именованный импорт: `Base root.base` или `Http std.net.http` (Alias начинается с PascalCase)
+        [Token::Path(alias), rest @ ..]
+        if !rest.is_empty()
+            && alias.chars().next().map_or(false, |c| c.is_ascii_uppercase()) =>
+            {
+                let next = rest.get(1);
+                let (source, _) = extract_import_source(&rest[0], next)?;
+                Some(ImportDirective::Namespaced {
+                    alias: alias.clone(),
+                    source,
+                })
+            }
+
+        _ => None,
+    }
+}
+
+/// Преобразует источник импорта в относительный путь к `.rl` файлу
+fn source_to_fs_path(source: &ImportSource) -> PathBuf {
+    match source {
+        ImportSource::FilePath(p) => {
+            let mut pb = PathBuf::from(p);
+            if pb.extension().is_none() {
+                pb.set_extension("rl");
+            }
+            pb
+        }
+        ImportSource::ModulePath(m) => {
+            // "root.base" -> "root/base.rl"
+            let relative = m.replace('.', "/");
+            let mut pb = PathBuf::from(relative);
+            if pb.extension().is_none() {
+                pb.set_extension("rl");
+            }
+            pb
+        }
+    }
+}
+
+/// Рекурсивный резолвер и сборщик модулей
+pub fn parse_code_with_imports(
+    source: &str,
+    base_dir: Option<&Path>,
+) -> Result<Vec<Sentence>, String> {
+    let mut visited = HashSet::new();
+    parse_recursive(source, base_dir, &mut visited)
+}
+
+fn parse_recursive(
+    source: &str,
+    base_dir: Option<&Path>,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<Vec<Sentence>, String> {
+    let raw_sentences = parse_code(source).map_err(|e| format!("Синтаксическая ошибка:\n{e}"))?;
+    let mut expanded = Vec::with_capacity(raw_sentences.len());
+    let current_dir = base_dir.unwrap_or_else(|| Path::new("."));
+
+    for sent in raw_sentences {
+        if let Some(import_dir) = extract_import(&sent) {
+            match import_dir {
+                // `_ root.base` / `_ Path"..."` — разворачивает все инструкции прямо в текущий модуль
+                ImportDirective::Wildcard { source } => {
+                    let file_path = source_to_fs_path(&source);
+                    let target_path = current_dir.join(file_path);
+
+                    // Если файл существует локально — подгружаем
+                    if target_path.exists() {
+                        let imported_sents = load_imported_file(&target_path, visited)?;
+                        expanded.extend(imported_sents);
+                        continue;
+                    }
+                }
+
+                // `Base root.base` — оборачивает файл в Form-пространство имен: `Base { ... }`
+                ImportDirective::Namespaced { alias, source } => {
+                    let file_path = source_to_fs_path(&source);
+                    let target_path = current_dir.join(file_path);
+
+                    if target_path.exists() {
+                        let imported_sents = load_imported_file(&target_path, visited)?;
+                        expanded.push(vec![
+                            Token::Path(alias),
+                            Token::Group('{', imported_sents),
+                        ]);
+                        continue;
+                    }
+                }
+
+                // `(String, Int) root.base` — фильтрует объявления по именам
+                ImportDirective::Destructured { names, source } => {
+                    let file_path = source_to_fs_path(&source);
+                    let target_path = current_dir.join(file_path);
+
+                    if target_path.exists() {
+                        let imported_sents = load_imported_file(&target_path, visited)?;
+                        let filtered: Vec<Sentence> = imported_sents
+                            .into_iter()
+                            .filter(|s| match s.first() {
+                                Some(Token::Path(n)) => names.contains(n),
+                                _ => false,
+                            })
+                            .collect();
+                        expanded.extend(filtered);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Если это не импорт или внешний std/sys модуль — оставляем как есть в AST
+        expanded.push(sent);
+    }
+
+    Ok(expanded)
+}
+
+fn load_imported_file(
+    candidate: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<Vec<Sentence>, String> {
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|_| format!("Модуль не найден: '{}'", candidate.display()))?;
+
+    // Защита от циклических импортов
+    if !visited.insert(canonical.clone()) {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&canonical)
+        .map_err(|e| format!("Ошибка чтения модуля '{}': {e}", canonical.display()))?;
+
+    parse_recursive(&content, canonical.parent(), visited)
 }

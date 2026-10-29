@@ -1,4 +1,4 @@
-use razomy_language::parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
+use razomy_language::parser::{classify_sentence, extract_import, parse_code, ImportDirective, ImportSource, Literal, SemanticKind, Token};
 use std::fs;
 
 // --- ШАГ 1: Комментарии, пустые строки и контракты Compile / Bypass ---
@@ -552,4 +552,57 @@ fn test_step_19_full_v5_7_specification_parses_100_percent() -> Result<(), Box<d
         let _ = classify_sentence(sentence);
     }
     Ok(())
+}
+
+#[test]
+fn test_step_21_canonical_razomy_v5_7_imports() {
+    let code = r#"
+Base          root.base
+(String, Int) root.base
+_             root.base
+_             base
+_             Path"../../../base"
+Http          std.net.http
+Sqlite        std.db.sqlite
+"#;
+    let ast = parse_code(code).unwrap();
+    assert_eq!(ast.len(), 7);
+
+    // 1. Base root.base -> Namespaced
+    let imp0 = extract_import(&ast[0]).unwrap();
+    assert_eq!(
+        imp0,
+        ImportDirective::Namespaced {
+            alias: "Base".into(),
+            source: ImportSource::ModulePath("root.base".into())
+        }
+    );
+
+    // 2. (String, Int) root.base -> Destructured
+    let imp1 = extract_import(&ast[1]).unwrap();
+    assert_eq!(
+        imp1,
+        ImportDirective::Destructured {
+            names: vec!["String".into(), "Int".into()],
+            source: ImportSource::ModulePath("root.base".into())
+        }
+    );
+
+    // 3. _ root.base -> Wildcard
+    let imp2 = extract_import(&ast[2]).unwrap();
+    assert_eq!(
+        imp2,
+        ImportDirective::Wildcard {
+            source: ImportSource::ModulePath("root.base".into())
+        }
+    );
+
+    // 4. _ Path"../../../base" -> Wildcard from FilePath
+    let imp4 = extract_import(&ast[4]).unwrap();
+    assert_eq!(
+        imp4,
+        ImportDirective::Wildcard {
+            source: ImportSource::FilePath("../../../base".into())
+        }
+    );
 }
