@@ -1,146 +1,164 @@
 use razomy_language::parser::{classify_sentence, parse_code, Literal, SemanticKind, Token};
 use std::fs;
 
-// --- ШАГ 1: Комментарии, пустые строки и символ '#' внутри комментария ---
+// --- ШАГ 1: Комментарии, пустые строки и контракты Compile / Bypass ---
 #[test]
-fn test_step_01_comments_and_blank_lines() {
+fn test_step_01_comments_and_compile_bypass_contracts() {
     let code = r#"
 // Однострочный комментарий
 #
 Многострочный блочный комментарий (when '#' is followed by whitespace or newline)
 #
 
-Name String
+Compile {}
+Bypass  {}
 
-
-// Несколько пустых строк подряд перед следующим выражением
-Jonn String
+BrandName String
+default_user_name "Alice"
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 2);
-    assert_eq!(ast[0], vec![Token::Path("Name".into()), Token::Path("String".into())]);
-    assert_eq!(ast[1], vec![Token::Path("Jonn".into()), Token::Path("String".into())]);
+    assert_eq!(ast.len(), 4);
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::FormDef { name, .. } if name == "Compile"));
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FormDef { name, .. } if name == "Bypass"));
+    assert_eq!(ast[2], vec![Token::Path("BrandName".into()), Token::Path("String".into())]);
 }
 
 // --- ШАГ 2: Четыре базовые аксиомы и наследование форм (Axioms 1-4) ---
 #[test]
-fn test_step_02_core_axioms_1_to_4() {
+fn test_step_02_core_axioms_1_to_4_vehicle_hierarchy() {
     let code = r#"
-Name String
-
-Name {
-  First String
+Vehicle {
+  brand     BrandName
+  max_speed Int 180
+  tag       "standard"
 }
 
-HasParentName {
-  ParentName String
+HasBattery {
+  battery_kwh Int 75
 }
 
-Name {
-  First String
-} & HasParentName
-
-JonnName HasParentName {
-  ParentName Jonn
+ElectricVehicle Vehicle & HasBattery & {
+  charging_port String "Type2"
 }
 
-JonnDoyName2 JonnName {
-  ParentName JonnDoy
-} & { ParentName "JonnDoyBoy" }
+Car Vehicle {
+  brand     "GenericMotor"
+  max_speed 200
+}
+
+SportsCar Car {
+  brand     "Porsche"
+  max_speed 300
+}
+
+MyCar SportsCar {
+  brand "CustomPorsche"
+}
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 6);
-    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::Binding { .. }));
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::FormDef { .. }));
     assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FormDef { .. }));
-    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::FormDef { .. }));
+    assert!(matches!(classify_sentence(&ast[2]), SemanticKind::AlgebraicDef { .. }));
+    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::SubtypeFormDef { .. }));
     assert!(matches!(classify_sentence(&ast[4]), SemanticKind::SubtypeFormDef { .. }));
     assert!(matches!(classify_sentence(&ast[5]), SemanticKind::SubtypeFormDef { .. }));
 }
 
-// --- ШАГ 3: Слитные пути (Lineage) и доступ по отрицательным индексам ---
+// --- ШАГ 3: Слитные пути (Lineage), отрицательные индексы и Perceus in-place мутация ---
 #[test]
-fn test_step_03_lineage_paths_and_negative_indices() {
+fn test_step_03_lineage_paths_negative_indices_and_mutation() {
     let code = r#"
-JonnDoyName2.ParentName
-JonnDoyName2.JonnName.ParentName
-JonnDoyName2.JonnName.HasParentName.ParentName
-JonnDoyName3.0
-JonnDoyName3.-1
+MyCar.brand
+MyCar.SportsCar.brand
+MyCar.SportsCar.Car.brand
+MyCar.Vehicle.brand
+MyGarageCar.0
+MyGarageCar.-1
+
+mutate_car_demo() [
+  my_car (MyGarageCar {})
+  upgraded_car (my_car & { max_speed 350, garage_slot 2 })
+  my_car.brand "Tesla"
+  my_car.0  "Rivian"
+  my_car.-1 42
+]
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 5);
-    assert_eq!(ast[0], vec![Token::Path("JonnDoyName2.ParentName".into())]);
-    assert_eq!(ast[2], vec![Token::Path("JonnDoyName2.JonnName.HasParentName.ParentName".into())]);
-    assert_eq!(ast[3], vec![Token::Path("JonnDoyName3.0".into())]);
-    assert_eq!(ast[4], vec![Token::Path("JonnDoyName3.-1".into())]);
+    assert_eq!(ast.len(), 7);
+    assert_eq!(ast[0], vec![Token::Path("MyCar.brand".into())]);
+    assert_eq!(ast[2], vec![Token::Path("MyCar.SportsCar.Car.brand".into())]);
+    assert_eq!(ast[4], vec![Token::Path("MyGarageCar.0".into())]);
+    assert_eq!(ast[5], vec![Token::Path("MyGarageCar.-1".into())]);
+    assert!(matches!(classify_sentence(&ast[6]), SemanticKind::FunctionDef { .. }));
 }
 
-// --- ШАГ 4: Примитивы и символы ---
+// --- ШАГ 4: Правило универсальных слотов (Generics, Bounded Generics, Law 1c & Depth-Indexed _1) ---
 #[test]
-fn test_step_04_primitives_and_symbols() {
+fn test_step_04_universal_slots_and_depth_indexed_subjects() {
     let code = r#"
-String      ""
-Symbol      'symbol'
-Int         0
-Float       0.0
-Bool        false
-Byte        0x00
-Money       $0.00
-File        %./
-Any         _
+Box(T) { item T }
+
+CategorizedUser(TC Category, active_cat TC) {
+  backup_cat TC
+  current    active_cat
+}
+
+UserWithAge(Age) { new_age age }
+is_user_18(Age) [ age == 18 ]
+compare_ages(candidate_age Age, minimum_age Age) [ candidate_age >= minimum_age ]
+read_unpacked({ name } WithName) [ name ]
+extract_name_demo(w WithName) [ w . [ _1.name ] ]
+sum_pair_pipe(pair (Int, Int)) [ pair . [ _1.0 + _1.1 ] ]
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 9);
+    assert_eq!(ast.len(), 8);
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::GenericDef { .. }));
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::GenericDef { .. }));
+    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::FunctionDef { .. }));
+    assert!(matches!(classify_sentence(&ast[6]), SemanticKind::FunctionDef { .. }));
+    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::FunctionDef { .. }));
+}
+
+// --- ШАГ 5: Примитивы, точный Money, Raw-строки и Tagged String Sugar (`Type"..."`) ---
+#[test]
+fn test_step_05_primitives_money_raw_strings_and_tagged_strings() {
+    let code = r##"
+String ""
+Symbol 'symbol'
+Int    0
+Float  0.0
+Bool   false
+Byte   0x00
+Any    _
+
+Money(raw String "0.00") {
+  scaled (raw . Decimal.parse_scale4)
+  from_scaled(val Int) [ Money { scaled val } ]
+  +  (other Money)   [ Money.from_scaled(self.scaled + other.scaled) ]
+  *  (factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
+  == (other Money)   [ self.scaled == other.scaled ]
+}
+
+StringExamples {
+  regex_pat   r"^[^@]+@[^@]+\.[^@]+$"
+  nested_json r1"{"query": "SELECT * FROM \"users\"", "interpolated": "{ignored}"}"1
+  nested_code r2"Can freely embed both " and "1 and # without any lexer conflict!"2
+}
+
+HumanLiterals {
+  money_explicit Money("199.99"), money_val Money"199.99"
+  url_explicit   Url("https://razomy.org"), web_url Url"https://razomy.org"
+  path_explicit  Path("./data/users.json"), local_file Path"./data/users.json"
+  tax_rate       0.155
+}
+"##;
+    let ast = parse_code(code).unwrap();
+    assert_eq!(ast.len(), 10);
     assert_eq!(ast[1][1], Token::Lit(Literal::Symbol("symbol".into())));
     assert_eq!(ast[4][1], Token::Lit(Literal::Bool(false)));
     assert_eq!(ast[5][1], Token::Lit(Literal::Byte(0)));
-    assert_eq!(ast[6][1], Token::Lit(Literal::Money("$0.00".into())));
-    assert_eq!(ast[7][1], Token::Lit(Literal::File("%./".into())));
-    assert_eq!(ast[8][1], Token::Path("_".into()));
-}
-
-// --- ШАГ 5: Все типы богатых человеческих литералов (Rich Human Literals) ---
-#[test]
-fn test_step_05_rich_human_literals() {
-    let code = r#"
-HumanLiterals {
-  MoneyVal    $199.99
-  CurrencyVal USD$500.00
-  PercentVal  15.5%
-  DateVal     2026-03-30
-  TimeVal     14:30:00
-  DurationVal 5m30s
-  CoordPair   1920x1080
-  ColorVal    #2A9D8F
-  IpAddr      192.168.0.1:8080
-  VersionVal  1.4.2-beta
-  EmailAddr   admin@razomy.org
-  WebUrl      https://razomy.org
-  InterpUrl   https://api.ex/{Id}
-  LocalFile   %./data/users.json
-}
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 1);
-    if let Token::Group('{', fields) = &ast[0][1] {
-        assert_eq!(fields.len(), 14);
-        assert_eq!(fields[0][1], Token::Lit(Literal::Money("$199.99".into())));
-        assert_eq!(fields[1][1], Token::Lit(Literal::Money("USD$500.00".into())));
-        assert_eq!(fields[2][1], Token::Lit(Literal::Percent(15.5)));
-        assert_eq!(fields[3][1], Token::Lit(Literal::Date("2026-03-30".into())));
-        assert_eq!(fields[4][1], Token::Lit(Literal::Time("14:30:00".into())));
-        assert_eq!(fields[5][1], Token::Lit(Literal::Duration("5m30s".into())));
-        assert_eq!(fields[6][1], Token::Lit(Literal::Coord("1920x1080".into())));
-        assert_eq!(fields[7][1], Token::Lit(Literal::Color("#2A9D8F".into())));
-        assert_eq!(fields[8][1], Token::Lit(Literal::IpAddr("192.168.0.1:8080".into())));
-        assert_eq!(fields[9][1], Token::Lit(Literal::Version("1.4.2-beta".into())));
-        assert_eq!(fields[10][1], Token::Lit(Literal::Email("admin@razomy.org".into())));
-        assert_eq!(fields[11][1], Token::Lit(Literal::Url("https://razomy.org".into())));
-        assert_eq!(fields[12][1], Token::Lit(Literal::Url("https://api.ex/{Id}".into())));
-        assert_eq!(fields[13][1], Token::Lit(Literal::File("%./data/users.json".into())));
-    } else {
-        panic!("Ожидалась группа Form");
-    }
+    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::GenericDef { name, .. } if name == "Money"));
 }
 
 // --- ШАГ 6: Кортежи, Суммы типов (|), Пересечения (&), Вычитание (/) и Карты ---
@@ -148,519 +166,387 @@ HumanLiterals {
 fn test_step_06_tuples_maps_and_type_algebra() {
     let code = r#"
 Point2D (Float, Float)
-Origin  (0.0, 0.0)
+origin  (0.0, 0.0)
 Status  'draft' | 'published' | 'archived'
 
-PublicUser        User / User.PasswordHash
-AnonymousUsr      PublicUser / 'Name'
-UserAndCloud      User & Cloud
-GuestUser         PublicUser / PublicUser.Role & { Role 'guest' }
+PublicUser    User / User.password_hash
+AnonymousUsr  PublicUser / 'name'
+UserAndCloud  User & Cloud
+RestoredUser  UserAndCloud / Cloud
+GuestUser     PublicUser / PublicUser.role & { role 'guest' }
 
-Map(K, V) { (K) V }
-Set(T)    { (T) Bool }
-UpdatedConfig ConfigMap & { "port" "9090", "tls" "true" } / "host"
+Map(K, V) {
+  (K) V
+  get(m Map(K, V), key K) [ (m, key) . native_map_get ]
+}
+Set(T) { (T) Bool }
+updated_config config_map & { "port" "9090", "tls" "true" } / "host"
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 10);
+    assert_eq!(ast.len(), 11);
     assert!(matches!(classify_sentence(&ast[2]), SemanticKind::AlgebraicDef { .. }));
     assert!(matches!(classify_sentence(&ast[3]), SemanticKind::AlgebraicDef { .. }));
-    assert!(matches!(classify_sentence(&ast[6]), SemanticKind::AlgebraicDef { .. }));
-    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::GenericDef { .. }));
+    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::AlgebraicDef { .. }));
+    assert!(matches!(classify_sentence(&ast[8]), SemanticKind::GenericDef { .. }));
 }
 
-// --- ШАГ 7: Арифметические, побитовые и логические операции + диапазоны ---
+// --- ШАГ 7: Обновление данных: Глубокие линзы (in-place rebinding) и 7 комбинаций `&` ---
 #[test]
-fn test_step_07_math_bitwise_logic_and_ranges() {
+fn test_step_07_deep_inplace_rebinding_and_7_ampersand_combinations() {
     let code = r#"
-MathOps(A Int, B Int) [
-  {
-    Add (A + B)
-    Sub (A - B)
-    Mul (A * B)
-    Div (A / B)
-    Mod (A % B)
-    Pow (A ** B)
-    BitAnd (A . bit_and(B))
-    ShiftL (A << 2)
-    ShiftR (A >> 2)
-  }
+update_order_demo() [
+  raw_order Order { id "o1", amount 100 }
+  counter 0
+  counter (counter + 1)
+  raw_order.amount 14
+  corp Company { name "Acme", departments (Department { title "R&D", budget 1000 }) }
+  corp.departments.0.budget 2500
+  raw_order.1 20
+  next_order (raw_order & { amount 25 })
+  next_order (next_order .& { amount 50 })
 ]
 
-LogicOps(X Bool, Y Bool, Val Int) [
-  {
-    And     (X && Y)
-    Or      (X || Y)
-    Not     (!X)
-    Eq      (Val == 42)
-    Neq     (Val != 0)
-    InRange (Val . (1..100))
-  }
-]
+Comparable(Other) {
+  < (other Other) Bool
+}
+
+SortableUser User & Comparable(User) {
+  < (other User) [ self.age < other.age ]
+}
+
+None     {} & Bypass
+NotFound { entity String, id String } & Bypass
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 2);
+    assert_eq!(ast.len(), 5);
     assert!(matches!(classify_sentence(&ast[0]), SemanticKind::FunctionDef { .. }));
-    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FunctionDef { .. }));
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::GenericDef { .. }));
+    assert!(matches!(classify_sentence(&ast[2]), SemanticKind::AlgebraicDef { .. }));
 }
 
-// --- ШАГ 8: Перегрузка операторов внутри форм ---
+// --- ШАГ 8: Перегрузка операторов внутри форм (с пробелом перед скобкой) ---
 #[test]
 fn test_step_08_operator_overloading_in_forms() {
     let code = r#"
 Vec2 {
-  X Float
-  Y Float
+  x Float
+  y Float
 
-  +(Other Vec2)  [ Vec2 { X (X + Other.X), Y (Y + Other.Y) } ]
-  -(Other Vec2)  [ Vec2 { X (X - Other.X), Y (Y - Other.Y) } ]
-  *(Scale Float) [ Vec2 { X (X * Scale),   Y (Y * Scale) } ]
-  ==(Other Vec2) [ (X == Other.X) && (Y == Other.Y) ]
+  +  (other Vec2)  [ Vec2 { x (self.x + other.x), y (self.y + other.y) } ]
+  -  (other Vec2)  [ Vec2 { x (self.x - other.x), y (self.y - other.y) } ]
+  *  (scale Float) [ Vec2 { x (self.x * scale),   y (self.y * scale) } ]
+  /  (scale Float) [ Vec2 { x (self.x / scale),   y (self.y / scale) } ]
+  == (other Vec2)  [ (self.x == other.x) && (self.y == other.y) ]
+}
+
+Shape {
+  vertices Tuple(Vec2)
+  / (cutter Shape) [ (self, cutter) . native_csg_subtract ]
 }
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 1);
+    assert_eq!(ast.len(), 2);
     if let Token::Group('{', members) = &ast[0][1] {
-        assert_eq!(members.len(), 6);
+        assert_eq!(members.len(), 7);
         assert!(matches!(classify_sentence(&members[2]), SemanticKind::OperatorMethod { .. }));
         assert!(matches!(classify_sentence(&members[5]), SemanticKind::OperatorMethod { .. }));
+        assert!(matches!(classify_sentence(&members[6]), SemanticKind::OperatorMethod { .. }));
     } else {
         panic!("Ожидалось тело Vec2");
     }
 }
 
-// --- ШАГ 9: Многострочные пайплайны и композиция потоков ---
+// --- ШАГ 9: Ранний выход через `Break`, роутеры и классические паттерны без `if`/`return` ---
 #[test]
-fn test_step_09_multiline_pipelines_and_stream_composition() {
+fn test_step_09_classical_patterns_and_break() {
     let code = r#"
-StringOps(First String, Last String) [
-  Full "{First} {Last}"
+Break(T) { value T, label Symbol 'default' }
 
-  Full
-  . Trim
-  . ToUpper
-  . Split(" ")
+classical_patterns_demo(numbers Tuple(Int), limit Int) [
+  limit . {
+    [ _ <= 0 ] [ 0 ]
+    _ [
+      numbers . fold(0, (acc Int, n Int) [
+        (acc + n) . {
+          [ _ > limit ] [ Break { value _ } ]
+          _             [ _ ]
+        }
+      ])
+    ]
+  }
 ]
-
-CleanAndUpper (Trim & ToUpper)
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 2);
-    if let SemanticKind::FunctionDef { body, .. } = classify_sentence(&ast[0]) {
-        assert_eq!(body.len(), 2);
-        assert!(matches!(classify_sentence(&body[1]), SemanticKind::Pipeline(_)));
-    } else {
-        panic!("Ожидалась функция StringOps");
-    }
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::GenericDef { .. }));
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FunctionDef { .. }));
 }
 
-// --- ШАГ 10: Слоты функций, значения по умолчанию и частичное применение ---
+// --- ШАГ 10: Слоты функций, значения по умолчанию, возвращаемые типы и DI ---
 #[test]
-fn test_step_10_function_slots_defaults_and_rebinding() {
+fn test_step_10_function_slots_return_types_and_di() {
     let code = r#"
-Connect(Host "localhost", Port 8080, Tls false) [
-  "Connecting to {Host}:{Port} (TLS: {Tls})"
-]
+Db {
+  find_user(id String) User | NotFound [
+    User { id id, name "Alice", age 25, role 'user', password_hash "xyz" }
+  ]
+  find_cart(Identifiable) [
+    Cart { cart_id "c_for_{identifiable.id}", amount 2500 }
+  ]
+}
 
-DefaultConn   Connect()
-PartialConn   Connect("db.internal")
-SecureConnect (Connect & { Port 9090, Tls true })
-ActiveConn    SecureConnect()
+default_conn   connect()
+partial_conn   connect("db.internal")
+named_call     connect(port 9090, tls true)
+custom_connect connect & { port 9090, tls true }
+active_conn    custom_connect()
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 5);
+    assert_eq!(ast.len(), 6);
 }
 
-// --- ШАГ 11: Все виды операторов пайплайна (., .>, .&, .?) ---
+// --- ШАГ 11: Пайплайны (., .>, .&, .?) и multi-query do-нотация ---
 #[test]
-fn test_step_11_pipeline_operators_dot_tap_enrich_filter() {
+fn test_step_11_pipeline_operators_and_do_notation() {
     let code = r#"
-FinalizeBill(User & Cart) [
-  _ & {
-    Discount [
-      Amount . {
+finalize_bill(ctx User & Cart) [
+  ctx & {
+    discount [
+      self.amount . {
         [ _ >= 2000 ] [ 300 ]
         [ _ >= 1000 ] [ 100 ]
         _             [ 0 ]
       }
     ]
-    FinalPrice [ Amount - Discount ]
+    final_price [ self.amount - self.discount ]
   }
-  .> [ "Receipt for {Name}: {FinalPrice} USD (Discount: {Discount})" . Shell.Log ]
+  .> [ "Receipt for {_1.name}: {_1.final_price} USD (Discount: {_1.discount})" . Shell.log ]
 ]
 
-ProcessOrderPipeline(UserId String) [
-  UserId
-  .  Db.FindUser          // `.`  Standard Pipe
-  .? [ _.Age >= 18 ]      // `.?` Filter Pipe
-  .& Db.FindCart          // `.&` Enrich Pipe
-  .  FinalizeBill
+load_user_and_friend(uid1 String, uid2 String) [
+  { first_id uid1, second_id uid2 }
+  .& [ _.first_id . Db.find_user . [ { u1 _ } ] ]
+  .& [ _.second_id . Db.find_user . [ { u2 _ } ] ]
+  .  [ "{_.u1.name} is friends with {_.u2.name}" ]
 ]
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 2);
-    if let SemanticKind::FunctionDef { body, .. } = classify_sentence(&ast[1]) {
-        assert_eq!(body.len(), 1);
-        assert!(matches!(classify_sentence(&body[0]), SemanticKind::Pipeline(_)));
-    } else {
-        panic!("Ожидалась функция ProcessOrderPipeline");
-    }
 }
 
-// --- ШАГ 12: Уточняющие типы (Refinement Types) и роутинг по типам ---
+// --- ШАГ 12: Уточняющие типы (Refinement Types) и роутинг по типам (Law 1c) ---
 #[test]
 fn test_step_12_refinement_types_and_pattern_routing() {
     let code = r#"
-IsAdult   [ _.Age >= 18 ]
-IsManager [ _.Role . ('admin' | 'manager') ]
-EmailStr  String & [ _ . Regex.Matches("^[^@]+@[^@]+\\.[^@]+$") ]
-Adult     User & IsAdult
+is_adult(User)   [ user.age >= 18 ]
+is_manager(User) [ user.role == ('admin' | 'manager') ]
+EmailStr         String & [ _ . Regex.matches(r"^[^@]+@[^@]+\.[^@]+$") ]
+Adult            User & is_adult
 
-Area(S Shape) [
-  S . {
-    Circle [ 3.14159 * Radius * Radius ]
-    Rect   [ Width * Height ]
+area(g Geometry) [
+  g . {
+    Circle [ 3.14159 * circle.radius * circle.radius ]
+    Rect   [ rect.width * rect.height ]
   }
 ]
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 5);
-    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::StreamOrBranch { .. }));
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::FunctionDef { .. }));
     assert!(matches!(classify_sentence(&ast[2]), SemanticKind::AlgebraicDef { .. }));
 }
 
-// --- ШАГ 13: Коллекции в круглых скобках (), итерация и FizzBuzz ---
+// --- ШАГ 13: Коллекции в круглых скобках (), zip, enumerate и FizzBuzz ---
 #[test]
-fn test_step_13_collections_iteration_and_tuple_matching() {
-    let code = r#"
-OrderList (
-  Item { Name "Laptop", Price 1200, InStock true }
-  Item { Name "Mouse",  Price 25,   InStock false }
-  Item { Name "Screen", Price 400,  InStock true }
-)
-
-CalculateTotalInStock(Items) [
-  Items
-  . Filter([ _.InStock == true ])
-  . Map([ _.Price ])
-  . Fold(0, (Acc, Price) [ Acc + Price ])
+fn test_step_13_collections_zip_enumerate_and_fizzbuzz() {
+    let code = r##"
+format_numbered_catalog(items Tuple(Item), discounts Tuple(Int)) [
+  items
+  . zip(discounts)
+  . enumerate
+  . map((idx Int, (item Item, disc Int)) [
+    "#{idx}: {item.name} -> {item.price - disc} USD"
+  ])
 ]
 
-FizzBuzz(Limit Int) [
-  (1..Limit) . Map((N) [
-    (N % 3, N % 5) . {
+fizz_buzz(limit Int) [
+  (1..limit) . map((n Int) [
+    (n % 3, n % 5) . {
       (0, 0) [ "FizzBuzz" ]
       (0, _) [ "Fizz" ]
       (_, 0) [ "Buzz" ]
-      _      [ "{N}" ]
+      _      [ "{n}" ]
     }
   ])
 ]
-"#;
+"##;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 3);
+    assert_eq!(ast.len(), 2);
 }
 
-// --- ШАГ 14: Разрешение коллизий Lineage (Law 2) и миграция типов ---
+// --- ШАГ 14: Реактивные формы (`self`) и реактивные сигналы (`Signal`, `Effect`) ---
 #[test]
-fn test_step_14_lineage_collision_and_type_migration() {
-    let code = r#"
-UserOrder      User & Order
-UserOrderClean UserOrder / Order.Id
-
-MigrateUser(User) [
-  ClientAccount {
-    AccountId Id
-    Name      Name
-    IsAdult   (Age >= 18)
-  }
-]
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 3);
-}
-
-// --- ШАГ 15: Реактивные формы (Excel-style Dataflow) ---
-#[test]
-fn test_step_15_reactive_forms() {
+fn test_step_14_reactive_forms_and_signals() {
     let code = r#"
 Invoice {
-  Price    $100.00
-  Quantity 3
-  TaxRate  20%
+  price    Money"100.00"
+  quantity 3.0
+  tax_rate 0.20
 
-  Subtotal [ Price * Quantity ]
-  Tax      [ Subtotal * TaxRate ]
-  Total    [ Subtotal + Tax ]
+  subtotal [ self.price * self.quantity ]
+  tax      [ self.subtotal * self.tax_rate ]
+  total    [ self.subtotal + self.tax ]
 }
 
-Order1 Invoice & { Quantity 5 }
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 2);
-    if let Token::Group('{', fields) = &ast[0][1] {
-        assert_eq!(fields.len(), 6);
-        assert!(matches!(classify_sentence(&fields[3]), SemanticKind::StreamOrBranch { .. }));
-    } else {
-        panic!("Ожидалась форма Invoice");
-    }
-}
+count_sig   Signal(2)
+doubled_sig [ count_sig.get() * 2 ]
 
-// --- ШАГ 16: Онтологическая типизация (Typestate) и Law 3 ---
-#[test]
-fn test_step_16_ontological_typing_and_law_3() {
-    let code = r#"
-ReserveStock(O Order / Cancelled) [
-  O.Amount . {
-    [ _ > 0 ] [ O & Reserved { ReservedAt 1620000000 } ]
-    _         [ OutOfStock { Reason "Warehouse empty" } ]
-  }
-]
-
-ExecuteFulfillment(InitialOrder Order / Cancelled) [
-  InitialOrder
-  . ReserveStock
-  . ChargePayment
-]
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 2);
-}
-
-// --- ШАГ 17: Вычисления на уровне типов, F-Bounded полиморфизм и HKT ---
-#[test]
-fn test_step_17_type_level_peano_generics_and_hkt() {
-    let code = r#"
-Zero    {}
-Succ(N) { Prev N }
-One     Succ(Zero)
-Tuple(T) ()
-
-Comparable(Other Self) {
-  <(Other) Bool
-}
-
-SortUsers(Users List(User & Comparable(User))) [
-  Users . Sort
-]
-
-Box(T)         { Item T }
-NestedBox(T)   Box(Box(T))
-ApplyHKT(F, V) [ F { Item V } ]
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 9);
-}
-
-// --- ШАГ 18: Функции высшего порядка, ранний выход (Done) и Катаморфизмы ---
-#[test]
-fn test_step_18_higher_order_functions_done_and_catamorphisms() {
-    let code = r#"
-SumUntilLimit(Numbers List(Int), Max Int) [
-  Numbers . Fold(0, (Acc, N) [
-    (Acc + N) . {
-      [ _ > Max ] [ Done { Value _ } ]
-      _           [ _ ]
-    }
+run_signal_demo() [
+  Effect([
+    "Count: {count_sig.get()}, Doubled: {doubled_sig()}" . Shell.log
   ])
-]
-
-Expr Num(Int) | Add(Expr, Expr) | Mul(Expr, Expr)
-
-Cata(Expression, Algebra) [
-  Expression . {
-    Num [ Algebra.OnNum(Value) ]
-    Add [ Algebra.OnAdd(Left . Cata(Algebra), Right . Cata(Algebra)) ]
-    Mul [ Algebra.OnMul(Left . Cata(Algebra), Right . Cata(Algebra)) ]
-  }
-]
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 3);
-}
-
-// --- ШАГ 19: Конкурентность (.|), каналы CSP и транзакционные атомы ---
-#[test]
-fn test_step_19_concurrency_parallel_pipe_channels_and_atoms() {
-    let code = r#"
-FetchAds() [ https://api.ex/ads . Http.Get . Timeout(2s) ]
-
-LoadDashboardData(UserId String) [
-  UserId .| {
-    Profile [ _ . FetchProfile ]
-    Recs    [ _ . FetchRecommendations ]
-    Ads     [ FetchAds() ]
-  }
-]
-
-WorkerLoop(Jobs Channel(String), Results Channel(Int)) [
-  Jobs.Recv() . {
-    None [ "Channel closed, terminating worker." . Shell.Log ]
-    Some [
-      Value
-      . Length
-      . Results.Send
-
-      WorkerLoop(Jobs, Results)
-    ]
-  }
-]
-
-ModifyGlobalCounter() [
-  GlobalCounter.Swap((State) [ UpdateCounter(State, Increment { By 5 }) ])
+  count_sig.set(10)
 ]
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 4);
 }
 
-// --- ШАГ 20: Управление ресурсами (WithFile) и унифицированные порты ---
+// --- ШАГ 15: Дженерики 1-го, 2-го (HKT `F(_)`) и 3-го порядка (`T(_(_), _)`) ---
 #[test]
-fn test_step_20_resource_management_and_ports() {
+fn test_step_15_first_second_and_third_order_generics_hkt() {
     let code = r#"
-Fs {
-  WithFile(Path File, Action) [
-    Path . Fs.Open . {
-      FileHandle [
-        Handle _
-        Handle . Action
-        .> [ Handle . Fs.Close ]
-      ]
-    }
-  ]
+Functor(F(_)) {
+  fmap(A, B, fa F(A), f (A) [B]) F(B)
 }
 
-SyncRemoteBackup() [
-  https://api.razomy.org/v1/users
-  . Port.Read
-  . Port.Write(%./backup/users.json)
-]
+Monad(M(_)) & Functor(M) {
+  pure(A, a A)                          M(A)
+  flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
+}
+
+OptionT(M(_), A) {
+  run M(Option(A))
+}
+
+MonadTrans(T(_(_), _)) {
+  lift(M(_) Monad, A, ma M(A)) T(M, A)
+}
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 2);
+    assert_eq!(ast.len(), 4);
+    assert!(matches!(classify_sentence(&ast[0]), SemanticKind::GenericDef { name, .. } if name == "Functor"));
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::GenericDef { name, .. } if name == "Monad"));
+    assert!(matches!(classify_sentence(&ast[2]), SemanticKind::GenericDef { name, .. } if name == "OptionT"));
+    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::GenericDef { name, .. } if name == "MonadTrans"));
 }
 
-// --- ШАГ 21: Глубокий паттерн-роутинг (Структуры + Кортежи) ---
+// --- ШАГ 16: Конкурентность (.|), каналы CSP и конечные автоматы (FSM) ---
 #[test]
-fn test_step_21_deep_pattern_routing() {
+fn test_step_16_concurrency_channels_and_fsm() {
     let code = r#"
-ApiRouter(Req HttpRequest) [
-  Req . {
-    { Method 'GET', Path ("health") } [
-      HttpResponse { Status 200, Body "OK" }
-    ]
+fetch_ads() [ Url"https://api.ex/ads" . Http.get . timeout(Duration"2s") ]
 
-    { Method 'GET', Path ("users", Id) } [
-      Req . AuthMiddleware . {
-        Unauthorized [ HttpResponse { Status 401, Body Reason } ]
-        HttpRequest  [
-          JsonStr (Id . Db.FindUser . Json.Encode)
-          HttpResponse { Status 200, Body JsonStr }
-        ]
-      }
-    ]
-
-    _ [ HttpResponse { Status 404, Body "Not Found" } ]
+step_connection(state ConnState, event ConnEvent) ConnState [
+  (state, event) . {
+    (Disconnected, ConnectCmd)  [ Connecting { host connect_cmd.host, attempt 1 } ]
+    (Connecting, HandshakeOk)   [ Connected { host connecting.host, session_id handshake_ok.session_id } ]
+    (Connecting, NetworkError)  [ Disconnected { reason network_error.reason } ]
+    (Connected, DisconnectCmd)  [ Disconnected { reason "User closed" } ]
+    _                           [ state ]
   }
 ]
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 1);
+    assert_eq!(ast.len(), 2);
+    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FunctionDef { name, .. } if name == "step_connection"));
 }
 
-// --- ШАГ 22: Встроенные диалекты Parse (PEG) и View/Draw (UI) ---
+// --- ШАГ 17: Встроенные диалекты Parse (PEG) и Ui (View/Draw) ---
 #[test]
-fn test_step_22_parse_and_ui_draw_dialects() {
-    let code = r#"
-Digit "0".."9"
-Alpha "a".."z" | "A".."Z"
-
+fn test_step_17_parse_and_ui_draw_dialects() {
+    let code = r##"
 EmailGrammar String & [
-  _ . Parse([
-    Some(Alpha) . Match("@") . Some(Alpha) . Match(".") . Repeat(2..6, Alpha)
-  ])
+  _ . Parse.run(
+    Parse.one_or_more(alpha)
+    & Parse.match("@")
+    & Parse.one_or_more(alpha)
+    & Parse.match(".")
+    & Parse.repeat(2..6, alpha)
+  )
 ]
 
-CounterApp(State Atom(CounterState)) [
-  UI.View({
-    Title "Razomy Counter"
-    Size  1920x1080
-    Body  (
-      Heading("Current Count: {State.Read().Count}")
-      Canvas(200x100, [
-        UI.Draw(
-          Pen(#FF0000),
-          FillPen(#00FF00),
-          Circle((50, 50), 40)
+counter_app(state Atom(CounterState)) [
+  Ui.view({
+    title "Razomy Counter"
+    size  Pair"1920x1080"
+    body  (
+      heading("Current Count: {state.read().count}")
+      canvas(Pair"200x100", [
+        Ui.draw(
+          pen(Hex"#FF0000"),
+          fill_pen(Hex"#00FF00"),
+          circle((50, 50), 40)
         )
       ])
     )
   })
 ]
-"#;
+"##;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 4);
+    assert_eq!(ast.len(), 2);
 }
 
-// --- ШАГ 23: Метапрограммирование, рефлексия и переписывание AST ---
+// --- ШАГ 18: Метапрограммирование (`& Compile`), `Meta.rewrite` и переписывание графов ---
 #[test]
-fn test_step_23_metaprogramming_and_ast_rewriting() {
+fn test_step_18_compile_time_metaprogramming_and_rewrite() {
     let code = r#"
-DeriveJson(TargetForm) [
-  TargetForm & {
-    ToJson() [
-      Inner (
-        Self . Meta.FieldsOf . Map((Field) [
-          "\"{Field.Name}\": {Field.Value . Json.FormatValue}"
-        ])
-        . Join(", ")
-      )
-      "\{ {Inner} \}"
-    ]
-  }
-]
+Meta {
+  type_of(entity) [ entity . native_meta_type_of ] & Compile
+  rewrite(node, rules) [
+    walked (node . {
+      Form   [ node . Meta.map_fields((k, v) [ (k, v . Meta.rewrite(rules)) ]) ]
+      Tuple  [ node . map([ _ . Meta.rewrite(rules) ]) ]
+      Stream [
+        node . Meta.steps_of
+        . map([ _ . Meta.rewrite(rules) ])
+        . fold([ _ ], (acc, step) [ acc & step ])
+      ]
+      _      [ node ]
+    })
+    walked . (rules & { _ [ walked ] })
+  ] & Compile
+}
 
-Product { Id Int, Title String } . DeriveJson
-
-UpgradedSystem ComplexSystem . Meta.Rewrite({
-  Calc(_)   [ [ _ * 1.20 ] ]
-  Shell.Log [ Audit.Write ]
-})
+UpgradedSystem (Compile & [
+  ComplexSystem . Meta.rewrite({
+    (calc(_))   [ (x Float) [ x * 1.20 ] ]
+    (Shell.log) [ Audit.write ]
+  })
+])
 "#;
     let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 3);
-    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::Pipeline(_)));
+    assert_eq!(ast.len(), 2);
+    if let Token::Group('{', members) = &ast[0][1] {
+        assert_eq!(members.len(), 2);
+        assert!(matches!(classify_sentence(&members[0]), SemanticKind::FunctionDef { name, .. } if name == "type_of"));
+        assert!(matches!(classify_sentence(&members[1]), SemanticKind::FunctionDef { name, .. } if name == "rewrite"));
+    } else {
+        panic!("Expected Meta form");
+    }
 }
 
-// --- ШАГ 24: Импорты, инкапсуляция модулей и тестирование ---
+// --- ШАГ 19: Полная спецификация Razomy v5.7 целиком (Интеграционный тест) ---
 #[test]
-fn test_step_24_imports_encapsulation_and_testing() {
-    let code = r#"
-Base          root.base
-(String, Int) root.base
-_             root.base
-_             %../../../base
-
-AuthInternal {
-  Salt         "x9f2a" & Private
-  Hash(Raw)    [ "{Raw}_{Salt}" . native_sha256 ] & Private
-  Verify(U, P) [ (P . Hash) == U.PasswordHash ] & Public
-}
-
-AuthModule  AuthInternal & Public
-CleanModule AuthInternal / 'Salt' / 'Hash'
-"#;
-    let ast = parse_code(code).unwrap();
-    assert_eq!(ast.len(), 7);
-    assert!(matches!(classify_sentence(&ast[1]), SemanticKind::TupleBinding { .. }));
-}
-
-// --- ШАГ 25: Полная спецификация Razomy v4.7 целиком (Интеграционный тест) ---
-#[test]
-fn test_step_25_full_v4_7_specification_parses_100_percent() -> Result<(), Box<dyn std::error::Error>> {
+fn test_step_19_full_v5_7_specification_parses_100_percent() -> Result<(), Box<dyn std::error::Error>> {
     let full_spec = fs::read_to_string("./specification.rl")?;
 
-    let ast = parse_code(&full_spec).expect("Вся спецификация v4.7 должна парситься без единой ошибки!");
-    assert!(ast.len() > 150, "Ожидалось более 150 корневых инструкций, получено: {}", ast.len());
+    let ast = parse_code(&full_spec).expect("Вся спецификация v5.7 должна парситься без единой ошибки!");
+    assert!(
+        ast.len() > 160,
+        "Ожидалось более 160 корневых инструкций в specification.rl, получено: {}",
+        ast.len()
+    );
 
     for sentence in &ast {
         let _ = classify_sentence(sentence);

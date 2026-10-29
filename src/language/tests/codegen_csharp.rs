@@ -1,6 +1,6 @@
 // tests/codegen_csharp.rs
 // =============================================================================
-// RAZOMY V5.0 — C# (.NET 8+) CODEGEN & LIR LOWERING TEST SUITE
+// RAZOMY V5.7 — C# (.NET 8+) CODEGEN & LIR LOWERING TEST SUITE
 // =============================================================================
 
 use razomy_language::codegen::transpile;
@@ -10,21 +10,21 @@ use std::fs;
 #[test]
 fn cs_01_records_lineage_and_subtraction() {
     let code = r#"
-        Identifiable { Id String }
+        Identifiable { id String }
         User Identifiable {
-            Name String
-            Age  25
-            PasswordHash String
+            name          String
+            age           Int 25
+            password_hash String
         }
-        PublicUser User / User.PasswordHash
+        PublicUser User / User.password_hash
     "#;
 
     let cs = transpile(code, Target::CSharp).expect("C# transpile failed");
 
     assert!(cs.contains("public record Identifiable"));
     assert!(cs.contains("public record User"));
-    assert!(cs.contains("public string Id { get; init; } = default!; // from Identifiable"));
-    assert!(cs.contains("public long Age { get; init; } = 25L; // from User"));
+    assert!(cs.contains("public string id { get; init; } = default!; // from Identifiable"));
+    assert!(cs.contains("public long age { get; init; } = 25L; // from User"));
 
     let pub_user_block = cs
         .split("public record PublicUser")
@@ -33,98 +33,96 @@ fn cs_01_records_lineage_and_subtraction() {
         .split("\n}\n")
         .next()
         .unwrap();
-    assert!(pub_user_block.contains("public string Name"));
-    assert!(!pub_user_block.contains("PasswordHash"));
+    assert!(pub_user_block.contains("public string name"));
+    assert!(!pub_user_block.contains("password_hash"));
 }
 
 #[test]
 fn cs_02_reactive_properties_in_records() {
     let code = r#"
         Invoice {
-            Price    100
-            Quantity 3
-            TaxRate  0.2
+            price    100
+            quantity 3
+            tax_rate 0.2
 
-            Subtotal [ Price * Quantity ]
-            Tax      [ Subtotal * TaxRate ]
-            Total    [ Subtotal + Tax ]
+            subtotal [ self.price * self.quantity ]
+            tax      [ self.subtotal * self.tax_rate ]
+            total    [ self.subtotal + self.tax ]
         }
     "#;
 
     let cs = transpile(code, Target::CSharp).expect("C# transpile failed");
 
     assert!(cs.contains("public record Invoice"));
-    assert!(cs.contains("public dynamic Subtotal"));
-    assert!(cs.contains("return (Price * Quantity);"));
-    assert!(cs.contains("public dynamic Total"));
-    assert!(cs.contains("return (Subtotal + Tax);"));
+    assert!(cs.contains("public dynamic subtotal"));
+    assert!(cs.contains("var self = this;"));
+    assert!(cs.contains("return (self.price * self.quantity);"));
+    assert!(cs.contains("public dynamic total"));
+    assert!(cs.contains("return (self.subtotal + self.tax);"));
 }
 
 #[test]
 fn cs_03_law1c_auto_unpacking_and_string_interpolation() {
     let code = r#"
-        User { Id String, Name String }
-        Cart { CartId String, Amount Int }
+        User { id String, name String }
+        Cart { cart_id String, amount Int }
 
-        GreetAnon(User) [
-            "Hello, {Name}!"
+        greet_anon(User) [
+            "Hello, {user.name}!"
         ]
 
-        FinalizeBill(User & Cart) [
-            "Receipt for {Name}: {Amount}"
+        finalize_bill(ctx User & Cart) [
+            "Receipt for {ctx.name}: {ctx.amount}"
         ]
 
-        Connect(Host "localhost", Port 8080, Tls false) [
-            "{Host}:{Port}"
+        connect(host String "localhost", port Int 8080, tls Bool false) [
+            "{host}:{port}"
         ]
     "#;
 
     let cs = transpile(code, Target::CSharp).expect("C# transpile failed");
 
-    assert!(cs.contains("public static dynamic GreetAnon(User _)"));
-    assert!(cs.contains("var Id = _.Id;"));
-    assert!(cs.contains("var Name = _.Name;"));
-    assert!(cs.contains("return $\"Hello, {Name}!\";"));
-
-    assert!(cs.contains("var CartId = _.CartId;"));
-    assert!(cs.contains("var Amount = _.Amount;"));
+    assert!(cs.contains("public static dynamic greet_anon(User _)"));
+    assert!(cs.contains("var user = _;"));
+    assert!(cs.contains("var id = _.id;"));
+    assert!(cs.contains("var name = _.name;"));
+    assert!(cs.contains("return $\"Hello, {user.name}!\";"));
 
     assert!(cs.contains(
-        "public static dynamic Connect(string Host = \"localhost\", long Port = 8080L, bool Tls = false)"
+        "public static dynamic connect(string host = \"localhost\", long port = 8080L, bool tls = false)"
     ));
 }
 
 #[test]
 fn cs_04_pipelines_and_pattern_routers() {
     let code = r#"
-        Circle { Radius Float }
-        Rect   { Width Float, Height Float }
-        Shape  Circle | Rect
+        Circle   { radius Float }
+        Rect     { width Float, height Float }
+        Geometry Circle | Rect
 
-        Area(S Shape) [
-            S . {
-                Circle [ 3.14159 * Radius * Radius ]
-                Rect   [ Width * Height ]
+        area(g Geometry) [
+            g . {
+                Circle [ 3.14159 * circle.radius * circle.radius ]
+                Rect   [ rect.width * rect.height ]
                 _      [ 0.0 ]
             }
         ]
 
-        Process(X Int) [
-            X
+        process(x Int) [
+            x
             .? [ _ > 0 ]
-            .> [ _ . Shell.Log ]
+            .> [ _ . Shell.log ]
         ]
     "#;
 
     let cs = transpile(code, Target::CSharp).expect("C# transpile failed");
 
-    assert!(cs.contains("// Union Type Shape: Circle | Rect"));
+    assert!(cs.contains("// Union Type Geometry: Circle | Rect"));
     assert!(cs.contains("if (_ is Circle) {"));
-    assert!(cs.contains("var Radius = _.Radius;"));
-    assert!(cs.contains("return ((3.14159d * Radius) * Radius);"));
+    assert!(cs.contains("var circle = _;"));
+    assert!(cs.contains("return ((3.14159d * circle.radius) * circle.radius);"));
     assert!(cs.contains("if (_ is Rect) {"));
-    assert!(cs.contains("var Width = _.Width;"));
-    assert!(cs.contains("var Height = _.Height;"));
+    assert!(cs.contains("var rect = _;"));
     assert!(cs.contains("Console.WriteLine"));
 }
 
@@ -132,27 +130,28 @@ fn cs_04_pipelines_and_pattern_routers() {
 fn cs_05_operator_overloading_and_methods_in_records() {
     let code = r#"
         Vec2 {
-            X Float
-            Y Float
+            x Float
+            y Float
 
-            +(Other Vec2) [ Vec2 { X (X + Other.X), Y (Y + Other.Y) } ]
+            + (other Vec2) [ Vec2 { x (self.x + other.x), y (self.y + other.y) } ]
         }
     "#;
 
     let cs = transpile(code, Target::CSharp).expect("C# transpile failed");
 
-    assert!(cs.contains("public dynamic op_add(Vec2 Other)"));
-    assert!(cs.contains("return new Vec2 { X = (X + Other.X), Y = (Y + Other.Y) };"));
+    assert!(cs.contains("public dynamic op_add(Vec2 other)"));
+    assert!(cs.contains("return new Vec2 { x = (self.x + other.x), y = (self.y + other.y) };"));
 }
 
 #[test]
 fn cs_06_full_spec_transpiles_to_csharp() {
-    let spec = fs::read_to_string("./specification.rl").expect("Failed to read tests/specification.rl");
+    let spec =
+        fs::read_to_string("./specification.rl").expect("Failed to read specification.rl");
     let cs = transpile(&spec, Target::CSharp).expect("Full spec C# transpile failed");
 
     assert!(cs.contains("// Generated by Razomy Multi-Target Transpiler (Target: C# .NET 8+)"));
     assert!(cs.contains("public record Invoice"));
     assert!(cs.contains("public static class RazomyModule"));
-    assert!(cs.contains("public static dynamic FinalizeBill"));
-    assert!(cs.contains("public static dynamic Main"));
+    assert!(cs.contains("public static dynamic finalize_bill"));
+    assert!(cs.contains("public static dynamic main"));
 }

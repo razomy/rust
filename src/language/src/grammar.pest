@@ -1,5 +1,5 @@
 // =============================================================================
-// RAZOMY LANGUAGE V4.7 — COMPLETE PRODUCTION PEST GRAMMAR
+// RAZOMY LANGUAGE V5.7 — COMPLETE PRODUCTION PEST GRAMMAR
 // =============================================================================
 
 Program = { SOI ~ statements ~ EOI }
@@ -13,15 +13,15 @@ line_comment  = @{ "//" ~ (!NEWLINE ~ ANY)* }
 // Внутри разрешены закавыченные '#' ("'#'" и "\"#\"").
 block_comment = @{ "#" ~ &(" " | "\t" | "\r" | NEWLINE) ~ ( "'#'" | "\"#\"" | (!"#" ~ ANY) )* ~ "#" }
 
-// --- РАЗДЕЛИТЕЛИ И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
-// ВАЖНО: `@` (atomic) гарантирует, что Pest не съест пробелы после "." неявным WHITESPACE*
+// --- РАЗДЕЛИТЕЛИ И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ / КОМПОЗИЦИИ ---
+// ВАЖНО: `@` (atomic) гарантирует, что Pest не съест пробелы после "." или "&" неявным WHITESPACE*
 PIPE_OP_AHEAD = @{
     ".>" | ".&" | ".?" | ".|"
-  | ("." ~ (" " | "\t" | "\r" | NEWLINE))
+  | (("." | "&") ~ (" " | "\t" | "\r" | NEWLINE))
 }
 
 // Перевод строки продолжает текущее предложение, если первое, что идет после
-// любых пустых строк, отступов и комментариев — это оператор пайплайна.
+// любых пустых строк, отступов и комментариев — это оператор пайплайна или композиции `&`.
 pipe_nl = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
 
 // Разделитель предложений срабатывает только тогда, когда это НЕ продолжение пайплайна
@@ -29,19 +29,21 @@ SEP = _{ "," | (!pipe_nl ~ NEWLINE) }
 
 statements = _{ ( "," | NEWLINE )* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ ( "," | NEWLINE )* }
 
-// ВАЖНО: callable_op (`+(Other Vec2)`) разрешен ТОЛЬКО в начале предложения (head_token)!
-// В середине предложения бинарный оператор перед `(` обязан иметь пробел: `A + (B)`.
+// ВАЖНО: callable_op (`+ (other Vec2)` или `+(other Vec2)`) разрешен ТОЛЬКО в начале предложения (head_token)!
+// В середине предложения бинарный оператор перед `(` обязан иметь пробел: `a + (b)`.
 sentence   = { head_token ~ (pipe_nl? ~ tail_token)* }
 
 // =============================================================================
-// ТОКЕНЫ (СТРОГИЙ ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
+// ТОКЕНЫ (СТРОГИК ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
 // =============================================================================
 head_token = _{
     group
   | range_expr
+  | raw_string_lit
+  | tagged_string_lit
   | string_lit
   | symbol_lit
-  | rich_literal
+  | hex_byte_lit
   | number_lit
   | callable_op
   | operator
@@ -52,9 +54,11 @@ head_token = _{
 tail_token = _{
     group
   | range_expr
+  | raw_string_lit
+  | tagged_string_lit
   | string_lit
   | symbol_lit
-  | rich_literal
+  | hex_byte_lit
   | number_lit
   | operator
   | callable_path
@@ -67,59 +71,41 @@ brace_group   = { "{" ~ statements ~ "}" }
 bracket_group = { "[" ~ statements ~ "]" }
 paren_group   = { "(" ~ statements ~ ")" }
 
-// 2. Строки "..." (с экранированием) и Символы '...'
+// 2. Строки:
+// - Raw Strings: r"...", r1"..."1, r2"..."2, r3"..."3 (без экранирования и без интерполяции)
+// - Tagged Strings: Type"..." (100% синтаксический сахар для конструктора Type("..."))
+// - Standard Strings: "..." (многострочные по умолчанию, с интерполяцией {expr} и \ экранированием)
+// - Paired Symbols: '...'
+raw_string_lit = @{
+    ("r3\"" ~ (!"\"3" ~ ANY)* ~ "\"3")
+  | ("r2\"" ~ (!"\"2" ~ ANY)* ~ "\"2")
+  | ("r1\"" ~ (!"\"1" ~ ANY)* ~ "\"1")
+  | ("r\""  ~ (!"\""  ~ ANY)* ~ "\"")
+}
+
+type_ident        = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
+tagged_string_lit = ${ type_ident ~ (raw_string_lit | string_lit) }
+
 string_lit = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\{" | "\\}" | (!"\"" ~ ANY) )* ~ "\"" }
 symbol_lit = @{ "'" ~ ( "\\'" | "\\\\" | (!"'" ~ ANY) )* ~ "'" }
 
-// 3. Диапазоны (Ranges): 1..10, 1..Limit, 1..Config.Max, "0".."9", "a".."z"
+// 3. Диапазоны (Ranges): 1..10, 1..limit, 1..Config.max, "0".."9", "a".."z"
 range_atom = _{ string_lit | symbol_lit | number_lit | path_core }
 range_expr = ${ range_atom ~ ".." ~ range_atom }
 
-// 4. Богатые самотипизированные литералы (Rich Human Literals — без пробелов)
-// ВАЖНО: hex_byte_lit стоит ДО coord_lit, чтобы 0x00 не парсился как координата!
-rich_literal = _{
-    url_lit
-  | file_lit
-  | email_lit
-  | money_lit
-  | hex_byte_lit
-  | date_lit
-  | time_lit
-  | ip_lit
-  | version_lit
-  | coord_lit
-  | duration_lit
-  | percent_lit
-  | color_lit
-}
-
-// Поддержка интерполяции {Expr} внутри некавыченных URL и File литералов
-interp_chunk = _{ "{" ~ (!("}" | " " | "\t" | "\r" | NEWLINE) ~ ANY)* ~ "}" }
-url_char     = _{ interp_chunk | (!(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "{" | "}") ~ ANY) }
-
-url_lit      = @{ ("https://" | "http://") ~ url_char+ }
-file_lit     = @{ "%" ~ url_char+ }
-email_lit    = @{ (ASCII_ALPHANUMERIC | "_" | "." | "-" | "+")+ ~ "@" ~ (ASCII_ALPHANUMERIC | "-")+ ~ ("." ~ (ASCII_ALPHANUMERIC | "-")+)+ }
-money_lit    = @{ ASCII_ALPHA_UPPER{0, 3} ~ "$" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+// 4. Байтовые и Числовые литералы (Byte, Int, Float)
 hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
-date_lit     = @{ ASCII_DIGIT{4} ~ "-" ~ ASCII_DIGIT{2} ~ "-" ~ ASCII_DIGIT{2} }
-time_lit     = @{ ASCII_DIGIT{2} ~ ":" ~ ASCII_DIGIT{2} ~ (":" ~ ASCII_DIGIT{2})? }
-ip_lit       = @{ ASCII_DIGIT{1,3} ~ ("." ~ ASCII_DIGIT{1,3}){3} ~ (":" ~ ASCII_DIGIT+)? }
-version_lit  = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ ("-" ~ (ASCII_ALPHANUMERIC | "." | "-")+)? }
-coord_lit    = @{ !"0x" ~ ASCII_DIGIT+ ~ ("x" ~ ASCII_DIGIT+)+ ~ !(ASCII_ALPHA | "_") }
-duration_lit = @{ (ASCII_DIGIT+ ~ ("ms" | "s" | "m" | "h" | "d"))+ ~ !(ASCII_ALPHA | "_") }
-percent_lit  = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ "%" }
-color_lit    = @{ "#" ~ ASCII_HEX_DIGIT{3, 8} ~ !(ASCII_ALPHANUMERIC | "_") }
 
-// 5. Числа (Int и Float)
-// ВАЖНО: ("." ~ !".") запрещает одиночную точку после числа, но разрешает диапазон `..` (например, `1..100`)
-number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !".")) }
+// ВАЖНО: ("." ~ !(ASCII_ALPHA | "_" | ".")) запрещает одиночную точку после числа (`1.2.3`),
+// но разрешает диапазон `1..100` и слитную цепочку методов `(expr).to_float` / `0.0.to_float`!
+number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !(ASCII_ALPHA | "_" | "."))) }
 
-// 6. Операторы:
-// - `callable_op`: перегрузка оператора `+(Other Vec2)`, `<(Other) Bool` (слитно с `(`, только в начале sentence)
+// 5. Операторы:
+// - `callable_op`: перегрузка оператора `+ (other Vec2)`, `< (other Other) Bool`
+//   (в начале sentence внутри Form `{}` с пробелом или слитно перед `(`)
 // - `operator`: бинарные операторы (отделяются пробелом) и унарный `!` (примыкает плотно)
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
-callable_op = @{ overload_op ~ &"(" }
+callable_op = @{ overload_op ~ &((" " | "\t")* ~ "(") }
 
 operator = @{
     ("!" ~ !"=")
@@ -136,11 +122,12 @@ operator = @{
     )
 }
 
-// 7. Слитные пути, вызовы и идентификаторы (поддержка цепочек A.B().C().D):
+// 6. Слитные пути, вызовы и идентификаторы:
+// Поддержка цепочек `a.b().c().d`, а также продолжения пути после закрывающей скобки `(self.scaled.to_float * factor).round_to_int`!
 PATH_END      = _{ &(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "}" | EOI) }
-callable_path = @{ path_core ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ !("()" ~ ".") ~ &"(" }
-path          = @{ path_core ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ PATH_END }
-// ВАЖНО: path_core атомарный `@`, чтобы внутри `range_expr` (например, `1..Limit` или `1..Config.Max`)
+callable_path = @{ ("."? ~ path_core) ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ !("()" ~ ".") ~ &"(" }
+path          = @{ ("."? ~ path_core) ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ PATH_END }
+// ВАЖНО: path_core атомарный `@`, чтобы внутри `range_expr` (например, `1..limit` или `1..Config.max`)
 // он возвращался как единый токен `Rule::path_core`!
 path_core     = @{ ident ~ ("." ~ (ident | index_seg))* }
 ident         = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }

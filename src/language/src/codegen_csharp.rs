@@ -1,5 +1,6 @@
+// src/codegen_csharp.rs
 // =============================================================================
-// 2. C# EMITTER (.NET 8+ RECORDS & PATTERN MATCHING)
+// 2. C# EMITTER (.NET 8+ RECORDS & PATTERN MATCHING — RAZOMY V5.7)
 // =============================================================================
 
 use crate::codegen::TargetEmitter;
@@ -20,15 +21,15 @@ impl CSharpEmitter {
             "Float" | "Percent" => "double".into(),
             "Bool" => "bool".into(),
             "Byte" => "byte".into(),
-            "String" | "Money" | "Date" | "Time" | "Duration" | "Url" | "Email" | "File"
-            | "Coord" | "Color" | "IpAddr" | "Version" => "string".into(),
+            "String" | "Symbol" | "Money" | "Usd" | "Date" | "Time" | "Duration" | "Url"
+            | "Email" | "File" | "Path" | "Pair" | "Hex" | "Ip" | "Version" => "string".into(),
             "None" => "object?".into(),
-            "Any" | "Form" | "Stream" | "ReactiveStream" => "dynamic".into(),
+            "Any" | "Form" | "Stream" | "ReactiveStream" | "_" => "dynamic".into(),
             "Tuple" | "Range" => "object[]".into(),
             other if other.starts_with('\'') => "string".into(),
-            other if other.contains('(') => {
-                let base = other.split('(').next().unwrap_or("dynamic");
-                format!("{base}<dynamic>")
+            other if other.starts_with("Tuple(") => "object[]".into(),
+            other if other.contains('(') || other.contains('[') || other.contains('/') => {
+                "dynamic".into()
             }
             other => other.to_string(),
         }
@@ -38,6 +39,9 @@ impl CSharpEmitter {
         match stmt {
             LirStmt::Let { name, value } => {
                 format!("{indent}var {name} = {};", self.emit_expr(value))
+            }
+            LirStmt::AssignPath { path, value } => {
+                format!("{indent}{path} = {};", self.emit_expr(value))
             }
             LirStmt::DestructTuple { names, value } => {
                 format!(
@@ -51,33 +55,36 @@ impl CSharpEmitter {
         }
     }
 
+    fn is_console_log(callee: &str) -> bool {
+        matches!(callee, "Shell.log" | "Shell.Log")
+    }
+
     fn emit_expr(&self, expr: &LirExpr) -> String {
         match expr {
             LirExpr::None => "null".into(),
             LirExpr::Int(i) => format!("{i}L"),
-            LirExpr::Float(f) | LirExpr::Percent(f) => format!("{f}d"),
+            LirExpr::Float(f) => format!("{f}d"),
             LirExpr::Bool(b) => b.to_string(),
             LirExpr::Byte(b) => format!("(byte){b}"),
-            LirExpr::Str(s)
-            | LirExpr::Symbol(s)
-            | LirExpr::Money(s)
-            | LirExpr::Date(s)
-            | LirExpr::Duration(s) => format!("\"{s}\""),
+            LirExpr::Str(s) | LirExpr::Symbol(s) => format!("{s:?}"),
             LirExpr::InterpStr(parts) => {
                 let mut s = String::from("$\"");
                 for p in parts {
                     match p {
-                        LirInterpPart::Lit(l) => s.push_str(l),
+                        LirInterpPart::Lit(l) => s.push_str(&l.replace('"', "\\\"")),
                         LirInterpPart::Expr(e) => s.push_str(&format!("{{{e}}}")),
                     }
                 }
                 s.push('"');
                 s
             }
-            LirExpr::Ident(id) => match id.as_str() {
-                "Shell.Log" => "Console.WriteLine".into(),
-                _ => id.clone(),
-            },
+            LirExpr::Ident(id) => {
+                if Self::is_console_log(id) {
+                    "Console.WriteLine".into()
+                } else {
+                    id.clone()
+                }
+            }
             LirExpr::Tuple(items) => {
                 let list: Vec<String> = items.iter().map(|e| self.emit_expr(e)).collect();
                 format!("new object[] {{ {} }}", list.join(", "))
@@ -108,7 +115,7 @@ impl CSharpEmitter {
             }
             LirExpr::Unary { op, expr } => format!("{op}({})", self.emit_expr(expr)),
             LirExpr::Call { callee, args } => {
-                let mapped = if callee == "Shell.Log" {
+                let mapped = if Self::is_console_log(callee) {
                     "Console.WriteLine"
                 } else {
                     callee.as_str()
@@ -122,7 +129,7 @@ impl CSharpEmitter {
                 match op {
                     PipeOp::Dot => match step.as_ref() {
                         LirExpr::Call { callee, args } => {
-                            let mapped = if callee == "Shell.Log" {
+                            let mapped = if Self::is_console_log(callee) {
                                 "Console.WriteLine"
                             } else {
                                 callee.as_str()
@@ -141,9 +148,13 @@ impl CSharpEmitter {
             }
             LirExpr::Router { input, branches } => {
                 let inp = self.emit_expr(input);
-                let mut code = String::from("new Func<dynamic, dynamic>((_) => {\n");
+                let mut code =
+                    String::from("new Func<dynamic, dynamic>((_) => {\n  var _1 = _; var _2 = _;\n");
                 for b in branches {
                     let mut extra_binds = Vec::new();
+                    if let Some(bound_var) = &b.bound_type_var {
+                        extra_binds.push(format!("    var {bound_var} = _;\n"));
+                    }
                     let cond = match &b.cond {
                         LirPattern::Wildcard => "true".into(),
                         LirPattern::TypeMatch(t) => format!("_ is {t}"),
@@ -159,6 +170,13 @@ impl CSharpEmitter {
                             for (i, el) in elems.iter().enumerate() {
                                 match el {
                                     LirTuplePatElem::Wildcard => {}
+                                    LirTuplePatElem::TypeBind {
+                                        type_name,
+                                        var_name,
+                                    } => {
+                                        conds.push(format!("_[{i}] is {type_name}"));
+                                        extra_binds.push(format!("    var {var_name} = _[{i}];\n"));
+                                    }
                                     LirTuplePatElem::Bind(v) => {
                                         extra_binds.push(format!("    var {v} = _[{i}];\n"));
                                     }
@@ -182,14 +200,29 @@ impl CSharpEmitter {
                                             self.emit_expr(ex)
                                         ));
                                     }
+                                    LirFieldPatValue::Bind(var) => {
+                                        extra_binds.push(format!("    var {var} = _.{k};\n"));
+                                    }
                                     LirFieldPatValue::Tuple(elems) => {
                                         conds.push(format!("_.{k}.Length == {}", elems.len()));
                                         for (i, el) in elems.iter().enumerate() {
                                             match el {
                                                 LirTuplePatElem::Wildcard => {}
+                                                LirTuplePatElem::TypeBind {
+                                                    type_name,
+                                                    var_name,
+                                                } => {
+                                                    conds.push(format!(
+                                                        "_.{k}[{i}] is {type_name}"
+                                                    ));
+                                                    extra_binds.push(format!(
+                                                        "    var {var_name} = _.{k}[{i}];\n"
+                                                    ));
+                                                }
                                                 LirTuplePatElem::Bind(var) => {
-                                                    extra_binds
-                                                        .push(format!("    var {var} = _.{k}[{i}];\n"));
+                                                    extra_binds.push(format!(
+                                                        "    var {var} = _.{k}[{i}];\n"
+                                                    ));
                                                 }
                                                 LirTuplePatElem::Exact(ex) => {
                                                     conds.push(format!(
@@ -230,7 +263,8 @@ impl CSharpEmitter {
                     .map(|p| format!("dynamic {p}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let stmts: Vec<String> = body.iter().map(|s| self.emit_stmt(s, "  ")).collect();
+                let mut stmts = vec!["  var _1 = _; var _2 = _;".to_string()];
+                stmts.extend(body.iter().map(|s| self.emit_stmt(s, "  ")));
                 format!("(({p_str}) => {{\n{}\n}})", stmts.join("\n"))
             }
         }
@@ -288,7 +322,7 @@ impl TargetEmitter for CSharpEmitter {
                     "    public dynamic {}\n    {{\n        get\n        {{\n",
                     g.name
                 ));
-                out.push_str("            var Self = this;\n");
+                out.push_str("            var self = this; var Self = this;\n");
                 for stmt in &g.body {
                     out.push_str(&format!("{}\n", self.emit_stmt(stmt, "            ")));
                 }
@@ -313,7 +347,7 @@ impl TargetEmitter for CSharpEmitter {
                     m.name,
                     m_params.join(", ")
                 ));
-                out.push_str("        var Self = this;\n");
+                out.push_str("        var self = this; var Self = this;\n");
                 for stmt in &m.body {
                     out.push_str(&format!("{}\n", self.emit_stmt(stmt, "        ")));
                 }
@@ -344,7 +378,6 @@ impl TargetEmitter for CSharpEmitter {
                     let cs_ty = self.map_type(ty);
                     match def {
                         Some(d) => format!("{cs_ty} {n} = {}", self.emit_expr(d)),
-                        None if n == "_" => format!("{cs_ty} {n}"),
                         None => format!("{cs_ty} {n}"),
                     }
                 })
@@ -358,7 +391,11 @@ impl TargetEmitter for CSharpEmitter {
             ));
 
             for fname in &func.auto_unpacked_fields {
-                out.push_str(&format!("        var {fname} = _.{fname};\n"));
+                if let Some(self_var) = fname.strip_prefix("@self_bind:") {
+                    out.push_str(&format!("        var {self_var} = _;\n"));
+                } else {
+                    out.push_str(&format!("        var {fname} = _.{fname};\n"));
+                }
             }
 
             for stmt in &func.body {

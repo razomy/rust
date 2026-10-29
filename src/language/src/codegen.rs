@@ -1,16 +1,14 @@
 // src/codegen.rs
 // =============================================================================
-// RAZOMY V5.0 — MULTI-TARGET CODE GENERATORS (TYPESCRIPT & C#)
+// RAZOMY V5.7 — MULTI-TARGET CODE GENERATORS (TYPESCRIPT & C#)
 // Трейт TargetEmitter: добавить новый язык = реализовать этот трейт!
 // =============================================================================
 
 use crate::codegen_csharp::CSharpEmitter;
 use crate::codegen_typescript::TypeScriptEmitter;
 use crate::hir::{lower_to_hir, HirModule};
-use crate::lir::{
-    lower_hir_to_lir, LirExpr, LirInterpPart, LirModule, LirPattern, LirStmt, Target,
-};
-use crate::parser::{parse_code, PipeOp};
+use crate::lir::{lower_hir_to_lir, LirModule, Target};
+use crate::parser::parse_code;
 
 pub trait TargetEmitter {
     fn emit_module(&self, lir: &LirModule) -> String;

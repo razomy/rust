@@ -1,12 +1,14 @@
 // src/lir.rs
 // =============================================================================
-// RAZOMY V5.0 — UNIFIED CANONICAL LIR FOR RUNTIME & MULTI-TARGET CODEGEN
+// RAZOMY V5.7 — UNIFIED CANONICAL LIR FOR RUNTIME & MULTI-TARGET CODEGEN
 // Архитектура: AST -> HIR -> Canonical LIR -> (LIR Runtime VM | TypeScript | C#)
-// Вся семантика Razomy (Законы 1–3, Lineage, распаковка, пайплайны, роутеры)
+// Вся семантика Razomy (Законы 1–4, Lineage, распаковка, пайплайны, роутеры)
 // разрешается ОДИН РАЗ при понижении в LIR!
 // =============================================================================
 
-use crate::hir::{HirField, HirForm, HirFunction, HirModule, HirParam};
+use crate::hir::{
+    is_pascal_case, pascal_to_snake_case, HirField, HirForm, HirFunction, HirModule, HirParam,
+};
 use crate::parser::{
     classify_sentence, has_pipe_op, split_pipeline, Literal, PipeOp, SemanticKind, Sentence, Token,
 };
@@ -40,6 +42,7 @@ pub struct LirStruct {
     pub reactive_getters: Vec<LirGetter>,
     pub methods: Vec<LirFunc>,
     pub union_variants: Vec<String>,
+    pub is_bypass: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,9 +65,10 @@ pub struct LirFunc {
     pub name: String,
     pub raw_name: String,
     pub params: Vec<(String, String, Option<LirExpr>)>,
-    /// Полное ограничение первого слота (например, `Order / Cancelled` или `Order & Reserved`) для Law 3
+    /// Полное ограничение первого слота значений (например, `Order / Cancelled` или `Order & Reserved`) для Law 3
     pub first_param_constraint: String,
-    /// Поля первой входной формы, автоматически распакованные по Закону 1c
+    /// Закон 1c (V5.7): Авто-привязанное `snake_case` имя переменной (`age` для `fn(Age)`, `user` для `fn(User)`)
+    /// + дополнительные распакованные поля из `{ name } WithName`
     pub auto_unpacked_fields: Vec<String>,
     pub return_ty: String,
     pub body: Vec<LirStmt>,
@@ -82,6 +86,8 @@ pub struct LirBinding {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LirStmt {
     Let { name: String, value: LirExpr },
+    /// Закон 1b / Раздел 3: In-place мутация пути или индекса `my_car.brand "Tesla"`, `my_car.-1 42`, `corp.departments.0.budget 2500`
+    AssignPath { path: String, value: LirExpr },
     DestructTuple { names: Vec<String>, value: LirExpr },
     Expr(LirExpr),
     Return(LirExpr),
@@ -96,10 +102,6 @@ pub enum LirExpr {
     Byte(u8),
     Str(String),
     Symbol(String),
-    Money(String),
-    Percent(f64),
-    Date(String),
-    Duration(String),
     InterpStr(Vec<LirInterpPart>),
     Ident(String),
     Tuple(Vec<LirExpr>),
@@ -147,7 +149,8 @@ pub enum LirInterpPart {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LirBranch {
     pub cond: LirPattern,
-    /// Поля сматченной формы, распакованные по Закону 1b
+    /// Закон 1c: Имя авто-привязанной переменной в ветке роутера (`circle` для `Circle [...]`) и распакованные поля
+    pub bound_type_var: Option<String>,
     pub unpacked_fields: Vec<String>,
     pub body: Vec<LirStmt>,
 }
@@ -166,6 +169,8 @@ pub enum LirPattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LirTuplePatElem {
     Wildcard,
+    /// Закон 1c в кортежах роутера `(Disconnected, ConnectCmd)`: матчит тип `Disconnected` и связывает `disconnected`!
+    TypeBind { type_name: String, var_name: String },
     Bind(String),
     Exact(LirExpr),
 }
@@ -173,6 +178,7 @@ pub enum LirTuplePatElem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LirFieldPatValue {
     Expr(LirExpr),
+    Bind(String),
     Tuple(Vec<LirTuplePatElem>),
 }
 
@@ -188,7 +194,14 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
 
     // 1. Формы (с уже разрешенными в HIR полями предков, реактивными геттерами и методами)
     for form_name in &hir.form_order {
-        if form_name == "Shell" {
+        if matches!(
+            form_name.as_str(),
+            "Shell" | "Compile" | "Bypass" | "Public" | "Private"
+        ) {
+            continue;
+        }
+        // Пропускаем `snake_case` экземпляры форм (`global_counter`, `order_1`), которые уже в `globals`
+        if !is_pascal_case(form_name) && hir.globals.contains_key(form_name) {
             continue;
         }
         if let Some(hf) = hir.forms.get(form_name) {
@@ -199,9 +212,15 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
     // 2. Глобальные константы и привязки
     for g_name in &hir.global_order {
         if let Some(g) = hir.globals.get(g_name) {
-            if hir.forms.contains_key(g_name)
-                && matches!(g.value_expr.as_slice(), [Token::Path(_)])
+            // Пропускаем чистые алиасы типов (`BrandName String`, `Age Int`) и импорты (`_ root.base`)
+            if g_name == "_"
+                || (is_pascal_case(g_name)
+                && hir.forms.contains_key(g_name)
+                && matches!(g.value_expr.as_slice(), [Token::Path(_)]))
             {
+                continue;
+            }
+            if hir.imports.iter().any(|imp| imp.targets.contains(g_name)) {
                 continue;
             }
             globals.push(LirBinding {
@@ -278,6 +297,7 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
         reactive_getters,
         methods,
         union_variants: hf.union_variants.clone(),
+        is_bypass: hf.is_bypass,
     }
 }
 
@@ -286,9 +306,12 @@ fn lower_field_to_lir(f: &HirField, hir: &HirModule) -> LirField {
         f.default_expr.as_slice(),
         [Token::Path(p)] if matches!(
             p.as_str(),
-            "String" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Percent" | "Date" | "Any"
-        ) || hir.forms.contains_key(p)
-    ) || f.default_expr.iter().any(|t| matches!(t, Token::Op(op) if op == "|"));
+            "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Any"
+        ) || (is_pascal_case(p) && hir.forms.contains_key(p))
+    ) || f
+        .default_expr
+        .iter()
+        .any(|t| matches!(t, Token::Op(op) if op == "|"));
 
     let default_val = if f.default_expr.is_empty() || is_type_only {
         None
@@ -307,34 +330,41 @@ fn lower_field_to_lir(f: &HirField, hir: &HirModule) -> LirField {
 pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
     let mut params = Vec::new();
     let mut auto_unpacked_fields = Vec::new();
-    let first_param_constraint = hf
-        .params
+
+    // Отфильтровываем чистые compile-time параметры типа (`A`, `B` в `fmap(A, B, fa F(A))`) для рантайма
+    let runtime_params: Vec<&HirParam> =
+        hf.params.iter().filter(|p| !p.is_type_param).collect();
+
+    let first_param_constraint = runtime_params
         .first()
         .map(|p| p.type_constraint.clone())
         .unwrap_or_default();
 
-    if hf.params.is_empty() {
+    if runtime_params.is_empty() {
         params.push(("_".into(), "Any".into(), None));
     } else {
-        for (idx, p) in hf.params.iter().enumerate() {
-            let param_var = if idx == 0 && hf.auto_unpacks {
-                "_".to_string()
-            } else {
-                p.name.clone()
-            };
+        for (idx, p) in runtime_params.iter().enumerate() {
+            let param_var =
+                if idx == 0 && (p.is_anonymous_type_slot || !p.destructured_fields.is_empty()) {
+                    "_".to_string()
+                } else {
+                    p.name.clone()
+                };
             let def = if p.default_expr.is_empty() {
                 None
             } else {
                 Some(lower_tokens_to_expr(&p.default_expr, hir))
             };
             params.push((param_var, normalize_param_type(p), def));
-        }
 
-        // Закон 1c: Автоматическая распаковка полей первого параметра-типа (включая `User & Cart`)
-        if hf.auto_unpacks {
-            if let Some(first) = hf.params.first() {
-                for part in first.type_constraint.split_whitespace() {
-                    if part == "&" || part == "|" || part == "/" {
+            // Закон 1c: Если параметр `Age` авто-привязывает `age` (или `User` -> `user`),
+            // а также сохраняем распаковку полей для обратной совместимости и `{ name } WithName` (Law 1d)
+            if p.is_anonymous_type_slot {
+                if idx == 0 && p.name != "_" && !auto_unpacked_fields.contains(&p.name) {
+                    auto_unpacked_fields.push(format!("@self_bind:{}", p.name));
+                }
+                for part in p.type_constraint.split_whitespace() {
+                    if matches!(part, "&" | "|" | "/") {
                         continue;
                     }
                     if let Some(form) = hir.forms.get(part) {
@@ -346,6 +376,11 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
                             }
                         }
                     }
+                }
+            }
+            for df in &p.destructured_fields {
+                if !auto_unpacked_fields.contains(df) {
+                    auto_unpacked_fields.push(df.clone());
                 }
             }
         }
@@ -387,9 +422,14 @@ pub fn sanitize_fn_name(name: &str) -> String {
         "-" => "op_sub".into(),
         "*" => "op_mul".into(),
         "/" => "op_div".into(),
+        "%" => "op_mod".into(),
+        "**" => "op_pow".into(),
         "==" => "op_eq".into(),
+        "!=" => "op_neq".into(),
         "<" => "op_lt".into(),
         ">" => "op_gt".into(),
+        "<=" => "op_lte".into(),
+        ">=" => "op_gte".into(),
         other => other.to_string(),
     }
 }
@@ -400,14 +440,53 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
     for (i, s) in sentences.iter().enumerate() {
         let is_last = i + 1 == len;
         match classify_sentence(s) {
-            SemanticKind::Binding { key, value } => {
-                let expr = lower_tokens_to_expr(&value, hir);
+            SemanticKind::SubtypeFormDef {
+                name,
+                base,
+                body,
+                tail,
+            } => {
+                // Внутри тела функции `raw_order Order { id "o1", amount 100 }` — это связывание локальной переменной `raw_order`!
+                let mut val_tokens = vec![Token::Path(base), Token::Group('{', body)];
+                val_tokens.extend(tail);
+                let expr = lower_tokens_to_expr(&val_tokens, hir);
                 stmts.push(LirStmt::Let {
-                    name: key.clone(),
+                    name: name.clone(),
                     value: expr,
                 });
                 if is_last {
-                    stmts.push(LirStmt::Return(LirExpr::Ident(key)));
+                    stmts.push(LirStmt::Return(LirExpr::Ident(name)));
+                }
+            }
+            SemanticKind::AlgebraicDef { name, expr: val_tokens } => {
+                let expr = lower_tokens_to_expr(&val_tokens, hir);
+                stmts.push(LirStmt::Let {
+                    name: name.clone(),
+                    value: expr,
+                });
+                if is_last {
+                    stmts.push(LirStmt::Return(LirExpr::Ident(name)));
+                }
+            }
+            SemanticKind::Binding { key, value } => {
+                let expr = lower_tokens_to_expr(&value, hir);
+                if key.contains('.') {
+                    stmts.push(LirStmt::AssignPath {
+                        path: key.clone(),
+                        value: expr,
+                    });
+                    if is_last {
+                        let root = key.split('.').next().unwrap_or(&key).to_string();
+                        stmts.push(LirStmt::Return(LirExpr::Ident(root)));
+                    }
+                } else {
+                    stmts.push(LirStmt::Let {
+                        name: key.clone(),
+                        value: expr,
+                    });
+                    if is_last {
+                        stmts.push(LirStmt::Return(LirExpr::Ident(key)));
+                    }
                 }
             }
             SemanticKind::TupleBinding { tuple, value } => {
@@ -483,12 +562,32 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         }
     }
 
-    // 3. Вызов функции `Fn(Args)`
+    // 3. Цепочка метода после скобки: `(self.scaled.to_float * factor).round_to_int`
+    if tokens.len() >= 2 && find_lowest_precedence_op(tokens, hir).is_none() {
+        if let Some(Token::Path(tail_method)) = tokens.last() {
+            if tail_method.starts_with('.')
+                && matches!(
+                    tokens.get(tokens.len() - 2),
+                    Some(Token::Group('(' | ')', _))
+                )
+            {
+                let prefix_expr = lower_tokens_to_expr(&tokens[..tokens.len() - 1], hir);
+                let method_name = tail_method.trim_start_matches('.').to_string();
+                return LirExpr::Pipe {
+                    input: Box::new(prefix_expr),
+                    op: PipeOp::Dot,
+                    step: Box::new(LirExpr::Ident(method_name)),
+                };
+            }
+        }
+    }
+
+    // 4. Вызов функции или конструктора `fn(args)` / `Meta.compose([...])` / `Money"199.99"`
     if let [Token::Path(fn_name), Token::Group(')', args)] = tokens {
-        if fn_name == "Compose" {
+        if fn_name == "Compose" || fn_name == "Meta.compose" {
             if let Some([Token::Group('[', stream_sents)]) = args.first().map(Vec::as_slice) {
                 return LirExpr::Call {
-                    callee: "Compose".into(),
+                    callee: fn_name.clone(),
                     args: vec![LirExpr::Lambda {
                         params: vec!["_".into()],
                         body: lower_body_to_stmts(stream_sents, hir),
@@ -504,12 +603,12 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         };
     }
 
-    // 4. Инстанцирование структуры `FormName { ... }`
+    // 5. Инстанцирование структуры `FormName { ... }`
     if let [Token::Path(type_name), Token::Group('{', sents)] = tokens {
         return lower_struct_init(type_name, sents, hir);
     }
 
-    // 5. Анонимная лямбда `(Args) [Body]`
+    // 6. Анонимная лямбда `(args) [Body]`
     if let [Token::Group('(' | ')', args), Token::Group('[', body)] = tokens {
         let params = args
             .iter()
@@ -526,12 +625,12 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         };
     }
 
-    // 6. Одиночный токен
+    // 7. Одиночный токен
     if tokens.len() == 1 {
         return lower_single_token(&tokens[0], hir);
     }
 
-    // 7. Бинарные операторы с учетом приоритетов
+    // 8. Бинарные операторы с учетом приоритетов
     if let Some((idx, op)) = find_lowest_precedence_op(tokens, hir) {
         return LirExpr::Binary {
             left: Box::new(lower_tokens_to_expr(&tokens[..idx], hir)),
@@ -548,7 +647,21 @@ fn lower_struct_init(type_name: &str, sents: &[Sentence], hir: &HirModule) -> Li
     for s in sents {
         match classify_sentence(s) {
             SemanticKind::Binding { key, value } => {
-                fields.push((key, lower_tokens_to_expr(&value, hir)));
+                // Внутри `{}` поля с явным типом и дефолтом `max_speed Int 180` сохраняют дефолт `180`!
+                let val_slice = match value.as_slice() {
+                    [Token::Path(ty), def @ ..]
+                    if is_pascal_case(ty)
+                        && !def.is_empty()
+                        && !matches!(
+                                def.first(),
+                                Some(Token::Op(_) | Token::Group(')', _))
+                            ) =>
+                        {
+                            def
+                        }
+                    other => other,
+                };
+                fields.push((key, lower_tokens_to_expr(val_slice, hir)));
             }
             SemanticKind::StreamOrBranch { name, stream } => {
                 fields.push((
@@ -564,6 +677,26 @@ fn lower_struct_init(type_name: &str, sents: &[Sentence], hir: &HirModule) -> Li
             SemanticKind::FormDef { name, body, .. } => {
                 fields.push((name.clone(), lower_struct_init(&name, &body, hir)));
             }
+            SemanticKind::FunctionDef {
+                name, args, body, ..
+            } => {
+                let params = args
+                    .iter()
+                    .filter_map(|s| match s.first() {
+                        Some(Token::Path(p)) => Some(p.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                fields.push((
+                    name,
+                    LirExpr::Lambda {
+                        params,
+                        body: lower_body_to_stmts(&body, hir),
+                        raw_args: args,
+                        raw_body: body,
+                    },
+                ));
+            }
             _ => {}
         }
     }
@@ -578,20 +711,11 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
         Token::Lit(lit) => match lit {
             Literal::Int(i) => LirExpr::Int(*i),
             Literal::Float(f) => LirExpr::Float(*f),
-            Literal::Percent(p) => LirExpr::Percent(*p),
             Literal::Bool(b) => LirExpr::Bool(*b),
             Literal::Byte(b) => LirExpr::Byte(*b),
-            Literal::String(s) | Literal::Url(s) | Literal::File(s) => parse_interpolated_str(s),
+            Literal::String(s) => parse_interpolated_str(s),
+            Literal::RawString(s) => LirExpr::Str(s.clone()),
             Literal::Symbol(s) => LirExpr::Symbol(s.clone()),
-            Literal::Money(m) => LirExpr::Money(m.clone()),
-            Literal::Date(d) => LirExpr::Date(d.clone()),
-            Literal::Duration(d) => LirExpr::Duration(d.clone()),
-            Literal::Time(s)
-            | Literal::Coord(s)
-            | Literal::Color(s)
-            | Literal::IpAddr(s)
-            | Literal::Version(s)
-            | Literal::Email(s) => LirExpr::Str(s.clone()),
         },
         Token::Path(p) => LirExpr::Ident(p.clone()),
         Token::Range(a, b) => LirExpr::Range(
@@ -604,12 +728,17 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
             many => LirExpr::Tuple(many.iter().map(|s| lower_tokens_to_expr(s, hir)).collect()),
         },
         Token::Group('{', sents) => {
-            let is_router = sents.iter().any(|s| match classify_sentence(s) {
-                SemanticKind::PatternBranch { .. } | SemanticKind::LambdaOrTupleBranch { .. } => {
-                    true
-                }
+            // ВАЖНО: В `{}` строковый ключ `"host" "localhost"` является `Binding` (не `PatternBranch`!).
+            // Одиночный `{ ... }` вне пайплайна является роутером ТОЛЬКО если все его предложения — ветки `[...]`!
+            let is_router = !sents.is_empty()
+                && sents.iter().all(|s| match classify_sentence(s) {
+                SemanticKind::PatternBranch { .. }
+                | SemanticKind::LambdaOrTupleBranch { .. } => true,
                 SemanticKind::StreamOrBranch { name, .. } => {
-                    name == "_" || hir.forms.contains_key(&name) || hir.functions.contains_key(&name)
+                    name == "_"
+                        || is_pascal_case(&name)
+                        || hir.forms.contains_key(&name)
+                        || hir.functions.contains_key(&name)
                 }
                 _ => false,
             });
@@ -672,9 +801,13 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
         match classify_sentence(b) {
             SemanticKind::StreamOrBranch { name, stream } => {
                 let mut unpacked_fields = Vec::new();
+                let mut bound_type_var = None;
                 let cond = if name == "_" {
                     LirPattern::Wildcard
                 } else {
+                    if is_pascal_case(&name) {
+                        bound_type_var = Some(pascal_to_snake_case(&name));
+                    }
                     if let Some(form) = hir.forms.get(&name) {
                         for fname in &form.field_order {
                             if let Some(f) = form.fields.get(fname) {
@@ -688,6 +821,7 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                 };
                 out.push(LirBranch {
                     cond,
+                    bound_type_var,
                     unpacked_fields,
                     body: lower_body_to_stmts(&stream, hir),
                 });
@@ -696,6 +830,7 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                 let elems = lower_tuple_pat_elems(&args, hir);
                 out.push(LirBranch {
                     cond: LirPattern::TupleMatch(elems),
+                    bound_type_var: None,
                     unpacked_fields: vec![],
                     body: lower_body_to_stmts(&body, hir),
                 });
@@ -717,16 +852,27 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                         let mut matches = Vec::new();
                         for fp in field_pats {
                             if let SemanticKind::Binding { key, value } = classify_sentence(&fp) {
-                                if let [Token::Group('(' | ')', t_pats)] = value.as_slice() {
-                                    matches.push((
-                                        key,
-                                        LirFieldPatValue::Tuple(lower_tuple_pat_elems(t_pats, hir)),
-                                    ));
-                                } else {
-                                    matches.push((
-                                        key,
-                                        LirFieldPatValue::Expr(lower_tokens_to_expr(&value, hir)),
-                                    ));
+                                match value.as_slice() {
+                                    [Token::Group('(' | ')', t_pats)] => {
+                                        matches.push((
+                                            key,
+                                            LirFieldPatValue::Tuple(lower_tuple_pat_elems(
+                                                t_pats, hir,
+                                            )),
+                                        ));
+                                    }
+                                    [Token::Path(var_bind)] if !is_pascal_case(var_bind) => {
+                                        matches
+                                            .push((key, LirFieldPatValue::Bind(var_bind.clone())));
+                                    }
+                                    _ => {
+                                        matches.push((
+                                            key,
+                                            LirFieldPatValue::Expr(lower_tokens_to_expr(
+                                                &value, hir,
+                                            )),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -736,6 +882,7 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                 };
                 out.push(LirBranch {
                     cond,
+                    bound_type_var: None,
                     unpacked_fields: vec![],
                     body: lower_body_to_stmts(&body, hir),
                 });
@@ -751,6 +898,10 @@ fn lower_tuple_pat_elems(pat_sents: &[Sentence], hir: &HirModule) -> Vec<LirTupl
         .iter()
         .map(|s| match s.as_slice() {
             [Token::Path(v)] if v == "_" => LirTuplePatElem::Wildcard,
+            [Token::Path(v)] if is_pascal_case(v) => LirTuplePatElem::TypeBind {
+                type_name: v.clone(),
+                var_name: pascal_to_snake_case(v),
+            },
             [Token::Path(v)] => LirTuplePatElem::Bind(v.clone()),
             other => LirTuplePatElem::Exact(lower_tokens_to_expr(other, hir)),
         })
@@ -766,8 +917,8 @@ fn find_lowest_precedence_op(tokens: &[Token], hir: &HirModule) -> Option<(usize
             let prec = if op == "/" {
                 let is_form = matches!(
                     tokens.first(),
-                    Some(Token::Path(p)) if hir.forms.contains_key(p) || hir.globals.contains_key(p)
-                );
+                    Some(Token::Path(p)) if hir.forms.contains_key(p) || hir.globals.contains_key(p) || is_pascal_case(p)
+                ) || tokens.iter().take(i).any(|t| matches!(t, Token::Op(o) if o == "&"));
                 if is_form { 2 } else { 7 }
             } else {
                 match op.as_str() {
