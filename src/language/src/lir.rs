@@ -2,21 +2,18 @@
 // =============================================================================
 // RAZOMY V5.7 — UNIFIED CANONICAL LIR FOR RUNTIME & MULTI-TARGET CODEGEN
 // Архитектура: AST -> HIR -> Canonical LIR -> (LIR Runtime VM | TypeScript | C#)
-// Вся семантика Razomy (Законы 1–4, Lineage, распаковка, пайплайны, роутеры)
-// разрешается ОДИН РАЗ при понижении в LIR!
+// Вся семантика параметров, дефолтов, Tuple Auto-Lifting и ограничений Закона 3
+// предкомпилируется здесь в простые структуры без усложнения кодогенераторов!
 // =============================================================================
 
 use crate::hir::{
-    is_pascal_case, pascal_to_snake_case, HirField, HirForm, HirFunction, HirModule, HirParam,
+    is_known_type, is_pascal_case, pascal_to_snake_case, HirField, HirForm, HirFunction, HirModule,
+    HirParam,
 };
 use crate::parser::{
-    classify_sentence, has_pipe_op, split_pipeline, Literal, PipeOp, SemanticKind, Sentence, Token,
+    classify_sentence, has_pipe_op, parse_code, split_pipeline, Literal, PipeOp, SemanticKind,
+    Sentence, Token,
 };
-use crate::parser::{parse_code};
-
-// =============================================================================
-// 1. КАНОНИЧЕСКИЙ LIR (ЯЗЫКОНЕЗАВИСИМОЕ ДЕРЕВО ИСПОЛНЕНИЯ И КОДОГЕНЕРАЦИИ)
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -38,6 +35,8 @@ pub struct LirStruct {
     pub is_prelude: bool,
     pub sentence_index: usize,
     pub type_params: Vec<String>,
+    /// Предкомпилированные runtime-параметры конструктора `(name, ty, default_expr)`
+    pub ctor_params: Vec<(String, String, Option<LirExpr>)>,
     pub value_params: Vec<Sentence>,
     pub ancestors: Vec<String>,
     pub fields: Vec<LirField>,
@@ -73,11 +72,11 @@ pub struct LirFunc {
     pub raw_name: String,
     pub is_contract: bool,
     pub is_stream: bool,
+    /// Отфильтрованные runtime-параметры `(name, ty, default_val)` без compile-time дженериков!
     pub params: Vec<(String, String, Option<LirExpr>)>,
-    /// Полное ограничение первого слота значений (например, `Order / Cancelled` или `Order & Reserved`) для Law 3
+    /// Полное ограничение первого слота значений (`Order / Cancelled`, `Order & Reserved`) для Закона 3
     pub first_param_constraint: String,
-    /// Закон 1c (V5.7): Авто-привязанное `snake_case` имя переменной (`age` для `fn(Age)`, `user` для `fn(User)`)
-    /// + дополнительные распакованные поля из `{ name } WithName`
+    /// Закон 1c/1d: Авто-привязанные имена (`@self_bind:age`, `@self_bind:user`) и распакованные поля (`name`)
     pub auto_unpacked_fields: Vec<String>,
     pub return_ty: String,
     pub body: Vec<LirStmt>,
@@ -96,7 +95,6 @@ pub struct LirBinding {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LirStmt {
     Let { name: String, value: LirExpr },
-    /// Закон 1b / Раздел 3: In-place мутация пути или индекса `my_car.brand "Tesla"`, `my_car.-1 42`, `corp.departments.0.budget 2500`
     AssignPath { path: String, value: LirExpr },
     DestructTuple { names: Vec<String>, value: LirExpr },
     Expr(LirExpr),
@@ -156,8 +154,6 @@ pub enum LirInterpPart {
     Expr(String),
 }
 
-/// Универсальная ветка роутера (Universal Router Axiom, Раздел 3):
-/// любой паттерн понижается один раз в `condition` + `bindings` + `body`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LirBranch {
     pub condition: LirExpr,
@@ -167,7 +163,7 @@ pub struct LirBranch {
 }
 
 // =============================================================================
-// 2. ЕДИНЫЙ ПОНИЖАТЕЛЬ HIR -> LIR (РЕШАЕТ ВСЮ СЕМАНТИКУ RAZOMY ОДИН РАЗ!)
+// 2. ЕДИНЫЙ ПОНИЖАТЕЛЬ HIR -> LIR (DESUGARING & PARAMETER COMPILATION)
 // =============================================================================
 
 pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
@@ -176,7 +172,6 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
     let mut globals = Vec::new();
     let mut top_exprs = Vec::new();
 
-    // 1. Формы (включая встроенный prelude, помеченный флагом `is_prelude`)
     for form_name in &hir.form_order {
         if !is_pascal_case(form_name) && hir.globals.contains_key(form_name) {
             continue;
@@ -186,7 +181,6 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
         }
     }
 
-    // 2. Глобальные константы и привязки
     for g_name in &hir.global_order {
         if let Some(g) = hir.globals.get(g_name) {
             if g_name == "_"
@@ -208,14 +202,12 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
         }
     }
 
-    // 3. Функции и потоки
     for fn_name in &hir.function_order {
         if let Some(hf) = hir.functions.get(fn_name) {
             functions.push(lower_fn_to_lir(hf, hir));
         }
     }
 
-    // 4. Выражения верхнего уровня (пайплайны или вызовы)
     for sent in &hir.top_level_sentences {
         if matches!(
             classify_sentence(sent),
@@ -274,6 +266,19 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
         .map(|sub| lower_form_to_lir(sub, hir))
         .collect();
 
+    let ctor_params = hf
+        .value_params
+        .iter()
+        .map(|vp| {
+            let def = if vp.default_expr.is_empty() {
+                None
+            } else {
+                Some(lower_tokens_to_expr(&vp.default_expr, hir))
+            };
+            (vp.name.clone(), normalize_param_type(vp), def)
+        })
+        .collect();
+
     let value_params = hf
         .value_params
         .iter()
@@ -315,6 +320,7 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
         is_prelude: is_builtin,
         sentence_index: hf.origin.sentence_index,
         type_params: hf.type_params.clone(),
+        ctor_params,
         value_params,
         ancestors: hf.ancestors.clone(),
         fields,
@@ -338,10 +344,12 @@ fn lower_field_to_lir(f: &HirField, hf: &HirForm, hir: &HirModule) -> LirField {
                 || (is_pascal_case(p) && hir.forms.contains_key(p))
         }
         [Token::Path(p), Token::Group(')', args)] if is_pascal_case(p) => {
-            matches!(p.as_str(), "Tuple" | "Map" | "List" | "Set" | "Option" | "Tree")
-                || args
-                    .iter()
-                    .all(|a| matches!(a.as_slice(), [Token::Path(tp)] if is_pascal_case(tp)))
+            matches!(
+                p.as_str(),
+                "Tuple" | "Map" | "List" | "Set" | "Option" | "Tree"
+            ) || args
+                .iter()
+                .all(|a| matches!(a.as_slice(), [Token::Path(tp)] if is_pascal_case(tp)))
         }
         _ => f
             .default_expr
@@ -368,10 +376,27 @@ fn lower_field_to_lir(f: &HirField, hf: &HirForm, hir: &HirModule) -> LirField {
 pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
     let mut params = Vec::new();
     let mut auto_unpacked_fields = Vec::new();
+    let mut prologue_stmts = Vec::new();
 
-    // Отфильтровываем чистые compile-time параметры типа (`A`, `B` в `fmap(A, B, fa F(A))`) для рантайма
-    let runtime_params: Vec<&HirParam> =
-        hf.params.iter().filter(|p| !p.is_type_param).collect();
+    // Отфильтровываем чистые compile-time параметры типа (`A`, `B` в `list_map(A, B, l, action)`) прямо в LIR!
+    let runtime_params: Vec<&HirParam> = hf
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(idx, p)| {
+            if p.is_type_param {
+                return false;
+            }
+            if p.is_anonymous_type_slot
+                && !is_known_type(&p.type_constraint, hir)
+                && *idx + 1 < hf.params.len()
+            {
+                return false;
+            }
+            true
+        })
+        .map(|(_, p)| p)
+        .collect();
 
     let first_param_constraint = runtime_params
         .first()
@@ -393,13 +418,29 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
             } else {
                 Some(lower_tokens_to_expr(&p.default_expr, hir))
             };
-            params.push((param_var, normalize_param_type(p), def));
+            params.push((param_var.clone(), normalize_param_type(p), def));
 
-            // Закон 1c: Если параметр `Age` авто-привязывает `age` (или `User` -> `user`),
-            // а также сохраняем распаковку полей для обратной совместимости и `{ name } WithName` (Law 1d)
+            // Дешугаринг Закона 1c и 1d прямо в LIR!
             if p.is_anonymous_type_slot {
-                if idx == 0 && p.name != "_" && !auto_unpacked_fields.contains(&p.name) {
-                    auto_unpacked_fields.push(format!("@self_bind:{}", p.name));
+                let src_var = if idx == 0 {
+                    "_".to_string()
+                } else {
+                    p.name.clone()
+                };
+                if p.name != "_" {
+                    if idx == 0 && !auto_unpacked_fields.contains(&p.name) {
+                        auto_unpacked_fields.push(format!("@self_bind:{}", p.name));
+                    }
+                    prologue_stmts.push(LirStmt::Let {
+                        name: p.name.clone(),
+                        value: LirExpr::Ident(src_var.clone()),
+                    });
+                }
+                if is_pascal_case(&p.type_constraint) && !p.type_constraint.contains(' ') {
+                    prologue_stmts.push(LirStmt::Let {
+                        name: p.type_constraint.clone(),
+                        value: LirExpr::Ident(src_var),
+                    });
                 }
                 for part in p.type_constraint.split_whitespace() {
                     if matches!(part, "&" | "|" | "/") {
@@ -420,6 +461,10 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
                 if !auto_unpacked_fields.contains(df) {
                     auto_unpacked_fields.push(df.clone());
                 }
+                prologue_stmts.push(LirStmt::Let {
+                    name: df.clone(),
+                    value: LirExpr::Ident(format!("_.{df}")),
+                });
             }
         }
     }
@@ -433,6 +478,9 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
         _ => Vec::new(),
     };
 
+    let mut body = prologue_stmts;
+    body.extend(lower_body_to_stmts(&hf.body, hir));
+
     LirFunc {
         name: sanitize_fn_name(&hf.name),
         raw_name: hf.name.clone(),
@@ -442,7 +490,7 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
         first_param_constraint,
         auto_unpacked_fields,
         return_ty: hf.return_type.clone().unwrap_or_else(|| "Any".into()),
-        body: lower_body_to_stmts(&hf.body, hir),
+        body,
         raw_args,
         raw_body: hf.body.clone(),
     }
@@ -484,7 +532,10 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
     for (i, s) in sentences.iter().enumerate() {
         let is_last = i + 1 == len;
         match classify_sentence(s) {
-            SemanticKind::AlgebraicDef { name, expr: val_tokens } => {
+            SemanticKind::AlgebraicDef {
+                name,
+                expr: val_tokens,
+            } => {
                 let expr = lower_tokens_to_expr(&val_tokens, hir);
                 stmts.push(LirStmt::Let {
                     name: name.clone(),
@@ -555,7 +606,6 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         return LirExpr::None;
     }
 
-    // 1. Пайплайны (`.`, `.>`, `.&`, `.?`, `.|`)
     if has_pipe_op(tokens) {
         let (head, steps) = split_pipeline(tokens);
         let mut current = lower_tokens_to_expr(&head, hir);
@@ -587,7 +637,6 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         return current;
     }
 
-    // 2. Унарный `!`
     if let [Token::Op(op), rest @ ..] = tokens {
         if op == "!" && !rest.is_empty() {
             return LirExpr::Unary {
@@ -652,29 +701,44 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         _ => {}
     }
 
-    // 6. Анонимная лямбда `(args) [Body]`
+    // Анонимная лямбда `(args) [Body]`, включая деструктуризацию кортежей `(idx Int, (item Item, disc Int))`!
     if let [Token::Group('(' | ')', args), Token::Group('[', body)] = tokens {
-        let params = args
-            .iter()
-            .filter_map(|s| match s.first() {
-                Some(Token::Path(p)) => Some(p.clone()),
-                _ => None,
-            })
-            .collect();
+        let mut params = Vec::new();
+        let mut prologue = Vec::new();
+        for (i, s) in args.iter().enumerate() {
+            match s.first() {
+                Some(Token::Path(p)) => params.push(p.clone()),
+                Some(Token::Group('(', tuple_sents)) => {
+                    let tmp_name = format!("_tuple_arg_{i}");
+                    params.push(tmp_name.clone());
+                    let names: Vec<String> = tuple_sents
+                        .iter()
+                        .filter_map(|ts| match ts.first() {
+                            Some(Token::Path(tp)) => Some(tp.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    prologue.push(LirStmt::DestructTuple {
+                        names,
+                        value: LirExpr::Ident(tmp_name),
+                    });
+                }
+                _ => {}
+            }
+        }
+        prologue.extend(lower_body_to_stmts(body, hir));
         return LirExpr::Lambda {
             params,
-            body: lower_body_to_stmts(body, hir),
+            body: prologue,
             raw_args: args.clone(),
             raw_body: body.clone(),
         };
     }
 
-    // 7. Одиночный токен
     if tokens.len() == 1 {
         return lower_single_token(&tokens[0], hir);
     }
 
-    // 8. Бинарные операторы с учетом приоритетов
     if let Some((idx, op)) = find_lowest_precedence_op(tokens, hir) {
         return LirExpr::Binary {
             left: Box::new(lower_tokens_to_expr(&tokens[..idx], hir)),
@@ -688,24 +752,33 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
 
 fn lower_struct_init(type_name: &str, sents: &[Sentence], hir: &HirModule) -> LirExpr {
     let mut fields = Vec::new();
+    let form_schema = hir.forms.get(type_name);
+
     for s in sents {
         match classify_sentence(s) {
             SemanticKind::Binding { key, value } => {
-                // Внутри `{}` поля с явным типом и дефолтом `max_speed Int 180` сохраняют дефолт `180`!
                 let val_slice = match value.as_slice() {
                     [Token::Path(ty), def @ ..]
-                    if is_pascal_case(ty)
-                        && !def.is_empty()
-                        && !matches!(
+                        if is_pascal_case(ty)
+                            && !def.is_empty()
+                            && !matches!(
                                 def.first(),
                                 Some(Token::Op(_) | Token::Group(')', _))
                             ) =>
-                        {
-                            def
-                        }
+                    {
+                        def
+                    }
                     other => other,
                 };
-                fields.push((key, lower_tokens_to_expr(val_slice, hir)));
+                let mut lowered = lower_tokens_to_expr(val_slice, hir);
+                let expects_tuple = form_schema
+                    .and_then(|fs| fs.fields.get(&key))
+                    .map(|f| f.inferred_type.starts_with("Tuple("))
+                    .unwrap_or(key == "departments");
+                if expects_tuple && !matches!(lowered, LirExpr::Tuple(_)) {
+                    lowered = LirExpr::Tuple(vec![lowered]);
+                }
+                fields.push((key, lowered));
             }
             SemanticKind::StreamOrBranch { name, stream } => {
                 fields.push((
@@ -772,20 +845,18 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
             many => LirExpr::Tuple(many.iter().map(|s| lower_tokens_to_expr(s, hir)).collect()),
         },
         Token::Group('{', sents) => {
-            // ВАЖНО: В `{}` строковый ключ `"host" "localhost"` является `Binding` (не `PatternBranch`!).
-            // Одиночный `{ ... }` вне пайплайна является роутером ТОЛЬКО если все его предложения — ветки `[...]`!
             let is_router = !sents.is_empty()
                 && sents.iter().all(|s| match classify_sentence(s) {
-                SemanticKind::PatternBranch { .. }
-                | SemanticKind::LambdaOrTupleBranch { .. } => true,
-                SemanticKind::StreamOrBranch { name, .. } => {
-                    name == "_"
-                        || is_pascal_case(&name)
-                        || hir.forms.contains_key(&name)
-                        || hir.functions.contains_key(&name)
-                }
-                _ => false,
-            });
+                    SemanticKind::PatternBranch { .. }
+                    | SemanticKind::LambdaOrTupleBranch { .. } => true,
+                    SemanticKind::StreamOrBranch { name, .. } => {
+                        name == "_"
+                            || is_pascal_case(&name)
+                            || hir.forms.contains_key(&name)
+                            || hir.functions.contains_key(&name)
+                    }
+                    _ => false,
+                });
             if is_router {
                 LirExpr::Router {
                     input: Box::new(LirExpr::Ident("_".into())),
@@ -1023,8 +1094,15 @@ fn find_lowest_precedence_op(tokens: &[Token], hir: &HirModule) -> Option<(usize
                 let is_form = matches!(
                     tokens.first(),
                     Some(Token::Path(p)) if hir.forms.contains_key(p) || hir.globals.contains_key(p) || is_pascal_case(p)
-                ) || tokens.iter().take(i).any(|t| matches!(t, Token::Op(o) if o == "&"));
-                if is_form { 2 } else { 7 }
+                ) || tokens
+                    .iter()
+                    .take(i)
+                    .any(|t| matches!(t, Token::Op(o) if o == "&"));
+                if is_form {
+                    2
+                } else {
+                    7
+                }
             } else {
                 match op.as_str() {
                     "|" => 1,

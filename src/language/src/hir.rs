@@ -299,8 +299,9 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
                         inner_sent.as_slice()
                     {
                         if c == "Compile" && amp == "&" {
-                            if let Some([Token::Group('{', body), Token::Op(dot), Token::Path(macro_name)]) =
-                                stream_sents.first().map(Vec::as_slice)
+                            if let Some(
+                                [Token::Group('{', body), Token::Op(dot), Token::Path(macro_name)],
+                            ) = stream_sents.first().map(Vec::as_slice)
                             {
                                 if dot == "." {
                                     let mut expr = vec![Token::Group('{', body.clone())];
@@ -484,12 +485,8 @@ fn extract_macro_tail(macro_name: &str, hir: &HirModule) -> Vec<Token> {
 fn is_stream_composition(expr: &[Token], hir: &HirModule) -> bool {
     if let Some(Token::Path(first)) = expr.first() {
         if hir.functions.contains_key(first)
-            && expr
-            .iter()
-            .any(|t| matches!(t, Token::Op(op) if op == "&"))
-            && !expr
-            .iter()
-            .any(|t| matches!(t, Token::Group('{', _)))
+            && expr.iter().any(|t| matches!(t, Token::Op(op) if op == "&"))
+            && !expr.iter().any(|t| matches!(t, Token::Group('{', _)))
         {
             return true;
         }
@@ -509,13 +506,10 @@ fn detect_import_source(key: &str, value: &[Token]) -> Option<String> {
             None
         }
         [Token::Path(p)]
-        if key == "_"
-            || p.starts_with("root.")
-            || p.starts_with("std.")
-            || p == "base" =>
-            {
-                Some(p.clone())
-            }
+            if key == "_" || p.starts_with("root.") || p.starts_with("std.") || p == "base" =>
+        {
+            Some(p.clone())
+        }
         _ => None,
     }
 }
@@ -578,10 +572,10 @@ fn extract_form_slots(params: &[Sentence], hir: &HirModule) -> (Vec<String>, Vec
             }
             // Ограниченный параметр типа `TC Category` (`PascalCase` + `PascalCase`)
             [Token::Path(tp), Token::Path(bound)]
-            if is_pascal_case(tp) && is_pascal_case(bound) =>
-                {
-                    type_params.push(tp.clone());
-                }
+                if is_pascal_case(tp) && is_pascal_case(bound) =>
+            {
+                type_params.push(tp.clone());
+            }
             // Явный слот значения `a Int` или с дефолтом `raw String "0.00"` (`snake_case`)
             [Token::Path(param_name), rest @ ..] => {
                 let (constraint, def_expr) = split_type_and_default(rest, hir);
@@ -624,32 +618,30 @@ fn split_type_and_default(tokens: &[Token], hir: &HirModule) -> (String, Vec<Tok
     match tokens {
         // Explicit type + default value: `max_speed Int 180`, `label Symbol 'default'`, `items Tuple(T) ()`
         [Token::Path(ty), rest @ ..]
-        if is_pascal_case(ty)
-            && !rest.is_empty()
-            && !matches!(rest.first(), Some(Token::Op(_) | Token::Group(')', _))) =>
-            {
-                (ty.clone(), rest.to_vec())
-            }
+            if is_pascal_case(ty)
+                && !rest.is_empty()
+                && !matches!(rest.first(), Some(Token::Op(_) | Token::Group(')', _))) =>
+        {
+            (ty.clone(), rest.to_vec())
+        }
         [Token::Path(ty), Token::Group(')', targs), rest @ ..]
-        if is_pascal_case(ty)
-            && !rest.is_empty()
-            && !matches!(rest.first(), Some(Token::Op(_))) =>
-            {
-                let type_slice = &tokens[..2];
-                let _ = targs;
-                (format_tokens_as_type(type_slice), rest.to_vec())
-            }
+            if is_pascal_case(ty)
+                && !rest.is_empty()
+                && !matches!(rest.first(), Some(Token::Op(_))) =>
+        {
+            let type_slice = &tokens[..2];
+            let _ = targs;
+            (format_tokens_as_type(type_slice), rest.to_vec())
+        }
         // Only type: `brand BrandName`, `id String`, `role 'admin' | 'user'`
         [Token::Path(ty)] if is_pascal_case(ty) && is_known_type(ty, hir) => {
             (ty.clone(), tokens.to_vec())
         }
         _ => {
-            let is_lit_or_expr = matches!(
-                tokens.first(),
-                Some(Token::Lit(_) | Token::Group(_, _))
-            ) || (tokens.len() >= 2
-                && matches!(&tokens[0], Token::Path(p) if is_pascal_case(p))
-                && matches!(&tokens[1], Token::Group(')', _)));
+            let is_lit_or_expr = matches!(tokens.first(), Some(Token::Lit(_) | Token::Group(_, _)))
+                || (tokens.len() >= 2
+                    && matches!(&tokens[0], Token::Path(p) if is_pascal_case(p))
+                    && matches!(&tokens[1], Token::Group(')', _)));
             if is_lit_or_expr {
                 (infer_hir_type(tokens, hir), tokens.to_vec())
             } else {
@@ -659,10 +651,7 @@ fn split_type_and_default(tokens: &[Token], hir: &HirModule) -> (String, Vec<Tok
     }
 }
 
-fn parse_fn_tail_metadata(
-    tail: &[Token],
-    _hir: &HirModule,
-) -> (Vec<Token>, HirVisibility, bool) {
+fn parse_fn_tail_metadata(tail: &[Token], _hir: &HirModule) -> (Vec<Token>, HirVisibility, bool) {
     let mut vis = HirVisibility::Default;
     let mut is_compile = false;
     let mut ret_tokens = Vec::new();
@@ -1470,7 +1459,10 @@ pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bo
                     // Если этот `PascalCase` идентификатор используется далее в сигнатуре как тип другого параметра (`A` в `fmap(A, B, fa F(A))`),
                     // и его нет среди известных форм — это чистый Type Parameter!
                     let used_as_type_later = args.iter().skip(idx + 1).any(|later| {
-                        later.iter().skip(1).any(|t| token_references_ident(t, single))
+                        later
+                            .iter()
+                            .skip(1)
+                            .any(|t| token_references_ident(t, single))
                     });
                     if used_as_type_later && !is_known_type(single, hir) {
                         out.push(HirParam {
@@ -1511,19 +1503,19 @@ pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bo
             }
             // Безымянный составной слот типа `(User & Cart)` (фиксируется для диагностики E02_DUPLICATE_UNNAMED_TYPE)
             [Token::Path(first_type), Token::Op(op), ..]
-            if is_pascal_case(first_type) && matches!(op.as_str(), "&" | "|" | "/") =>
-                {
-                    let constraint = format_tokens_as_type(sent);
-                    auto_unpacks = true;
-                    out.push(HirParam {
-                        name: pascal_to_snake_case(first_type),
-                        type_constraint: constraint,
-                        default_expr: vec![],
-                        is_anonymous_type_slot: true,
-                        is_type_param: false,
-                        destructured_fields: vec![],
-                    });
-                }
+                if is_pascal_case(first_type) && matches!(op.as_str(), "&" | "|" | "/") =>
+            {
+                let constraint = format_tokens_as_type(sent);
+                auto_unpacks = true;
+                out.push(HirParam {
+                    name: pascal_to_snake_case(first_type),
+                    type_constraint: constraint,
+                    default_expr: vec![],
+                    is_anonymous_type_slot: true,
+                    is_type_param: false,
+                    destructured_fields: vec![],
+                });
+            }
             // Именованный параметр с типом и/или дефолтным значением:
             // `connect(host String "localhost", port Int 8080, tls Bool false)` или `reserve_stock(o Order / Cancelled)`
             [Token::Path(param_name), rest @ ..] => {
@@ -1558,12 +1550,15 @@ fn split_param_type_and_default(rest: &[Token], hir: &HirModule) -> (String, Vec
     match rest {
         // `host String "localhost"` (Явный тип + дефолтное значение)
         [Token::Path(ty), def @ ..]
-        if is_pascal_case(ty)
-            && !def.is_empty()
-            && !matches!(def.first(), Some(Token::Op(_) | Token::Group(')', _) | Token::Group('[', _))) =>
-            {
-                (ty.clone(), def.to_vec())
-            }
+            if is_pascal_case(ty)
+                && !def.is_empty()
+                && !matches!(
+                    def.first(),
+                    Some(Token::Op(_) | Token::Group(')', _) | Token::Group('[', _))
+                ) =>
+        {
+            (ty.clone(), def.to_vec())
+        }
         // `k 10` (Только дефолтное значение без типа)
         [Token::Lit(_)] | [Token::Group(_, _)] => (infer_hir_type(rest, hir), rest.to_vec()),
         // `o Order / Cancelled`, `ctx User & Cart`, `f (A) [B]` (Только ограничение типа)
@@ -1713,6 +1708,7 @@ pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
                 }) {
                     return "Bool".into();
                 }
+                return infer_hir_type(sent, hir);
             }
             "Tuple".into()
         }

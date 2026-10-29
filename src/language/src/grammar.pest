@@ -1,59 +1,25 @@
-// =============================================================================
-// RAZOMY LANGUAGE V5.7 — COMPLETE PRODUCTION PEST GRAMMAR
-// =============================================================================
-
 Program = { SOI ~ statements ~ EOI }
 
-// --- ПРОБЕЛЫ И КОММЕНТАРИИ ---
+// --- 1. ПРОБЕЛЫ И КОММЕНТАРИИ ---
 WHITESPACE = _{ " " | "\t" | "\r" }
+WS_NL      = _{ WHITESPACE | NEWLINE }
+COMMENT    = _{ line_comment | block_comment }
 
-COMMENT = _{ line_comment | block_comment }
 line_comment  = @{ "//" ~ (!NEWLINE ~ ANY)* }
-// '#' открывает блочный комментарий ТОЛЬКО если за ним идет пробел или перевод строки.
-// Внутри разрешены закавыченные '#' ("'#'" и "\"#\"").
-block_comment = @{ "#" ~ &(" " | "\t" | "\r" | NEWLINE) ~ ( "'#'" | "\"#\"" | (!"#" ~ ANY) )* ~ "#" }
+block_comment = @{ "#" ~ &WS_NL ~ ("'#'" | "\"#\"" | (!"#" ~ ANY))* ~ "#" }
 
-// --- РАЗДЕЛИТЕЛИ И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ / КОМПОЗИЦИИ ---
-// ВАЖНО: `@` (atomic) гарантирует, что Pest не съест пробелы после "." или "&" неявным WHITESPACE*
-PIPE_OP_AHEAD = @{
-    ".>" | ".&" | ".?" | ".|"
-  | (("." | "&") ~ (" " | "\t" | "\r" | NEWLINE))
-}
+// --- 2. СТРУКТУРА И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
+PIPE_OP_AHEAD = @{ ".>" | ".&" | ".?" | ".|" | (("." | "&") ~ WS_NL) }
 
-// Перевод строки продолжает текущее предложение, если первое, что идет после
-// любых пустых строк, отступов и комментариев — это оператор пайплайна или композиции `&`.
-pipe_nl = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
+pipe_nl    = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
+SEP        = _{ "," | (!pipe_nl ~ NEWLINE) }
+statements = _{ ("," | NEWLINE)* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ ("," | NEWLINE)* }
 
-// Разделитель предложений срабатывает только тогда, когда это НЕ продолжение пайплайна
-SEP = _{ "," | (!pipe_nl ~ NEWLINE) }
+sentence = { (callable_op | token) ~ (pipe_nl? ~ token)* }
 
-statements = _{ ( "," | NEWLINE )* ~ (sentence ~ (SEP+ ~ sentence)*)? ~ ( "," | NEWLINE )* }
-
-// ВАЖНО: callable_op (`+ (other Vec2)` или `+(other Vec2)`) разрешен ТОЛЬКО в начале предложения (head_token)!
-// В середине предложения бинарный оператор перед `(` обязан иметь пробел: `a + (b)`.
-sentence   = { head_token ~ (pipe_nl? ~ tail_token)* }
-
-// =============================================================================
-// ТОКЕНЫ (СТРОГИК ПОРЯДОК ДЛЯ O(1) ЛЕКСИНГА)
-// =============================================================================
-head_token = _{
+// --- 3. ТОКЕНЫ И ГРУППЫ ---
+token = _{
     group
-  | range_expr
-  | raw_string_lit
-  | tagged_string_lit
-  | string_lit
-  | symbol_lit
-  | hex_byte_lit
-  | number_lit
-  | callable_op
-  | operator
-  | callable_path
-  | path
-}
-
-tail_token = _{
-    group
-  | range_expr
   | raw_string_lit
   | tagged_string_lit
   | string_lit
@@ -61,21 +27,15 @@ tail_token = _{
   | hex_byte_lit
   | number_lit
   | operator
-  | callable_path
   | path
 }
 
-// 1. Три гомоиконные скобки: {} (Form), [] (Stream), () (Tuple)
-group = _{ brace_group | bracket_group | paren_group }
+group         = _{ brace_group | bracket_group | paren_group }
 brace_group   = { "{" ~ statements ~ "}" }
 bracket_group = { "[" ~ statements ~ "]" }
 paren_group   = { "(" ~ statements ~ ")" }
 
-// 2. Строки:
-// - Raw Strings: r"...", r1"..."1, r2"..."2, r3"..."3 (без экранирования и без интерполяции)
-// - Tagged Strings: Type"..." (100% синтаксический сахар для конструктора Type("..."))
-// - Standard Strings: "..." (многострочные по умолчанию, с интерполяцией {expr} и \ экранированием)
-// - Paired Symbols: '...'
+// --- 4. СТРОКИ И СИМВОЛЫ ---
 raw_string_lit = @{
     ("r3\"" ~ (!"\"3" ~ ANY)* ~ "\"3")
   | ("r2\"" ~ (!"\"2" ~ ANY)* ~ "\"2")
@@ -86,49 +46,31 @@ raw_string_lit = @{
 type_ident        = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
 tagged_string_lit = ${ type_ident ~ (raw_string_lit | string_lit) }
 
-string_lit = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\{" | "\\}" | (!"\"" ~ ANY) )* ~ "\"" }
-symbol_lit = @{ "'" ~ ( "\\'" | "\\\\" | (!"'" ~ ANY) )* ~ "'" }
+string_lit = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
+symbol_lit = @{ "'"  ~ ("\\" ~ ANY | !"'"  ~ ANY)* ~ "'" }
 
-// 3. Диапазоны (Ranges): 1..10, 1..limit, 1..Config.max, "0".."9", "a".."z"
-range_atom = _{ string_lit | symbol_lit | number_lit | path_core }
-range_expr = ${ range_atom ~ ".." ~ range_atom }
-
-// 4. Байтовые и Числовые литералы (Byte, Int, Float)
+// --- 5. ЧИСЛА ---
 hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
+number_lit   = @{
+    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+  ~ !(ident | ("." ~ !(ident | ".")))
+}
 
-// ВАЖНО: ("." ~ !(ASCII_ALPHA | "_" | ".")) запрещает одиночную точку после числа (`1.2.3`),
-// но разрешает диапазон `1..100` и слитную цепочку методов `(expr).to_float` / `0.0.to_float`!
-number_lit = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ !(ASCII_ALPHA | "_" | ("." ~ !(ASCII_ALPHA | "_" | "."))) }
-
-// 5. Операторы:
-// - `callable_op`: перегрузка оператора `+ (other Vec2)`, `< (other Other) Bool`
-//   (в начале sentence внутри Form `{}` с пробелом или слитно перед `(`)
-// - `operator`: бинарные операторы (отделяются пробелом) и унарный `!` (примыкает плотно)
+// --- 6. ОПЕРАТОРЫ ---
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
-callable_op = @{ overload_op ~ &((" " | "\t")* ~ "(") }
+callable_op = @{ overload_op ~ &(WHITESPACE* ~ "(") }
 
 operator = @{
     ("!" ~ !"=")
+  | ".."
   | (
-        (
-            ".>" | ".&" | ".?" | ".|"
-          | "==" | "!=" | ">=" | "<="
-          | "&&" | "||"
-          | "**" | "<<" | ">>"
-          | "+"  | "-"  | "*"  | "/" | "%"
-          | ">"  | "<"
-          | "&"  | "|"  | "."
-        ) ~ &(" " | "\t" | "\r" | NEWLINE | EOI)
+        (".>" | ".&" | ".?" | ".|" | "&&" | "||" | overload_op | "&" | "|" | ".")
+      ~ &(WS_NL | EOI)
     )
 }
 
-// 6. Слитные пути, вызовы и идентификаторы:
-// Поддержка цепочек `a.b().c().d`, а также продолжения пути после закрывающей скобки `(self.scaled.to_float * factor).round_to_int`!
-PATH_END      = _{ &(" " | "\t" | "\r" | NEWLINE | "," | ")" | "]" | "}" | EOI) }
-callable_path = @{ ("."? ~ path_core) ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ !("()" ~ ".") ~ &"(" }
-path          = @{ ("."? ~ path_core) ~ ("()" ~ ("." ~ (ident | index_seg))+)* ~ PATH_END }
-// ВАЖНО: path_core атомарный `@`, чтобы внутри `range_expr` (например, `1..limit` или `1..Config.max`)
-// он возвращался как единый токен `Rule::path_core`!
-path_core     = @{ ident ~ ("." ~ (ident | index_seg))* }
-ident         = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
-index_seg     = _{ "-"? ~ ASCII_DIGIT+ }
+// --- 7. ПУТИ И ИДЕНТИФИКАТОРЫ ---
+PATH_END  = _{ &(WS_NL | "," | "(" | ")" | "[" | "]" | "{" | "}" | ".." | EOI) }
+path      = @{ "."? ~ ident ~ ("." ~ (ident | index_seg))* ~ PATH_END }
+ident     = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+index_seg = _{ "-"? ~ ASCII_DIGIT+ }

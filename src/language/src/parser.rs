@@ -6,7 +6,7 @@ use pest_derive::Parser;
 pub struct RazomyParser;
 
 // =============================================================================
-// 1. ГОМОИКОННОЕ AST: ЛИТЕРАЛЫ И ТОКЕНЫ (V5.7)
+// 1. ГОМОИКОННОЕ AST: ЛИТЕРАЛЫ И ТОКЕНЫ (V6.0)
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +28,7 @@ pub enum Token {
     Lit(Literal),
     /// Операторы (`.`, `.>`, `.&`, `.?`, `.|`, `&`, `|`, `/`, `+`, `==`, `!`, и т.д.)
     Op(String),
-    /// Диапазоны (`1..10`, `"a".."z"`, `1..limit`)
+    /// Диапазоны (`1..10`, `"a".."z"`, `1..limit`, `(a + 1)..(b - 1)`)
     Range(Box<Token>, Box<Token>),
     /// Три гомоиконные скобки:
     /// '{' (Form), '[' (Stream), '(' (Tuple/Expression через пробел),
@@ -43,11 +43,10 @@ pub type Sentence = Vec<Token>;
 // =============================================================================
 
 fn extract_raw_string_content(s: &str) -> String {
-    if s.starts_with("r3\"") && s.ends_with("\"3") {
-        s[3..s.len() - 2].to_string()
-    } else if s.starts_with("r2\"") && s.ends_with("\"2") {
-        s[3..s.len() - 2].to_string()
-    } else if s.starts_with("r1\"") && s.ends_with("\"1") {
+    if (s.starts_with("r3\"") && s.ends_with("\"3"))
+        || (s.starts_with("r2\"") && s.ends_with("\"2"))
+        || (s.starts_with("r1\"") && s.ends_with("\"1"))
+    {
         s[3..s.len() - 2].to_string()
     } else if s.starts_with("r\"") && s.ends_with('"') {
         s[2..s.len() - 1].to_string()
@@ -75,13 +74,6 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
             Token::Lit(Literal::Symbol(s[1..s.len() - 1].to_string()))
         }
 
-        Rule::range_expr => {
-            let mut inner = pair.into_inner();
-            let start = parse_token(inner.next().unwrap());
-            let end = parse_token(inner.next().unwrap());
-            Token::Range(Box::new(start), Box::new(end))
-        }
-
         Rule::hex_byte_lit => {
             let s = &pair.as_str()[2..];
             let val = u8::from_str_radix(s, 16).unwrap_or(0);
@@ -101,14 +93,12 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
 
         Rule::callable_op => Token::Path(pair.as_str().to_string()),
 
-        Rule::path | Rule::callable_path | Rule::path_core | Rule::type_ident => {
+        Rule::path | Rule::type_ident => {
             let s = pair.as_str();
-            if s == "true" {
-                Token::Lit(Literal::Bool(true))
-            } else if s == "false" {
-                Token::Lit(Literal::Bool(false))
-            } else {
-                Token::Path(s.to_string())
+            match s {
+                "true" => Token::Lit(Literal::Bool(true)),
+                "false" => Token::Lit(Literal::Bool(false)),
+                _ => Token::Path(s.to_string()),
             }
         }
 
@@ -118,15 +108,19 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
 
 pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
     let mut sentences = Vec::new();
+
     for inner in pair.into_inner() {
         if inner.as_rule() == Rule::sentence {
-            let mut tokens = Vec::new();
-            let mut expect_tight_paren = false;
+            let mut raw_tokens: Vec<Token> = Vec::new();
+            let mut prev_end: Option<usize> = None;
+            let mut prev_was_callable_op = false;
 
             for tok_pair in inner.into_inner() {
                 let rule = tok_pair.as_rule();
+                let span = tok_pair.as_span();
+                let is_tight = prev_end == Some(span.start());
 
-                // Type"..." — 100% синтаксический сахар для вызова конструктора Type("...")!
+                // 1. Type"..." — 100% синтаксический сахар для вызова конструктора Type("...")!
                 if rule == Rule::tagged_string_lit {
                     let mut inner_tagged = tok_pair.into_inner();
                     let type_pair = inner_tagged.next().unwrap();
@@ -134,36 +128,66 @@ pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
                     let type_name = type_pair.as_str().to_string();
                     let str_tok = parse_token(str_pair);
 
-                    tokens.push(Token::Path(type_name));
-                    tokens.push(Token::Group(')', vec![vec![str_tok]]));
-                    expect_tight_paren = false;
+                    raw_tokens.push(Token::Path(type_name));
+                    raw_tokens.push(Token::Group(')', vec![vec![str_tok]]));
+                    prev_end = Some(span.end());
+                    prev_was_callable_op = false;
                     continue;
                 }
 
                 let mut tok = parse_token(tok_pair);
 
-                // Поддержка цепочки методов сразу после закрывающей скобки:
-                // `(self.scaled.to_float * factor).round_to_int`
-                if matches!(rule, Rule::path | Rule::callable_path) {
+                // 2. Слитная цепочка с пустыми скобками: `a.b().c` -> склеиваем в единый `Path("a.b().c")`,
+                // если сразу после `()` слитно идет `.c`!
+                if is_tight && rule == Rule::path {
                     if let Token::Path(ref p) = tok {
-                        if p.starts_with('.') && matches!(tokens.last(), Some(Token::Group('(' | ')', _))) {
-                            expect_tight_paren = matches!(rule, Rule::callable_path);
-                            tokens.push(tok);
-                            continue;
+                        if p.starts_with('.') {
+                            if let Some(Token::Group(')', args)) = raw_tokens.last() {
+                                if args.is_empty() && matches!(raw_tokens.get(raw_tokens.len().wrapping_sub(2)), Some(Token::Path(_))) {
+                                    raw_tokens.pop(); // убираем пустую `)`
+                                    if let Some(Token::Path(prev_path)) = raw_tokens.last_mut() {
+                                        prev_path.push_str("()");
+                                        prev_path.push_str(p);
+                                        prev_end = Some(span.end());
+                                        prev_was_callable_op = false;
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                if expect_tight_paren {
-                    if let Token::Group('(', args) = tok {
-                        tok = Token::Group(')', args);
+                // 3. Если скобка `(` идет слитно после `Path` (`fn(args)`) или после `callable_op` (`+ (other)`),
+                // помечаем её маркером `')'`
+                if let Token::Group(delim, _) = &mut tok {
+                    if *delim == '(' {
+                        let after_tight_path = is_tight && matches!(raw_tokens.last(), Some(Token::Path(_)));
+                        if after_tight_path || prev_was_callable_op {
+                            *delim = ')';
+                        }
                     }
                 }
 
-                expect_tight_paren = matches!(rule, Rule::callable_path | Rule::callable_op);
-                tokens.push(tok);
+                prev_end = Some(span.end());
+                prev_was_callable_op = rule == Rule::callable_op;
+                raw_tokens.push(tok);
             }
-            sentences.push(tokens);
+
+            // 4. Сворачиваем оператор диапазона `start .. end` в `Token::Range(start, end)`
+            let mut final_tokens: Vec<Token> = Vec::with_capacity(raw_tokens.len());
+            let mut iter = raw_tokens.into_iter();
+            while let Some(tok) = iter.next() {
+                if matches!(&tok, Token::Op(op) if op == "..") {
+                    if let (Some(start), Some(end)) = (final_tokens.pop(), iter.next()) {
+                        final_tokens.push(Token::Range(Box::new(start), Box::new(end)));
+                        continue;
+                    }
+                }
+                final_tokens.push(tok);
+            }
+
+            sentences.push(final_tokens);
         }
     }
     sentences
@@ -176,7 +200,7 @@ pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule
 }
 
 // =============================================================================
-// 3. СЕМАНТИЧЕСКИЙ КЛАССИФИКАТОР И ДЕКОМПОЗИЦИЯ ПАЙПЛАЙНОВ (V5.7)
+// 3. СЕМАНТИЧЕСКИЙ КЛАССИФИКАТОР И ДЕКОМПОЗИЦИЯ ПАЙПЛАЙНОВ (V6.0)
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -277,7 +301,7 @@ pub fn split_pipeline(tokens: &[Token]) -> (Vec<Token>, Vec<PipeStep>) {
 
     for token in tokens {
         if let Token::Op(op_str) = token {
-            if let Some(pipe_op) = parse_pipe_op(pipe_op_str(op_str)) {
+            if let Some(pipe_op) = parse_pipe_op(op_str) {
                 if let Some(prev_op) = current_op.replace(pipe_op) {
                     steps.push(PipeStep {
                         op: prev_op,
@@ -304,11 +328,6 @@ pub fn split_pipeline(tokens: &[Token]) -> (Vec<Token>, Vec<PipeStep>) {
     (head, steps)
 }
 
-#[inline]
-fn pipe_op_str(s: &str) -> &str {
-    s
-}
-
 /// Проверяет, содержит ли хвост определения функции `rest` блок тела `[Body]`
 /// (включая функции с явным возвращаемым типом `name(args) ReturnType [Body]` и суффиксом `& Compile` / `& Private`)
 fn split_function_body_and_tail(rest: &[Token]) -> Option<(Vec<Sentence>, Vec<Token>)> {
@@ -316,8 +335,6 @@ fn split_function_body_and_tail(rest: &[Token]) -> Option<(Vec<Sentence>, Vec<To
         if let Token::Group('[', body) = tok {
             let prefix = &rest[..idx];
             let suffix = &rest[idx + 1..];
-            // Если после `[Body]` пусто или идет мета-пересечение `& Compile` / `& Private`,
-            // и перед `[Body]` нет других `{}` форм — это определение функции!
             let prefix_has_brace = prefix.iter().any(|t| matches!(t, Token::Group('{', _)));
             let suffix_valid = suffix.is_empty()
                 || matches!(suffix, [Token::Op(op), ..] if op == "&");
@@ -341,16 +358,15 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             }
         }
 
-        // 3. Ветка паттерн-матчинга `[ _ >= 2000 ] [ 300 ]`, `{ method 'GET' } [ ... ]`, `true [ ... ]` или `1..10 [ ... ]`
-        [pat @ Token::Group('[', _), Token::Group('[', body)]
-        | [pat @ Token::Group('{', _), Token::Group('[', body)]
-        | [pat @ Token::Lit(_), Token::Group('[', body)]
-        | [pat @ Token::Range(_, _), Token::Group('[', body)] => SemanticKind::PatternBranch {
-            pattern: pat.clone(),
-            body: body.clone(),
-        },
+        // 2. Ветка паттерн-матчинга `[ _ >= 2000 ] [ 300 ]`, `{ method 'GET' } [ ... ]`, `true [ ... ]` или `1..10 [ ... ]`
+        [pat @ (Token::Group('[' | '{', _) | Token::Lit(_) | Token::Range(_, _)), Token::Group('[', body)] => {
+            SemanticKind::PatternBranch {
+                pattern: pat.clone(),
+                body: body.clone(),
+            }
+        }
 
-        // 4. Деструктуризация кортежа `(String, Int) root.base` или параметризованный ключ карты `(K) V`
+        // 3. Деструктуризация кортежа `(String, Int) root.base` или параметризованный ключ карты `(K) V`
         [Token::Group('(' | ')', tuple), rest @ ..] if !rest.is_empty() && !has_pipe_op(rest) => {
             SemanticKind::TupleBinding {
                 tuple: tuple.clone(),
@@ -358,7 +374,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             }
         }
 
-        // 5. Ключ карты в виде строкового или символьного литерала: `"host" "localhost"`
+        // 4. Ключ карты в виде строкового или символьного литерала: `"host" "localhost"`
         [Token::Lit(Literal::String(key) | Literal::RawString(key) | Literal::Symbol(key)), rest @ ..]
         if !rest.is_empty() && !has_pipe_op(rest) && !matches!(rest, [Token::Op(_), ..]) =>
             {
@@ -368,7 +384,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
                 }
             }
 
-        // 6. Слитная скобка `Name(Args)` (маркер `')'`):
+        // 5. Слитная скобка `Name(Args)` (маркер `')'`):
         // Именованная функция `name(args) [Body]` / `name(args) RetType [Body]`,
         // Вызов `name(args)` / `Type"..."`, Выражение `calc(1) + calc(2)` или Дженерик `Name(T) ...`
         [Token::Path(name), Token::Group(')', args), rest @ ..] => {
@@ -401,7 +417,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             }
         }
 
-        // 7. Начинается с идентификатора `Name ...` (где после `Name` был пробел!)
+        // 6. Начинается с идентификатора `Name ...` (где после `Name` был пробел!)
         [Token::Path(name), rest @ ..] => match rest {
             [] => SemanticKind::Expression(sentence.clone()),
 
@@ -478,7 +494,7 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             },
         },
 
-        // 8. Любые другие пайплайны и выражения
+        // 7. Любые другие пайплайны и выражения
         _ => {
             if has_pipe_op(sentence) {
                 SemanticKind::Pipeline(sentence.clone())

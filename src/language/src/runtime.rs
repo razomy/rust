@@ -1,8 +1,8 @@
 // src/runtime.rs
 // =============================================================================
-// RAZOMY V5.7 — LIR-POWERED RUNTIME ENGINE (SYSTEM KERNEL)
-// Архитектура: AST -> HIR -> Canonical LIR -> LIR VM Execution
-// Потокобезопасное ядро: Value, Scope, Законы 1–4, Lineage, LIR-выражения и Роутеры.
+// RAZOMY V5.7 — COMPACT LIR RUNTIME ENGINE
+// Весь разбор параметров, дженериков, деструктуризации и Tuple Auto-Lifting
+// уже выполнен в `lir.rs`. Рантайм только исполняет LirStmt и LirExpr!
 // =============================================================================
 
 use std::collections::{HashMap, VecDeque};
@@ -18,10 +18,6 @@ use crate::lir::{
 use crate::parser::{parse_code, PipeOp, Sentence, Token};
 use crate::runtime_ext::{create_global_scope, eval_compose_call, make_empty_form, make_some};
 
-// =============================================================================
-// 1. ПОТОКОБЕЗОПАСНАЯ СИСТЕМА ЗНАЧЕНИЙ (VALUE) И КОМПАКТНЫЙ ТРЕЙСИНГ
-// =============================================================================
-
 #[derive(Clone)]
 pub enum Value {
     None,
@@ -34,22 +30,18 @@ pub enum Value {
     Range(i64, i64),
     Tuple(Vec<Value>),
     Form(Arc<RwLock<FormInstance>>),
-    /// Реактивный поток или блок инструкций, скомпилированный в LIR (+ сырые предложения для Meta.steps_of)
     Stream {
         stmts: Vec<LirStmt>,
         raw: Vec<Sentence>,
     },
-    /// Таблица маршрутизации `{ ... }`, скомпилированная в ветки LirBranch
     Router(Vec<LirBranch>),
     Function(Arc<FunctionInstance>),
     Atom(Arc<Mutex<Value>>),
     Channel(Arc<Mutex<VecDeque<Value>>>),
-    /// Сигнал раннего выхода из `fold` (`Break { value ... }`)
     Done(Box<Value>),
 }
 
 impl Value {
-    /// Компактное представление внутренней структуры значения для логов и отладки тестов
     pub fn compact_dump(&self) -> String {
         match self {
             Value::None => "None".into(),
@@ -71,16 +63,7 @@ impl Value {
                     .iter()
                     .filter_map(|k| f.fields.get(k).map(|v| format!("{k}={}", v.compact_dump())))
                     .collect();
-                let ancs: Vec<&str> = f.ancestors.keys().map(String::as_str).collect();
-                let methods: Vec<&str> = f.methods.keys().map(String::as_str).collect();
-                let mut meta = String::new();
-                if !ancs.is_empty() {
-                    meta.push_str(&format!(" <:[{}]", ancs.join(",")));
-                }
-                if !methods.is_empty() {
-                    meta.push_str(&format!(" fn:[{}]", methods.join(",")));
-                }
-                format!("Form({}{meta}){{{}}}", f.type_name, flds.join(", "))
+                format!("Form({}){{{}}}", f.type_name, flds.join(", "))
             }
             Value::Stream { raw, .. } => format!("Stream(steps={})", raw.len()),
             Value::Router(b) => format!("Router(branches={})", b.len()),
@@ -119,8 +102,7 @@ impl PartialEq for Value {
 #[derive(Clone)]
 pub struct FormInstance {
     pub type_name: String,
-    pub value_params: Vec<Sentence>,
-    /// Скомпилированные в LIR eager-поля для пересчета при вызове параметризованного конструктора (`Money("100.00")`, `MathOps(10, 2)`)
+    pub ctor_params: Vec<(String, String, Option<LirExpr>)>,
     pub eager_fields: Vec<(String, LirExpr)>,
     pub fields: HashMap<String, Value>,
     pub field_order: Vec<String>,
@@ -136,7 +118,7 @@ impl FormInstance {
     pub fn new(type_name: &str) -> Self {
         Self {
             type_name: type_name.to_string(),
-            value_params: Vec::new(),
+            ctor_params: Vec::new(),
             eager_fields: Vec::new(),
             fields: HashMap::new(),
             field_order: Vec::new(),
@@ -186,7 +168,8 @@ pub type NativeFn = Arc<dyn Fn(Vec<Value>, &mut Scope) -> Result<Value, String> 
 #[derive(Clone)]
 pub enum FunctionBody {
     LirDefined {
-        args: Vec<Sentence>,
+        params: Vec<(String, String, Option<LirExpr>)>,
+        first_param_constraint: String,
         stmts: Vec<LirStmt>,
         raw_body: Vec<Sentence>,
         captured_env: Arc<RwLock<Scope>>,
@@ -246,10 +229,6 @@ impl fmt::Display for Value {
     }
 }
 
-// =============================================================================
-// 2. ОБЛАСТЬ ВИДИМОСТИ (SCOPE) И ПРОЕКЦИЯ ПОЛЕЙ (ЗАКОН 1)
-// =============================================================================
-
 #[derive(Clone, Default)]
 pub struct Scope {
     pub parent: Option<Arc<RwLock<Scope>>>,
@@ -283,21 +262,16 @@ impl Scope {
         s
     }
 
-    /// Проверяет, объявлена ли переменная `name` в текущем локальном скоупе функции/потока
     pub fn has_local(&self, name: &str) -> bool {
         self.bindings.contains_key(name)
     }
 
-    /// Проверяет, существует ли уже привязка `name` в текущем скоупе или в родительских скоупах текущей функции
     pub fn has_in_chain(&self, name: &str) -> bool {
         if self.bindings.contains_key(name) {
             return true;
         }
         if let Some(parent_arc) = &self.parent {
             let parent = parent_arc.read().unwrap();
-            // Останавливаемся на глобальном скоупе (у которого `parent.is_none()`),
-            // чтобы глобальные типы/символы не блокировали распаковку полей внутри функции,
-            // но локальные переменные внешних функций/лямбд (`item`, `disc`) не затирались!
             if parent.parent.is_some() {
                 return parent.has_in_chain(name);
             }
@@ -316,8 +290,6 @@ impl Scope {
         self.bindings.insert(name.to_string(), val);
     }
 
-    /// Единый метод проекции полей формы и `snake_case` имени типа в скоуп (Закон 1a/1b/1c + предки Закона 2).
-    /// Не затирает уже существующие локальные переменные функции (`item`, `name` и т.д.)!
     pub fn unpack_form(&mut self, form_arc: &Arc<RwLock<FormInstance>>, eval_reactive: bool) {
         let form = form_arc.read().unwrap().clone();
         if is_pascal_case(&form.type_name) && form.type_name != "AnonymousForm" {
@@ -368,8 +340,15 @@ fn unwrap_done(v: Value) -> Value {
     }
 }
 
+pub fn stream_uses_free_underscore(sents: &[Sentence]) -> bool {
+    sents.iter().any(|s| {
+        s.iter()
+            .any(|tok| matches!(tok, Token::Path(p) if p == "_" || p.starts_with("_.")))
+    })
+}
+
 // =============================================================================
-// 3. ВЫПОЛНЕНИЕ LIR-ИНСТРУКЦИЙ И LIR-ВЫРАЖЕНИЙ (ЯДРО LIR VM)
+// ИСПОЛНЕНИЕ LIR-ИНСТРУКЦИЙ И ВЫРАЖЕНИЙ
 // =============================================================================
 
 pub fn eval_lir_stmts(
@@ -432,9 +411,7 @@ fn mutate_path_in_place(path: &str, new_val: Value, scope: &mut Scope) -> Result
     }
     let root_name = segs[0];
     let Some(root_val) = scope.get(root_name) else {
-        return Err(format!(
-            "Переменная '{root_name}' не найдена для мутации '{path}'"
-        ));
+        return Err(format!("Переменная '{root_name}' не найдена для мутации '{path}'"));
     };
     let updated = mutate_value_recursive(root_val, &segs[1..], new_val)?;
     scope.set(root_name, updated);
@@ -460,10 +437,7 @@ fn mutate_value_recursive(
                     } else {
                         idx as usize
                     };
-                    f.field_order
-                        .get(i)
-                        .cloned()
-                        .ok_or("Индекс поля вне диапазона")?
+                    f.field_order.get(i).cloned().ok_or("Индекс вне диапазона")?
                 } else {
                     seg.to_string()
                 }
@@ -471,16 +445,9 @@ fn mutate_value_recursive(
             if segs.len() == 1 {
                 f_arc.write().unwrap().set_field(&target_field, new_val);
             } else {
-                let inner = f_arc
-                    .read()
-                    .unwrap()
-                    .get_field(&target_field)
-                    .unwrap_or(Value::None);
+                let inner = f_arc.read().unwrap().get_field(&target_field).unwrap_or(Value::None);
                 let updated_inner = mutate_value_recursive(inner, &segs[1..], new_val)?;
-                f_arc
-                    .write()
-                    .unwrap()
-                    .set_field(&target_field, updated_inner);
+                f_arc.write().unwrap().set_field(&target_field, updated_inner);
             }
             Ok(Value::Form(f_arc))
         }
@@ -492,11 +459,11 @@ fn mutate_value_recursive(
                 idx as usize
             };
             if i < items.len() {
-                if segs.len() == 1 {
-                    items[i] = new_val;
+                items[i] = if segs.len() == 1 {
+                    new_val
                 } else {
-                    items[i] = mutate_value_recursive(items[i].clone(), &segs[1..], new_val)?;
-                }
+                    mutate_value_recursive(items[i].clone(), &segs[1..], new_val)?
+                };
             }
             Ok(Value::Tuple(items))
         }
@@ -519,38 +486,27 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
                 match part {
                     LirInterpPart::Lit(s) => out.push_str(s),
                     LirInterpPart::Expr(key) => {
-                        if !key.contains(|c: char| {
-                            c.is_whitespace() || matches!(c, '+' | '-' | '*' | '/' | '%' | '(' | ')')
-                        }) {
-                            if let Ok(val) = eval_path(key, scope) {
-                                out.push_str(&val.to_string());
-                                continue;
-                            }
-                        }
-                        if let Ok(sents) = parse_code(key) {
+                        if let Ok(val) = eval_path(key, scope) {
+                            out.push_str(&val.to_string());
+                        } else if let Ok(sents) = parse_code(key) {
                             if let Some(first) = sents.first() {
-                                let dummy_hir = HirModule::default();
-                                let expr = lower_tokens_to_expr(first, &dummy_hir);
-                                if let Ok(val) = eval_lir_expr(&expr, scope) {
+                                let e = lower_tokens_to_expr(first, &HirModule::default());
+                                if let Ok(val) = eval_lir_expr(&e, scope) {
                                     out.push_str(&val.to_string());
                                     continue;
                                 }
                             }
+                            out.push_str(&format!("{{{key}}}"));
                         }
-                        out.push_str(&format!("{{{key}}}"));
                     }
                 }
             }
             Ok(Value::String(out))
         }
         LirExpr::Ident(path) => eval_path(path, scope),
-        LirExpr::Tuple(items) => {
-            let vals = items
-                .iter()
-                .map(|e| eval_lir_expr(e, scope))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(Value::Tuple(vals))
-        }
+        LirExpr::Tuple(items) => Ok(Value::Tuple(
+            items.iter().map(|e| eval_lir_expr(e, scope)).collect::<Result<Vec<_>, _>>()?,
+        )),
         LirExpr::Range(a, b) => match (eval_lir_expr(a, scope)?, eval_lir_expr(b, scope)?) {
             (Value::Int(x), Value::Int(y)) => Ok(Value::Range(x, y)),
             (Value::String(x), Value::String(y)) => Ok(Value::Range(
@@ -591,15 +547,17 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
                         );
                     }
                     LirExpr::Lambda {
+                        params,
                         body,
-                        raw_args,
                         raw_body,
                         ..
                     } => {
+                        let lir_p = params.iter().map(|p| (p.clone(), "Any".into(), None)).collect();
                         let func = Arc::new(FunctionInstance {
                             name: k.clone(),
                             body: FunctionBody::LirDefined {
-                                args: raw_args.clone(),
+                                params: lir_p,
+                                first_param_constraint: String::new(),
                                 stmts: body.clone(),
                                 raw_body: raw_body.clone(),
                                 captured_env: Arc::new(RwLock::new(scope.clone())),
@@ -611,24 +569,16 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
                     }
                     _ => {
                         let v = eval_lir_expr(v_expr, scope)?;
-                        let lifted_val = if k == "departments" && matches!(v, Value::Form(_)) {
-                            Value::Tuple(vec![v])
-                        } else {
-                            v
-                        };
-                        form.set_field(k, lifted_val);
+                        form.set_field(k, v);
                     }
                 }
             }
             Ok(Value::Form(Arc::new(RwLock::new(form))))
         }
-        LirExpr::Unary { op, expr: inner } => {
-            let v = eval_lir_expr(inner, scope)?;
-            match (op.as_str(), v) {
-                ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
-                _ => Err(format!("Унарный оператор '{op}' не применим")),
-            }
-        }
+        LirExpr::Unary { op, expr: inner } => match (op.as_str(), eval_lir_expr(inner, scope)?) {
+            ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+            _ => Err(format!("Унарный оператор '{op}' не применим")),
+        },
         LirExpr::Binary { left, op, right } => {
             let lhs = eval_lir_expr(left, scope)?;
             if op == "is" {
@@ -679,30 +629,18 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
             raw_args,
             raw_body,
         } => {
-            if raw_args.is_empty() && (params.is_empty() || params.as_slice() == ["_"]) {
-                if params.is_empty() {
-                    Ok(Value::Function(Arc::new(FunctionInstance {
-                        name: "Method".into(),
-                        body: FunctionBody::LirDefined {
-                            args: raw_args.clone(),
-                            stmts: body.clone(),
-                            raw_body: raw_body.clone(),
-                            captured_env: Arc::new(RwLock::new(scope.clone())),
-                            overrides: HashMap::new(),
-                            partial_args: Vec::new(),
-                        },
-                    })))
-                } else {
-                    Ok(Value::Stream {
-                        stmts: body.clone(),
-                        raw: raw_body.clone(),
-                    })
-                }
+            if raw_args.is_empty() && params.as_slice() == ["_"] {
+                Ok(Value::Stream {
+                    stmts: body.clone(),
+                    raw: raw_body.clone(),
+                })
             } else {
+                let lir_p = params.iter().map(|p| (p.clone(), "Any".into(), None)).collect();
                 Ok(Value::Function(Arc::new(FunctionInstance {
-                    name: "Lambda".into(),
+                    name: if raw_args.is_empty() { "Method".into() } else { "Lambda".into() },
                     body: FunctionBody::LirDefined {
-                        args: raw_args.clone(),
+                        params: lir_p,
+                        first_param_constraint: String::new(),
                         stmts: body.clone(),
                         raw_body: raw_body.clone(),
                         captured_env: Arc::new(RwLock::new(scope.clone())),
@@ -760,17 +698,14 @@ fn eval_lir_pipe_step(
             };
             let mut handles = Vec::new();
             for (branch_name, branch_expr) in fields {
-                let b_name = branch_name.clone();
-                let b_expr = branch_expr.clone();
-                let in_clone = input.clone();
+                let (b_name, b_expr, in_clone) = (branch_name.clone(), branch_expr.clone(), input.clone());
                 let parent = Arc::new(RwLock::new(scope.clone()));
                 handles.push(thread::spawn(move || -> Result<(String, Value), String> {
                     let mut l_scope = Scope::child_stream(parent, in_clone.clone());
                     if let Value::Form(f) = &in_clone {
                         l_scope.unpack_form(f, true);
                     }
-                    let evaluated = eval_lir_expr(&b_expr, &mut l_scope)?;
-                    let res = match evaluated {
+                    let res = match eval_lir_expr(&b_expr, &mut l_scope)? {
                         Value::Stream { stmts, .. } => {
                             unwrap_done(eval_lir_stmts(&stmts, Some(in_clone), &mut l_scope)?)
                         }
@@ -805,9 +740,6 @@ fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Resu
     if let LirExpr::Call { callee, args } = step {
         return eval_lir_call(callee, args, Some(input), scope);
     }
-
-    // Если шаг пайплайна — это встроенное свойство числа (`round_to_int` или `to_float`),
-    // или обращение к методу объекта:
     if let LirExpr::Ident(prop) = step {
         match (&input, prop.as_str()) {
             (Value::Float(f), "round_to_int") => return Ok(Value::Int(f.round() as i64)),
@@ -817,7 +749,6 @@ fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Resu
             _ => {}
         }
     }
-
     let mut t_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
     t_scope.set("_", input.clone());
     if let Value::Form(f_arc) = &input {
@@ -873,28 +804,24 @@ pub fn eval_lir_call(
                     if snap.has_lineage("Atom") {
                         match method_name {
                             "swap" => {
-                                let current_val = snap.get_field("value").unwrap_or(Value::None);
-                                let next_val = apply_callable(arg, current_val, scope)?;
-                                f_arc.write().unwrap().set_field("value", next_val.clone());
-                                return Ok(next_val);
+                                let cur = snap.get_field("value").unwrap_or(Value::None);
+                                let next = apply_callable(arg, cur, scope)?;
+                                f_arc.write().unwrap().set_field("value", next.clone());
+                                return Ok(next);
                             }
-                            "read" | "get" => {
-                                return Ok(snap.get_field("value").unwrap_or(Value::None));
-                            }
+                            "read" | "get" => return Ok(snap.get_field("value").unwrap_or(Value::None)),
                             _ => {}
                         }
                     }
                 }
                 Value::Atom(atom_arc) => match method_name {
                     "swap" => {
-                        let current_val = atom_arc.lock().unwrap().clone();
-                        let next_val = apply_callable(arg, current_val, scope)?;
-                        *atom_arc.lock().unwrap() = next_val.clone();
-                        return Ok(next_val);
+                        let cur = atom_arc.lock().unwrap().clone();
+                        let next = apply_callable(arg, cur, scope)?;
+                        *atom_arc.lock().unwrap() = next.clone();
+                        return Ok(next);
                     }
-                    "read" | "get" => {
-                        return Ok(atom_arc.lock().unwrap().clone());
-                    }
+                    "read" | "get" => return Ok(atom_arc.lock().unwrap().clone()),
                     "set" => {
                         *atom_arc.lock().unwrap() = arg.clone();
                         return Ok(arg);
@@ -948,15 +875,11 @@ fn find_method_in_form_or_ancestors(
     form: &FormInstance,
     method_name: &str,
 ) -> Option<Arc<FunctionInstance>> {
-    if let Some(m) = form.methods.get(method_name) {
-        return Some(m.clone());
-    }
-    for anc in form.ancestors.values() {
-        if let Some(m) = find_method_in_form_or_ancestors(anc, method_name) {
-            return Some(m);
-        }
-    }
-    None
+    form.methods.get(method_name).cloned().or_else(|| {
+        form.ancestors
+            .values()
+            .find_map(|anc| find_method_in_form_or_ancestors(anc, method_name))
+    })
 }
 
 pub fn eval_lir_router(
@@ -969,11 +892,7 @@ pub fn eval_lir_router(
         if let Value::Form(f) = &arg {
             b_scope.unpack_form(f, true);
         }
-
-        if matches!(
-            eval_lir_expr(&branch.condition, &mut b_scope),
-            Ok(Value::Bool(true))
-        ) {
+        if matches!(eval_lir_expr(&branch.condition, &mut b_scope), Ok(Value::Bool(true))) {
             for (var, val_expr) in &branch.bindings {
                 let v = eval_lir_expr(val_expr, &mut b_scope)?;
                 b_scope.set(var, v);
@@ -987,39 +906,22 @@ pub fn eval_lir_router(
     Ok(Value::None)
 }
 
-// =============================================================================
-// 4. РАЗРЕШЕНИЕ ПУТЕЙ, МЕТОДОВ И РЕАКТИВНЫХ ПОЛЕЙ (`self` & `Self`)
-// =============================================================================
-
 pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
     if path == "_" {
-        return scope
-            .get("_")
-            .ok_or_else(|| "Контекст `_` не определен".into());
+        return scope.get("_").ok_or_else(|| "Контекст `_` не определен".into());
     }
     if path.starts_with('_') && path.len() == 2 && path.chars().nth(1).unwrap().is_ascii_digit() {
-        return scope
-            .get(path)
-            .or_else(|| scope.get("_"))
-            .ok_or_else(|| format!("Контекст `{path}` не определен"));
+        return scope.get(path).or_else(|| scope.get("_")).ok_or_else(|| format!("Контекст `{path}` не определен"));
     }
 
     let segments: Vec<&str> = path.split('.').collect();
-    let (root_name, root_call) = segments[0]
-        .strip_suffix("()")
-        .map(|s| (s, true))
-        .unwrap_or((segments[0], false));
+    let (root_name, root_call) = segments[0].strip_suffix("()").map(|s| (s, true)).unwrap_or((segments[0], false));
 
-    let mut current = if let Some(val) = scope.get(root_name).or_else(|| {
-        if root_name == "self" {
-            scope.get("Self")
-        } else if root_name == "Self" {
-            scope.get("self")
-        } else if root_name.starts_with('_') && root_name.len() == 2 {
-            scope.get("_")
-        } else {
-            None
-        }
+    let mut current = if let Some(val) = scope.get(root_name).or_else(|| match root_name {
+        "self" => scope.get("Self"),
+        "Self" => scope.get("self"),
+        r if r.starts_with('_') && r.len() == 2 => scope.get("_"),
+        _ => None,
     }) {
         if root_call {
             apply_callable(val, Value::None, scope)?
@@ -1033,10 +935,7 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
     };
 
     for seg_raw in &segments[1..] {
-        let (seg, is_call) = seg_raw
-            .strip_suffix("()")
-            .map(|s| (s, true))
-            .unwrap_or((*seg_raw, false));
+        let (seg, is_call) = seg_raw.strip_suffix("()").map(|s| (s, true)).unwrap_or((*seg_raw, false));
 
         current = match &current {
             Value::Form(form_arc) => {
@@ -1058,62 +957,39 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
                     }
                 } else if let Some(val) = snap.get_field(seg) {
                     if let Value::Stream { stmts, raw } = val {
-                        eval_reactive_field(&snap, form_arc.clone(), &stmts, &raw, scope)?
+                        eval_reactive_field(&snap, &stmts, &raw, scope)?
                     } else {
                         val
                     }
                 } else if let Some(m) = find_method_in_form_or_ancestors(&snap, seg) {
                     Value::Function(m)
                 } else if let Ok(idx) = seg.parse::<i32>() {
-                    let i = if idx < 0 {
-                        (snap.field_order.len() as i32 + idx) as usize
-                    } else {
-                        idx as usize
-                    };
-                    let fname = snap
-                        .field_order
-                        .get(i)
-                        .ok_or("Индекс поля вне диапазона")?;
+                    let i = if idx < 0 { (snap.field_order.len() as i32 + idx) as usize } else { idx as usize };
+                    let fname = snap.field_order.get(i).ok_or("Индекс поля вне диапазона")?;
                     let v = snap.fields.get(fname).unwrap().clone();
                     if let Value::Stream { stmts, raw } = v {
-                        eval_reactive_field(&snap, form_arc.clone(), &stmts, &raw, scope)?
+                        eval_reactive_field(&snap, &stmts, &raw, scope)?
                     } else {
                         v
                     }
                 } else if let Some(anc) = find_ancestor_recursive(&snap, seg) {
                     Value::Form(Arc::new(RwLock::new(anc)))
                 } else {
-                    return Err(format!(
-                        "Поле или предок '{seg}' не найден в {}",
-                        snap.type_name
-                    ));
+                    return Err(format!("Поле или предок '{seg}' не найден в {}", snap.type_name));
                 }
             }
-            Value::Atom(a) if matches!(seg, "read" | "value" | "get") => {
-                a.lock().unwrap().clone()
-            }
-            Value::Channel(q) if seg == "recv" && is_call => {
-                match q.lock().unwrap().pop_front() {
-                    Some(v) => make_some(v),
-                    None => make_empty_form("None"),
-                }
-            }
+            Value::Atom(a) if matches!(seg, "read" | "value" | "get") => a.lock().unwrap().clone(),
+            Value::Channel(q) if seg == "recv" && is_call => match q.lock().unwrap().pop_front() {
+                Some(v) => make_some(v),
+                None => make_empty_form("None"),
+            },
             Value::Tuple(items) => {
                 if seg == "length" {
                     Value::Int(items.len() as i64)
                 } else {
-                    let idx: i32 = seg
-                        .parse()
-                        .map_err(|_| format!("Ожидался индекс кортежа, получено '{seg}'"))?;
-                    let i = if idx < 0 {
-                        (items.len() as i32 + idx) as usize
-                    } else {
-                        idx as usize
-                    };
-                    items
-                        .get(i)
-                        .cloned()
-                        .ok_or("Индекс вне границ кортежа")?
+                    let idx: i32 = seg.parse().map_err(|_| format!("Ожидался индекс, получено '{seg}'"))?;
+                    let i = if idx < 0 { (items.len() as i32 + idx) as usize } else { idx as usize };
+                    items.get(i).cloned().ok_or("Индекс вне границ кортежа")?
                 }
             }
             Value::String(s) if seg == "length" => Value::Int(s.chars().count() as i64),
@@ -1122,21 +998,18 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
             _ => return Err(format!("Нельзя получить '{seg}' из {current:?}")),
         };
     }
-
     Ok(current)
 }
 
 fn find_ancestor_recursive(form: &FormInstance, target: &str) -> Option<FormInstance> {
-    form.ancestors.get(target).cloned().or_else(|| {
-        form.ancestors
-            .values()
-            .find_map(|a| find_ancestor_recursive(a, target))
-    })
+    form.ancestors
+        .get(target)
+        .cloned()
+        .or_else(|| form.ancestors.values().find_map(|a| find_ancestor_recursive(a, target)))
 }
 
 fn eval_reactive_field(
     snap: &FormInstance,
-    form_arc: Arc<RwLock<FormInstance>>,
     stmts: &[LirStmt],
     raw_sents: &[Sentence],
     scope: &mut Scope,
@@ -1152,23 +1025,14 @@ fn eval_reactive_field(
 
     for fname in &snap.field_order {
         if let Some(fval) = snap.fields.get(fname) {
-            if let Value::Stream {
-                stmts: dep_stmts,
-                raw: dep_raw,
-            } = fval
-            {
+            if let Value::Stream { stmts: dep_stmts, raw: dep_raw } = fval {
                 if dep_raw == raw_sents {
                     break;
                 }
                 if !stream_uses_free_underscore(dep_raw) {
-                    r_scope.set(
-                        "self",
-                        Value::Form(Arc::new(RwLock::new(resolved_self.clone()))),
-                    );
-                    r_scope.set(
-                        "Self",
-                        Value::Form(Arc::new(RwLock::new(resolved_self.clone()))),
-                    );
+                    let s_arc = Arc::new(RwLock::new(resolved_self.clone()));
+                    r_scope.set("self", Value::Form(s_arc.clone()));
+                    r_scope.set("Self", Value::Form(s_arc));
                     if let Ok(comp) = eval_lir_stmts(dep_stmts, None, &mut r_scope) {
                         let unwrapped = unwrap_done(comp);
                         r_scope.set(fname, unwrapped.clone());
@@ -1183,15 +1047,7 @@ fn eval_reactive_field(
     let resolved_arc = Arc::new(RwLock::new(resolved_self));
     r_scope.set("self", Value::Form(resolved_arc.clone()));
     r_scope.set("Self", Value::Form(resolved_arc));
-    let _ = form_arc;
     Ok(unwrap_done(eval_lir_stmts(stmts, None, &mut r_scope)?))
-}
-
-pub fn stream_uses_free_underscore(sents: &[Sentence]) -> bool {
-    sents.iter().any(|s| {
-        s.iter()
-            .any(|tok| matches!(tok, Token::Path(p) if p == "_" || p.starts_with("_.")))
-    })
 }
 
 pub fn invoke_form_method(
@@ -1201,15 +1057,9 @@ pub fn invoke_form_method(
     scope: &mut Scope,
 ) -> Result<Value, String> {
     match &method.body {
-        FunctionBody::Native(f) => {
-            let args_vec = match arg {
-                Value::None => vec![],
-                other => vec![other],
-            };
-            f(args_vec, scope)
-        }
+        FunctionBody::Native(f) => f(if matches!(arg, Value::None) { vec![] } else { vec![arg] }, scope),
         FunctionBody::LirDefined {
-            args,
+            params,
             stmts,
             captured_env,
             overrides,
@@ -1220,8 +1070,6 @@ pub fn invoke_form_method(
                 merged_env.set(k, v.clone());
             }
             let mut call_scope = Scope::child(Arc::new(RwLock::new(merged_env)));
-            call_scope.stream_depth = 0;
-
             let self_arc = Arc::new(RwLock::new(snap.clone()));
             call_scope.set("self", Value::Form(self_arc.clone()));
             call_scope.set("Self", Value::Form(self_arc.clone()));
@@ -1229,13 +1077,8 @@ pub fn invoke_form_method(
             for (k, v) in overrides {
                 call_scope.set(k, v.clone());
             }
-            let runtime_args = filter_runtime_arg_defs(args, &call_scope);
-            bind_arguments(&runtime_args, &arg, &mut call_scope)?;
-            Ok(unwrap_done(eval_lir_stmts(
-                stmts,
-                Some(arg),
-                &mut call_scope,
-            )?))
+            bind_compiled_params(params, &arg, &mut call_scope)?;
+            Ok(unwrap_done(eval_lir_stmts(stmts, Some(arg), &mut call_scope)?))
         }
         FunctionBody::Composed(f1, f2) => {
             let mid = apply_callable(f1.clone(), arg, scope)?;
@@ -1243,10 +1086,6 @@ pub fn invoke_form_method(
         }
     }
 }
-
-// =============================================================================
-// 5. АРИФМЕТИКА, ПЕРЕГРУЗКА ОПЕРАТОРОВ И АЛГЕБРА ТИПОВ (&, |, /)
-// =============================================================================
 
 pub fn eval_binary_op_in_scope(
     left: Value,
@@ -1262,16 +1101,12 @@ pub fn eval_binary_op_in_scope(
             return Ok(right);
         }
     }
-
-    // 1. Вызов перегруженного оператора внутри формы (`Vec2.+`, `Money.*`, `Money.==`)
     if let Value::Form(ref f_arc) = left {
         let snap = f_arc.read().unwrap().clone();
         if let Some(m) = find_method_in_form_or_ancestors(&snap, op) {
             return invoke_form_method(&snap, &m, right, scope);
         }
     }
-
-    // 2. Раздел 3 / 5 / 9: `x == Pattern` — инфиксный сахар для `x . matches(Pattern)`
     if op == "==" {
         if let Value::Range(start, end) = &right {
             return match &left {
@@ -1300,9 +1135,7 @@ pub fn eval_binary_op_in_scope(
             "+" => Ok(Value::Int(a + b)),
             "-" => Ok(Value::Int(a - b)),
             "*" => Ok(Value::Int(a * b)),
-            "/" => (b != 0)
-                .then(|| Value::Int(a / b))
-                .ok_or_else(|| "Деление на ноль".into()),
+            "/" => (b != 0).then(|| Value::Int(a / b)).ok_or_else(|| "Деление на ноль".into()),
             "%" => Ok(Value::Int(a % b)),
             "**" => Ok(Value::Int(a.pow(b.max(0) as u32))),
             "<<" => Ok(Value::Int(a << b)),
@@ -1316,7 +1149,6 @@ pub fn eval_binary_op_in_scope(
         (Value::Float(a), op, Value::Float(b)) => eval_float_op(a, op, b),
         (Value::Int(a), op, Value::Float(b)) => eval_float_op(a as f64, op, b),
         (Value::Float(a), op, Value::Int(b)) => eval_float_op(a, op, b as f64),
-
         (Value::Bool(a), "&&", Value::Bool(b)) => Ok(Value::Bool(a && b)),
         (Value::Bool(a), "||", Value::Bool(b)) => Ok(Value::Bool(a || b)),
         (Value::String(a), "+", Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
@@ -1326,7 +1158,7 @@ pub fn eval_binary_op_in_scope(
             if r1.type_name == "Compile" {
                 return Ok(Value::Form(f2.clone()));
             }
-            if r2.type_name == "Public" || r2.type_name == "Private" || r2.type_name == "Compile" {
+            if matches!(r2.type_name.as_str(), "Public" | "Private" | "Compile") {
                 return Ok(Value::Form(f1.clone()));
             }
             if r2.type_name == "Bypass" {
@@ -1342,7 +1174,7 @@ pub fn eval_binary_op_in_scope(
             };
 
             let mut merged = FormInstance::new(&new_name);
-            merged.value_params = r1.value_params.clone();
+            merged.ctor_params = r1.ctor_params.clone();
             merged.eager_fields = r1.eager_fields.clone();
             merged.ancestors = r1.ancestors.clone();
             merged.ancestors.extend(r2.ancestors.clone());
@@ -1357,29 +1189,17 @@ pub fn eval_binary_op_in_scope(
             merged.ambiguous_fields = r1.ambiguous_fields.clone();
 
             for k in &r1.field_order {
-                let orig = r1
-                    .field_origins
-                    .get(k)
-                    .cloned()
-                    .unwrap_or_else(|| r1.type_name.clone());
+                let orig = r1.field_origins.get(k).cloned().unwrap_or_else(|| r1.type_name.clone());
                 merged.set_field_with_origin(k, r1.fields[k].clone(), &orig);
             }
             for k in &r2.field_order {
-                let rhs_orig = r2
-                    .field_origins
-                    .get(k)
-                    .cloned()
-                    .unwrap_or_else(|| r2.type_name.clone());
+                let rhs_orig = r2.field_origins.get(k).cloned().unwrap_or_else(|| r2.type_name.clone());
                 let rhs_val = r2.fields[k].clone();
                 if is_override {
                     merged.set_field_with_origin(k, rhs_val, &r1.type_name);
                 } else if let Some(lhs_orig) = merged.field_origins.get(k).cloned() {
                     if lhs_orig != rhs_orig {
-                        merged
-                            .ambiguous_fields
-                            .entry(k.clone())
-                            .or_insert_with(|| vec![lhs_orig])
-                            .push(rhs_orig);
+                        merged.ambiguous_fields.entry(k.clone()).or_insert_with(|| vec![lhs_orig]).push(rhs_orig);
                     }
                     merged.fields.insert(k.clone(), rhs_val);
                 } else {
@@ -1389,19 +1209,12 @@ pub fn eval_binary_op_in_scope(
             Ok(Value::Form(Arc::new(RwLock::new(merged))))
         }
 
-        // `Compile & [ ... ]` — выполняет поток во время компиляции/загрузки модуля!
-        (Value::Form(f1), "&", Value::Stream { stmts, .. })
-            if f1.read().unwrap().type_name == "Compile" =>
-        {
-            let res = eval_lir_stmts(&stmts, None, scope)?;
-            return Ok(unwrap_done(res));
+        (Value::Form(f1), "&", Value::Stream { stmts, .. }) if f1.read().unwrap().type_name == "Compile" => {
+            Ok(unwrap_done(eval_lir_stmts(&stmts, None, scope)?))
         }
-
         (Value::Form(f1), "&", pred @ (Value::Function(_) | Value::Stream { .. })) => {
             let mut refined = f1.read().unwrap().clone();
-            refined
-                .ancestors
-                .insert(refined.type_name.clone(), f1.read().unwrap().clone());
+            refined.ancestors.insert(refined.type_name.clone(), f1.read().unwrap().clone());
             refined.predicates.push(pred);
             Ok(Value::Form(Arc::new(RwLock::new(refined))))
         }
@@ -1410,14 +1223,14 @@ pub fn eval_binary_op_in_scope(
             refined.predicates.push(pred);
             Ok(Value::Form(Arc::new(RwLock::new(refined))))
         }
-
         (Value::Function(func_arc), "&", Value::Form(ov_arc)) => {
             let ov = ov_arc.read().unwrap();
             if matches!(ov.type_name.as_str(), "Public" | "Private" | "Compile") {
                 return Ok(Value::Function(func_arc));
             }
             if let FunctionBody::LirDefined {
-                args,
+                params,
+                first_param_constraint,
                 stmts,
                 raw_body,
                 captured_env,
@@ -1430,7 +1243,8 @@ pub fn eval_binary_op_in_scope(
                 Ok(Value::Function(Arc::new(FunctionInstance {
                     name: func_arc.name.clone(),
                     body: FunctionBody::LirDefined {
-                        args: args.clone(),
+                        params: params.clone(),
+                        first_param_constraint: first_param_constraint.clone(),
                         stmts: stmts.clone(),
                         raw_body: raw_body.clone(),
                         captured_env: captured_env.clone(),
@@ -1442,18 +1256,13 @@ pub fn eval_binary_op_in_scope(
                 Ok(Value::Function(func_arc))
             }
         }
-
-        (
-            f1 @ (Value::Function(_) | Value::Stream { .. }),
-            "&",
-            f2 @ (Value::Function(_) | Value::Stream { .. }),
-        ) => Ok(Value::Function(Arc::new(FunctionInstance {
-            name: "ComposedStream".into(),
-            body: FunctionBody::Composed(f1, f2),
-        }))),
-
+        (f1 @ (Value::Function(_) | Value::Stream { .. }), "&", f2 @ (Value::Function(_) | Value::Stream { .. })) => {
+            Ok(Value::Function(Arc::new(FunctionInstance {
+                name: "ComposedStream".into(),
+                body: FunctionBody::Composed(f1, f2),
+            })))
+        }
         (val, "&", Value::Form(_)) => Ok(val),
-
         (left_val, "|", right_val) => {
             let mut u = FormInstance::new("UnionType");
             for v in [left_val, right_val] {
@@ -1468,7 +1277,6 @@ pub fn eval_binary_op_in_scope(
             }
             Ok(Value::Form(Arc::new(RwLock::new(u))))
         }
-
         (Value::Form(f), "/", Value::Symbol(sym) | Value::String(sym)) => {
             let mut form = f.read().unwrap().clone();
             form.remove_field(&sym);
@@ -1480,14 +1288,9 @@ pub fn eval_binary_op_in_scope(
         }
         (Value::Form(f), "/", Value::Form(rhs_arc)) => {
             let rhs_name = rhs_arc.read().unwrap().type_name.clone();
-            Ok(Value::Form(Arc::new(RwLock::new(
-                subtract_ancestor_or_path(&f.read().unwrap(), &rhs_name),
-            ))))
+            Ok(Value::Form(Arc::new(RwLock::new(subtract_ancestor_or_path(&f.read().unwrap(), &rhs_name)))))
         }
-
-        (a, op, b) => Err(format!(
-            "Оператор '{op}' не поддерживается для {a:?} и {b:?}"
-        )),
+        (a, op, b) => Err(format!("Оператор '{op}' не поддерживается для {a:?} и {b:?}")),
     }
 }
 
@@ -1517,13 +1320,8 @@ pub fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> Fo
             if origins.len() == 1 {
                 let winner = origins[0].clone();
                 form.ambiguous_fields.remove(field_name);
-                form.field_origins
-                    .insert(field_name.to_string(), winner.clone());
-                if let Some(val) = form
-                    .ancestors
-                    .get(&winner)
-                    .and_then(|a| a.get_field(field_name))
-                {
+                form.field_origins.insert(field_name.to_string(), winner.clone());
+                if let Some(val) = form.ancestors.get(&winner).and_then(|a| a.get_field(field_name)) {
                     form.fields.insert(field_name.to_string(), val);
                 }
             } else if origins.is_empty() {
@@ -1554,94 +1352,47 @@ pub fn subtract_ancestor_or_path(source: &FormInstance, target_path: &str) -> Fo
 }
 
 // =============================================================================
-// 6. APPLY CALLABLE & LAW 3 (OUTCOME BYPASS)
+// 6. КОМПАКТНАЯ ПРОВЕРКА ЗАКОНА 3 ПО `first_param_constraint` ИЗ LIR (15 СТРОК!)
 // =============================================================================
 
-fn callable_accepts_input(callable: &Value, input: &Value, scope: &mut Scope) -> bool {
-    let Value::Function(func_arc) = callable else {
+fn callable_accepts_input(callable: &Value, input: &Value, scope: &Scope) -> bool {
+    let Value::Function(func_arc) = callable else { return true };
+    let FunctionBody::LirDefined { first_param_constraint, partial_args, .. } = &func_arc.body else {
         return true;
     };
-    let FunctionBody::LirDefined {
-        args, partial_args, ..
-    } = &func_arc.body
-    else {
+    if !partial_args.is_empty() || first_param_constraint.is_empty() {
         return true;
-    };
-    let runtime_args = filter_runtime_arg_defs(args, scope);
-    let Some(first_param) = runtime_args.get(partial_args.len()) else {
-        return true;
-    };
+    }
+    let Value::Form(val_arc) = input else { return true };
+    let vf = val_arc.read().unwrap();
 
-    let type_tokens: &[Token] = match first_param.as_slice() {
-        [Token::Path(single)] => {
-            if matches!(scope.get(single), Some(Value::Form(_))) {
-                first_param.as_slice()
-            } else {
-                &[]
-            }
-        }
-        [Token::Path(_), Token::Op(op), ..] if matches!(op.as_str(), "&" | "|" | "/") => {
-            first_param.as_slice()
-        }
-        [Token::Path(_), rest @ ..] => {
-            if matches!(rest.first(), Some(Token::Lit(_) | Token::Group(_, _))) {
-                &[]
-            } else {
-                rest
-            }
-        }
-        _ => &[],
-    };
-
-    type_tokens.is_empty() || value_matches_type_tokens(input, type_tokens, scope)
-}
-
-fn value_matches_type_tokens(val: &Value, tokens: &[Token], scope: &mut Scope) -> bool {
+    let parts: Vec<&str> = first_param_constraint.split_whitespace().collect();
     let mut i = 0;
-    while i < tokens.len() {
-        match &tokens[i] {
-            Token::Path(t_name)
-            if !matches!(
-                    t_name.as_str(),
-                    "String"
-                        | "Symbol"
-                        | "Int"
-                        | "Float"
-                        | "Bool"
-                        | "Byte"
-                        | "Any"
-                        | "Tuple"
-                        | "File"
-                        | "Path"
-                        | "Url"
-                        | "List"
-                ) =>
-                {
-                    if let Value::Form(val_arc) = val {
-                        let vf = val_arc.read().unwrap();
-                        if !vf.has_lineage(t_name) {
-                            let matches_union = matches!(
-                            scope.get(t_name),
-                            Some(Value::Form(u_arc)) if u_arc.read().unwrap().union_variants.iter().any(|v| {
-                                matches!(v, Value::Form(vf2) if vf.has_lineage(&vf2.read().unwrap().type_name))
-                            })
-                        );
-                            if !matches_union {
-                                return false;
-                            }
-                        }
-                    }
+    while i < parts.len() {
+        if parts[i] == "/" {
+            if let Some(&forb) = parts.get(i + 1) {
+                if vf.has_lineage(forb) {
+                    return false;
                 }
-            Token::Op(op) if op == "/" => {
-                if let (Some(Token::Path(forb)), Value::Form(val_arc)) = (tokens.get(i + 1), val) {
-                    if val_arc.read().unwrap().has_lineage(forb) {
-                        return false;
-                    }
-                }
-                i += 2;
-                continue;
             }
-            _ => {}
+            i += 2;
+            continue;
+        }
+        let t_name = parts[i].split('(').next().unwrap_or(parts[i]);
+        if is_pascal_case(t_name)
+            && !matches!(t_name, "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Any" | "Tuple" | "Path" | "Url" | "List" | "Option")
+            && (matches!(scope.get(t_name), Some(Value::Form(_))) || parts.contains(&"&") || parts.contains(&"/"))
+            && !vf.has_lineage(t_name)
+        {
+            let matches_union = matches!(
+                scope.get(t_name),
+                Some(Value::Form(u_arc)) if u_arc.read().unwrap().union_variants.iter().any(|v| {
+                    matches!(v, Value::Form(vf2) if vf.has_lineage(&vf2.read().unwrap().type_name))
+                })
+            );
+            if !matches_union {
+                return false;
+            }
         }
         i += 1;
     }
@@ -1655,46 +1406,30 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
 
     match callable {
         Value::Function(func) => match &func.body {
-            FunctionBody::Native(f) => {
-                let args_vec = match arg {
-                    Value::None => vec![],
-                    other => vec![other],
-                };
-                f(args_vec, scope)
-            }
+            FunctionBody::Native(f) => f(if matches!(arg, Value::None) { vec![] } else { vec![arg] }, scope),
             FunctionBody::LirDefined {
-                args,
+                params,
+                first_param_constraint,
                 stmts,
                 raw_body,
                 captured_env,
                 overrides,
                 partial_args,
             } => {
-                let runtime_args = filter_runtime_arg_defs(args, scope);
                 let mut combined = partial_args.clone();
                 match &arg {
-                    Value::Tuple(items) if runtime_args.len() > 1 => {
-                        combined.extend(items.clone())
-                    }
+                    Value::Tuple(items) if params.len() > 1 => combined.extend(items.clone()),
                     Value::None => {}
                     other => combined.push(other.clone()),
                 }
 
-                // Partial Application (`partial_conn connect("db.internal")`, `add_ten add_two(10)`)
-                if !combined.is_empty()
-                    && combined.len() < runtime_args.len()
-                    && !matches!(arg, Value::None)
-                {
-                    let has_missing_required =
-                        runtime_args.iter().skip(combined.len()).any(|s| {
-                            matches!(s.as_slice(), [Token::Path(_)])
-                                || (s.len() == 2 && matches!(s[1], Token::Path(_)))
-                        });
-                    if has_missing_required {
+                if !combined.is_empty() && combined.len() < params.len() && !matches!(arg, Value::None) {
+                    if params.iter().skip(combined.len()).any(|(_, _, def)| def.is_none()) {
                         return Ok(Value::Function(Arc::new(FunctionInstance {
                             name: format!("{}_partial", func.name),
                             body: FunctionBody::LirDefined {
-                                args: args.clone(),
+                                params: params.clone(),
+                                first_param_constraint: first_param_constraint.clone(),
                                 stmts: stmts.clone(),
                                 raw_body: raw_body.clone(),
                                 captured_env: captured_env.clone(),
@@ -1705,38 +1440,27 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
                     }
                 }
 
-                // Объединяем глобальное окружение с захваченным, чтобы рекурсивные функции и типы были доступны
                 let mut merged_env = scope.clone();
                 for (k, v) in &captured_env.read().unwrap().bindings {
                     merged_env.set(k, v.clone());
                 }
                 let mut call_scope = Scope::child(Arc::new(RwLock::new(merged_env)));
-                call_scope.stream_depth = if func.name == "Lambda" {
-                    scope.stream_depth + 1
-                } else {
-                    0
-                };
+                call_scope.stream_depth = if func.name == "Lambda" { scope.stream_depth + 1 } else { 0 };
 
-                let packed_arg = if combined.is_empty() {
-                    Value::None
-                } else if combined.len() == 1 {
-                    combined.remove(0)
-                } else {
-                    Value::Tuple(combined)
+                let packed_arg = match combined.len() {
+                    0 => Value::None,
+                    1 => combined.remove(0),
+                    _ => Value::Tuple(combined),
                 };
                 if call_scope.stream_depth == 0 {
                     call_scope.set("_0", packed_arg.clone());
                 }
-                bind_arguments(&runtime_args, &packed_arg, &mut call_scope)?;
+                bind_compiled_params(params, &packed_arg, &mut call_scope)?;
                 for (k, v) in overrides {
                     call_scope.set(k, v.clone());
                 }
                 let res = eval_lir_stmts(stmts, Some(packed_arg), &mut call_scope)?;
-                if func.name == "Lambda" {
-                    Ok(res)
-                } else {
-                    Ok(unwrap_done(res))
-                }
+                Ok(if func.name == "Lambda" { res } else { unwrap_done(res) })
             }
             FunctionBody::Composed(f1, f2) => {
                 let mid = apply_callable(f1.clone(), arg, scope)?;
@@ -1744,8 +1468,7 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             }
         },
         Value::Stream { stmts, .. } => {
-            let mut s_scope =
-                Scope::child_stream(Arc::new(RwLock::new(scope.clone())), arg.clone());
+            let mut s_scope = Scope::child_stream(Arc::new(RwLock::new(scope.clone())), arg.clone());
             if let Value::Form(f_arc) = &arg {
                 s_scope.unpack_form(f_arc, true);
             }
@@ -1765,10 +1488,8 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             if let Some(call_method) = router.methods.get("__call__") {
                 return invoke_form_method(&router, call_method, arg, scope);
             }
-            if !router.value_params.is_empty() || is_pascal_case(&router.type_name) {
-                if router.union_variants.is_empty() {
-                    return instantiate_form_constructor(&router, arg, scope);
-                }
+            if (!router.ctor_params.is_empty() || is_pascal_case(&router.type_name)) && router.union_variants.is_empty() {
+                return instantiate_form_constructor(&router, arg, scope);
             }
             if !router.union_variants.is_empty() {
                 let matched = router.union_variants.iter().any(|v| match (v, &arg) {
@@ -1782,8 +1503,7 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             }
             for key in &router.field_order {
                 if let Some(Value::Stream { stmts, .. }) = router.fields.get(key) {
-                    let mut b_scope =
-                        Scope::child_stream(Arc::new(RwLock::new(scope.clone())), arg.clone());
+                    let mut b_scope = Scope::child_stream(Arc::new(RwLock::new(scope.clone())), arg.clone());
                     if match_type_or_wildcard(key, &arg, &mut b_scope) {
                         return eval_lir_stmts(stmts, Some(arg), &mut b_scope);
                     }
@@ -1795,8 +1515,6 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
     }
 }
 
-/// Вызов конструктора формы `Money("100.00")`, `MathOps(10, 2)`, `GreetingCard("Bob")`:
-/// привязывает параметры конструктора к `self` и пересчитывает скомпилированные `eager_fields`!
 fn instantiate_form_constructor(
     proto: &FormInstance,
     arg: Value,
@@ -1806,74 +1524,54 @@ fn instantiate_form_constructor(
     inst.ancestors.insert(proto.type_name.clone(), proto.clone());
 
     let mut init_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-    let runtime_params = filter_runtime_arg_defs(&proto.value_params, scope);
-    bind_arguments(&runtime_params, &arg, &mut init_scope)?;
+    bind_compiled_params(&proto.ctor_params, &arg, &mut init_scope)?;
 
-    for param_sent in &runtime_params {
-        if let Some(Token::Path(p)) = param_sent.first() {
-            let var_name = if is_pascal_case(p) {
-                pascal_to_snake_case(p)
-            } else {
-                p.clone()
-            };
-            if let Some(v) = init_scope.get(&var_name) {
-                inst.set_field(&var_name, v);
-            }
+    for (name, _, _) in &proto.ctor_params {
+        if let Some(v) = init_scope.get(name) {
+            inst.set_field(name, v);
         }
     }
-
-    if !proto.value_params.is_empty() {
+    if !proto.ctor_params.is_empty() {
         for (fname, expr) in &inst.eager_fields.clone() {
             let val = eval_lir_expr(expr, &mut init_scope)?;
             init_scope.set(fname, val.clone());
             inst.set_field(fname, val);
         }
     }
-
     Ok(Value::Form(Arc::new(RwLock::new(inst))))
 }
 
-fn filter_runtime_arg_defs(args: &[Sentence], scope: &Scope) -> Vec<Sentence> {
-    let mut out = Vec::new();
-    for (idx, sent) in args.iter().enumerate() {
-        match sent.as_slice() {
-            [Token::Path(tp), Token::Group(')', _), ..] if is_pascal_case(tp) => continue,
-            [Token::Path(tp), Token::Path(bound)]
-            if is_pascal_case(tp) && is_pascal_case(bound) =>
-                {
-                    continue;
-                }
-            [Token::Path(single)] if is_pascal_case(single) => {
-                // Если `single` — это `A`, `B` в `list_map(A, B, l, action)` или `fmap(A, B, fa Option(A), ...)`,
-                // то есть одиночная заглавная буква (или не существующий в скоупе тип, за которым идут еще параметры),
-                // это чистый compile-time параметр типа!
-                let is_known_form = matches!(scope.get(single), Some(Value::Form(_)));
-                let has_more_params = idx + 1 < args.len();
-                let used_later = args.iter().skip(idx + 1).any(|later| {
-                    later
-                        .iter()
-                        .skip(1)
-                        .any(|t| token_contains_ident(t, single))
-                });
-                if used_later || (!is_known_form && has_more_params) {
-                    continue;
-                }
-                out.push(sent.clone());
-            }
-            _ => out.push(sent.clone()),
+/// ВСЯ привязка аргументов теперь занимает 25 строк, так как LIR уже сгенерировал пролог и дефолты!
+fn bind_compiled_params(
+    params: &[(String, String, Option<LirExpr>)],
+    incoming: &Value,
+    scope: &mut Scope,
+) -> Result<(), String> {
+    scope.set("_", incoming.clone());
+    if let Value::Form(f_arc) = incoming {
+        if params.len() <= 1 {
+            scope.unpack_form(f_arc, true);
         }
     }
-    out
-}
-
-fn token_contains_ident(tok: &Token, ident: &str) -> bool {
-    match tok {
-        Token::Path(p) => p == ident,
-        Token::Group(_, sents) => sents
-            .iter()
-            .any(|s| s.iter().any(|t| token_contains_ident(t, ident))),
-        _ => false,
+    let items: Vec<Value> = match incoming {
+        Value::Tuple(v) if params.len() > 1 => v.clone(),
+        Value::None => vec![],
+        other => vec![other.clone()],
+    };
+    for (idx, (name, _, def_expr)) in params.iter().enumerate() {
+        if let Some(val) = items.get(idx).cloned() {
+            scope.set(name, val.clone());
+            if let Value::Form(f_arc) = &val {
+                scope.unpack_form(f_arc, true);
+            }
+        } else if let Some(def) = def_expr {
+            let v = eval_lir_expr(def, scope)?;
+            scope.set(name, v);
+        } else if name != "_" {
+            scope.set(name, Value::None);
+        }
     }
+    Ok(())
 }
 
 fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) -> bool {
@@ -1882,31 +1580,19 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
         return true;
     }
     if pattern_name == "None" {
-        if matches!(val, Value::None) {
-            return true;
-        }
-        if let Value::Form(f_arc) = val {
-            if f_arc.read().unwrap().type_name == "None" {
-                return true;
-            }
-        }
-        return false;
+        return matches!(val, Value::None)
+            || matches!(val, Value::Form(f) if f.read().unwrap().type_name == "None");
     }
-    if pattern_name == "Form" && matches!(val, Value::Form(_)) {
+    if (pattern_name == "Form" && matches!(val, Value::Form(_)))
+        || (pattern_name == "Tuple" && matches!(val, Value::Tuple(_)))
+        || (pattern_name == "Stream" && matches!(val, Value::Stream { .. } | Value::Function(_)))
+    {
         return true;
     }
-    if pattern_name == "Tuple" && matches!(val, Value::Tuple(_)) {
-        return true;
-    }
-    if pattern_name == "Stream" && matches!(val, Value::Stream { .. } | Value::Function(_)) {
-        return true;
-    }
-
     match val {
         Value::Form(form_arc) => {
             let form = form_arc.read().unwrap().clone();
             let mut matched = form.has_lineage(pattern_name);
-
             if let Some(Value::Form(target_arc)) = scope.get(pattern_name) {
                 let target = target_arc.read().unwrap().clone();
                 if !matched && !target.ancestors.is_empty() {
@@ -1915,16 +1601,12 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
                 if matched {
                     for pred in &target.predicates {
                         let mut p_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
-                        if !matches!(
-                            apply_callable(pred.clone(), val.clone(), &mut p_scope),
-                            Ok(Value::Bool(true))
-                        ) {
+                        if !matches!(apply_callable(pred.clone(), val.clone(), &mut p_scope), Ok(Value::Bool(true))) {
                             return false;
                         }
                     }
                 }
             }
-
             if matched {
                 scope.set(&pascal_to_snake_case(pattern_name), val.clone());
                 scope.unpack_form(form_arc, true);
@@ -1937,114 +1619,8 @@ fn match_type_or_wildcard(pattern_name: &str, val: &Value, scope: &mut Scope) ->
     }
 }
 
-fn bind_arguments(
-    arg_defs: &[Sentence],
-    incoming: &Value,
-    scope: &mut Scope,
-) -> Result<(), String> {
-    scope.set("_", incoming.clone());
-    if arg_defs.is_empty() {
-        if let Value::Form(f_arc) = incoming {
-            scope.unpack_form(f_arc, true);
-        }
-        return Ok(());
-    }
-
-    let items: Vec<Value> = match incoming {
-        Value::Tuple(v) if arg_defs.len() > 1 => v.clone(),
-        Value::None => vec![],
-        other => vec![other.clone()],
-    };
-
-    let dummy_hir = HirModule::default();
-    for (idx, param_sent) in arg_defs.iter().enumerate() {
-        let provided = items.get(idx).cloned();
-        match param_sent.as_slice() {
-            // Закон 1d: Деструктуризация полей `{ name } WithName`
-            [Token::Group('{', field_sents), ..] => {
-                if let Some(Value::Form(f_arc)) = &provided {
-                    let f = f_arc.read().unwrap();
-                    for fs in field_sents {
-                        if let [Token::Path(fname)] = fs.as_slice() {
-                            if let Some(fv) = f.get_field(fname) {
-                                scope.set(fname, fv);
-                            }
-                        }
-                    }
-                }
-            }
-            // Закон 1d: Деструктуризация кортежа в параметре `(idx Int, (item Item, disc Int))`
-            [Token::Group('(', tuple_sents), ..] => {
-                if let Some(sub_val) = &provided {
-                    bind_arguments(tuple_sents, sub_val, scope)?;
-                }
-            }
-            // Закон 1c: Одиночный идентификатор `fn(Age)` -> связывает `age` (и `Age`), а если это форма — распаковывает поля
-            [Token::Path(single)] => {
-                let val = provided.unwrap_or(Value::None);
-                let is_upper = is_pascal_case(single);
-                scope.set(single, val.clone());
-                if is_upper {
-                    scope.set(&pascal_to_snake_case(single), val.clone());
-                    if let Value::Form(f_arc) = &val {
-                        scope.unpack_form(f_arc, true);
-                    }
-                }
-            }
-            // Анонимный пересеченный слот `FinalizeBill(User & Cart)`
-            [Token::Path(first_type), Token::Op(op), ..]
-            if is_pascal_case(first_type) && matches!(op.as_str(), "&" | "|" | "/") =>
-                {
-                    if let Some(val) = &provided {
-                        scope.set(&pascal_to_snake_case(first_type), val.clone());
-                        if let Value::Form(f_arc) = val {
-                            scope.unpack_form(f_arc, true);
-                        }
-                    }
-                }
-            // Именованный параметр `fn(u User)`, `connect(host String "localhost")`, `connect(Host "localhost")`
-            [Token::Path(param_name), rest @ ..] => {
-                if let Some(val) = provided {
-                    scope.set(param_name, val.clone());
-                    if let Value::Form(f_arc) = &val {
-                        scope.unpack_form(f_arc, true);
-                    }
-                } else {
-                    let def_slice = extract_default_slice(rest);
-                    if !def_slice.is_empty() {
-                        let lir_def = lower_tokens_to_expr(def_slice, &dummy_hir);
-                        let def_val = eval_lir_expr(&lir_def, scope)?;
-                        scope.set(param_name, def_val);
-                    } else {
-                        scope.set(param_name, Value::None);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn extract_default_slice(rest: &[Token]) -> &[Token] {
-    match rest {
-        [Token::Path(ty), def @ ..]
-        if is_pascal_case(ty)
-            && !def.is_empty()
-            && !matches!(
-                    def.first(),
-                    Some(Token::Op(_) | Token::Group(')', _) | Token::Group('[', _))
-                ) =>
-            {
-                def
-            }
-        [Token::Lit(_)] | [Token::Group(_, _)] => rest,
-        _ => &[],
-    }
-}
-
 // =============================================================================
-// 7. ПРЯМАЯ ЗАГРУЗКА И ИСПОЛНЕНИЕ СКОМПИЛИРОВАННОГО LIR-МОДУЛЯ
+// 7. ЗАГРУЗКА И ЗАПУСК LIR-МОДУЛЯ
 // =============================================================================
 
 fn build_form_from_lir_struct(
@@ -2053,43 +1629,35 @@ fn build_form_from_lir_struct(
     scope: &mut Scope,
 ) -> Result<Value, String> {
     let mut form = FormInstance::new(&st.name);
-    form.value_params = st.value_params.clone();
+    form.ctor_params = st.ctor_params.clone();
 
     for anc_name in &st.ancestors {
         if let Some(Value::Form(anc_arc)) = scope.get(anc_name) {
-            form.ancestors
-                .insert(anc_name.clone(), anc_arc.read().unwrap().clone());
+            form.ancestors.insert(anc_name.clone(), anc_arc.read().unwrap().clone());
         } else if anc_name == "Bypass" {
-            form.ancestors
-                .insert("Bypass".into(), FormInstance::new("Bypass"));
+            form.ancestors.insert("Bypass".into(), FormInstance::new("Bypass"));
         }
     }
     if st.is_bypass {
-        form.ancestors
-            .entry("Bypass".into())
-            .or_insert_with(|| FormInstance::new("Bypass"));
+        form.ancestors.entry("Bypass".into()).or_insert_with(|| FormInstance::new("Bypass"));
     }
 
     let mut init_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
     for f in &st.fields {
-        let is_val_param = st.value_params.iter().any(|vp| {
-            matches!(vp.first(), Some(Token::Path(p)) if p == &f.name || pascal_to_snake_case(p) == f.name)
-        });
+        let is_ctor_param = st.ctor_params.iter().any(|(n, _, _)| n == &f.name);
         let val = match &f.default_val {
             Some(expr) => {
-                if !is_val_param {
+                if !is_ctor_param {
                     form.eager_fields.push((f.name.clone(), expr.clone()));
                 }
-                eval_lir_expr(expr, &mut init_scope)
-                    .unwrap_or_else(|_| Value::Symbol(f.ty.clone()))
+                eval_lir_expr(expr, &mut init_scope).unwrap_or_else(|_| Value::Symbol(f.ty.clone()))
             }
             None => Value::Symbol(f.ty.clone()),
         };
         init_scope.set(&f.name, val.clone());
         form.set_field_with_origin(&f.name, val, &f.origin);
         if f.is_ambiguous {
-            form.ambiguous_fields
-                .insert(f.name.clone(), f.conflicting_origins.clone());
+            form.ambiguous_fields.insert(f.name.clone(), f.conflicting_origins.clone());
         }
     }
 
@@ -2102,12 +1670,10 @@ fn build_form_from_lir_struct(
             },
         );
     }
-
     for sub in &st.submodules {
         let sub_val = build_form_from_lir_struct(sub, top_env, scope)?;
         form.set_field(&sub.name, sub_val);
     }
-
     for m in &st.methods {
         if m.is_contract && m.body.is_empty() {
             continue;
@@ -2115,7 +1681,8 @@ fn build_form_from_lir_struct(
         let func = Arc::new(FunctionInstance {
             name: m.raw_name.clone(),
             body: FunctionBody::LirDefined {
-                args: m.raw_args.clone(),
+                params: m.params.clone(),
+                first_param_constraint: m.first_param_constraint.clone(),
                 stmts: m.body.clone(),
                 raw_body: m.raw_body.clone(),
                 captured_env: top_env.clone(),
@@ -2125,19 +1692,16 @@ fn build_form_from_lir_struct(
         });
         form.methods.insert(m.raw_name.clone(), func);
     }
-
     for v_expr in &st.union_variant_exprs {
         if let Ok(v) = eval_lir_expr(v_expr, scope) {
             form.union_variants.push(v);
         }
     }
-
     for p_expr in &st.refinement_predicates {
         if let Ok(p) = eval_lir_expr(p_expr, scope) {
             form.predicates.push(p);
         }
     }
-
     Ok(Value::Form(Arc::new(RwLock::new(form))))
 }
 
@@ -2145,7 +1709,6 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
     let mut global_scope = create_global_scope();
     let top_env = Arc::new(RwLock::new(global_scope.clone()));
 
-    // 1. Регистрируем функции и именованные потоки из LIR
     for func in &lir.functions {
         let val = if func.is_stream {
             Value::Stream {
@@ -2156,7 +1719,8 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
             Value::Function(Arc::new(FunctionInstance {
                 name: func.raw_name.clone(),
                 body: FunctionBody::LirDefined {
-                    args: func.raw_args.clone(),
+                    params: func.params.clone(),
+                    first_param_constraint: func.first_param_constraint.clone(),
                     stmts: func.body.clone(),
                     raw_body: func.raw_body.clone(),
                     captured_env: top_env.clone(),
@@ -2169,7 +1733,6 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
     }
     *top_env.write().unwrap() = global_scope.clone();
 
-    // 2. Инициализируем структуры (начиная с prelude) и глобальные константы в порядке объявления
     enum TopItem<'a> {
         Struct(&'a LirStruct),
         Global(&'a crate::lir::LirBinding),
@@ -2177,8 +1740,7 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
 
     let mut items: Vec<(u8, usize, TopItem)> = Vec::new();
     for st in &lir.structs {
-        let prio = if st.is_prelude { 0 } else { 1 };
-        items.push((prio, st.sentence_index, TopItem::Struct(st)));
+        items.push((if st.is_prelude { 0 } else { 1 }, st.sentence_index, TopItem::Struct(st)));
     }
     for g in &lir.globals {
         items.push((1, g.sentence_index, TopItem::Global(g)));
@@ -2189,8 +1751,7 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
     for (_, _, item) in items {
         match item {
             TopItem::Struct(st) => {
-                if (st.name == "Map" || st.name == "Atom") && global_scope.get(&st.name).is_some()
-                {
+                if (st.name == "Map" || st.name == "Atom") && global_scope.get(&st.name).is_some() {
                     continue;
                 }
                 let val = build_form_from_lir_struct(st, &top_env, &mut global_scope)?;
@@ -2212,15 +1773,12 @@ pub fn run_lir_module(lir: &LirModule) -> Result<Value, String> {
         }
     }
 
-    // 3. Выполняем выражения верхнего уровня
     for expr in &lir.top_exprs {
         last_val = eval_lir_expr(expr, &mut global_scope)?;
     }
-
     if let Some(main_fn) = global_scope.get("main").or_else(|| global_scope.get("Main")) {
         return apply_callable(main_fn, Value::None, &mut global_scope);
     }
-
     Ok(last_val)
 }
 
