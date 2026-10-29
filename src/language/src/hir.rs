@@ -6,19 +6,23 @@
 // =============================================================================
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::parser::{
-    classify_sentence, has_algebra_op, has_pipe_op, Literal, SemanticKind, Sentence, Token,
+    classify_sentence, extract_import, has_algebra_op, has_pipe_op, resolve_import_fs_path,
+    ImportDirective, ImportSource, Literal, LocatedSentence, SemanticKind, Sentence, Token,
 };
 
 // =============================================================================
 // 1. ОБРАТНАЯ СВЯЗЬ С AST И ИСХОДНЫМ КОДОМ (SOURCE ORIGIN) & КОНВЕРТАЦИЯ РЕГИСТРА
 // =============================================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SourceOrigin {
-    /// Порядковый индекс предложения в файле (или блоке)
+    /// Порядковый индекс предложения внутри того файла, где оно объявлено
     pub sentence_index: usize,
+    /// Путь к файлу, если символ пришел из импортированного модуля (`None` = текущий файл)
+    pub file_path: Option<PathBuf>,
     /// Имя символа/контекста, породившего этот узел HIR
     pub symbol_context: String,
     /// Исходный слепок AST для точной диагностики и обратной трассировки
@@ -133,11 +137,22 @@ pub struct HirFunction {
     pub body: Vec<Sentence>,
     /// Явный возвращаемый тип (`find_user(id String) User | NotFound [...]` или контракт `< (other Other) Bool`)
     pub return_type: Option<String>,
+    /// Статически выведенный из тела функции тип возвращаемого значения (для IDE и анализатора)
+    pub inferred_return_type: Option<String>,
     pub is_contract: bool,
     /// Помечена ли функция тегом `& Compile`
     pub is_compile_time: bool,
+    pub is_prelude: bool,
     pub visibility: HirVisibility,
     pub origin: SourceOrigin,
+}
+
+impl HirFunction {
+    pub fn effective_return_type(&self) -> Option<&str> {
+        self.return_type
+            .as_deref()
+            .or(self.inferred_return_type.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,7 +169,17 @@ pub struct HirImport {
     pub targets: Vec<String>,
     /// Источник (`root.base`, `Path"../../../base"`, `std.net.http`)
     pub source_path: String,
+    /// Разрешенный файловый путь к импортируемому модулю (для межфайловых переходов в LSP)
+    pub resolved_path: Option<PathBuf>,
     pub origin: SourceOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateSymbol {
+    pub name: String,
+    pub kind: &'static str, // "Function" | "Form"
+    pub first_sentence_index: usize,
+    pub duplicate_origin: SourceOrigin,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,37 +191,201 @@ pub struct HirModule {
     pub globals: HashMap<String, HirGlobalBinding>,
     pub global_order: Vec<String>,
     pub imports: Vec<HirImport>,
+    pub duplicates: Vec<DuplicateSymbol>,
     /// Все предложения верхнего уровня в порядке следования
     pub top_level_sentences: Vec<Sentence>,
 }
-
 // =============================================================================
 // 3. ПОСТРОИТЕЛЬ HIR (LOWERING: AST -> HIR)
 // =============================================================================
 
 pub const PRELUDE_SOURCE: &str = include_str!("prelude.rl");
 
+pub const IDE_STDLIB_SOURCE: &str = r#"
+Decimal {
+  parse_scale4(raw String) Int []
+}
+Regex {
+  matches(input String, pattern String) Bool []
+}
+Json {
+  format_value(v Any) String []
+  encode(v Any) String []
+  parse(s String) Any []
+}
+Http {
+  get(url Any) String []
+}
+Port {
+  read(src Any) Any []
+  write(data Any, dst Any) Any []
+}
+Ui {
+  view(spec Any) Any []
+  draw(children Any) Any []
+}
+Parse {
+  end Symbol 'eof'
+  match(pat Any) Stream []
+  one_or_more(r Any) Stream []
+  repeat(b Any, r Any) Stream []
+  skip(n Int) Stream []
+  to(delim Any) Stream []
+  copy(f Symbol, t Any) Stream []
+  run(input String, rules Any) Any []
+}
+FieldMeta {
+  name String
+  type String
+  value Any
+  doc String
+}
+Meta {
+  type_of(e Any) String [] & Compile
+  doc_of(e Any) String [] & Compile
+  fields_of(e Any) Tuple(FieldMeta) [] & Compile
+  steps_of(s Any) Tuple(Stream) [] & Compile
+  map_fields(f Any, m Any) Form [] & Compile
+  compose(s Any) Stream [] & Compile
+  rewrite(node Any, rules Any) Any [] & Compile
+}
+Atom(T) {
+  value T
+  read() T []
+  get() T []
+  set(val T) T []
+  swap(tr Any) T []
+}
+Signal(T) {
+  value T
+  get() T []
+  read() T []
+  set(val T) T []
+  swap(tr Any) T []
+}
+Channel(T) {
+  send(val T) None []
+  recv() Option(T) []
+}
+Map(K, V) {
+  (K) V
+  get(m Map(K, V), key K) Option(V) []
+}
+trim(s String) String []
+to_upper(s String) String []
+split(s String, delim String) Tuple(String) []
+join(items Any, sep String) String []
+length(item Any) Int []
+append(items Any, elem Any) Tuple []
+contains(items Any, target Any) Bool []
+map(items Any, mapper Any) Tuple []
+filter(items Any, predicate Any) Tuple []
+fold(items Any, init Any, folder Any) Any []
+flat_map(items Any, mapper Any) Tuple []
+zip(items Any, other Any) Tuple []
+enumerate(items Any) Tuple []
+for_each(items Any, action Any) None []
+find(items Any, predicate Any) Any []
+take_while(items Any, predicate Any) Tuple []
+Effect(stream Any) None []
+timeout(val Any, dur Any) Any []
+bit_and(a Int, b Int) Int []
+bit_or(a Int, b Int) Int []
+bit_xor(a Int, b Int) Int []
+"#;
+
 pub fn lower_to_hir(sentences: &[Sentence]) -> HirModule {
+    let located: Vec<LocatedSentence> = sentences
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| LocatedSentence {
+            sentence: s.clone(),
+            local_index: idx,
+            file_path: None,
+        })
+        .collect();
+    lower_to_hir_located(&located, None, &HashMap::new())
+}
+
+pub fn lower_to_hir_located(
+    located_sentences: &[LocatedSentence],
+    base_dir: Option<&Path>,
+    in_memory_files: &HashMap<PathBuf, String>,
+) -> HirModule {
     let mut hir = HirModule {
-        top_level_sentences: sentences.to_vec(),
+        top_level_sentences: located_sentences
+            .iter()
+            .map(|ls| ls.sentence.clone())
+            .collect(),
         ..Default::default()
     };
 
     register_stdlib_hir(&mut hir);
 
-    for (idx, sentence) in sentences.iter().enumerate() {
-        lower_sentence_into_hir(idx, sentence, &mut hir);
+    for loc in located_sentences {
+        lower_located_sentence_into_hir(
+            loc.local_index,
+            loc.file_path.clone(),
+            &loc.sentence,
+            base_dir,
+            in_memory_files,
+            &mut hir,
+        );
     }
 
     hir
 }
 
 fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule) {
+    lower_located_sentence_into_hir(idx, None, sentence, None, &HashMap::new(), hir);
+}
+
+fn lower_located_sentence_into_hir(
+    idx: usize,
+    file_path: Option<PathBuf>,
+    sentence: &Sentence,
+    base_dir: Option<&Path>,
+    in_memory_files: &HashMap<PathBuf, String>,
+    hir: &mut HirModule,
+) {
+    // 0. Если предложение является директивой импорта (`_ models`, `(User, Cat) models`, `Base root.base`)
+    if let Some(import_dir) = extract_import(sentence) {
+        let (targets, imp_src) = match import_dir {
+            ImportDirective::Wildcard { source } => (vec!["_".to_string()], source),
+            ImportDirective::Destructured { names, source } => (names, source),
+            ImportDirective::Namespaced { alias, source } => (vec![alias], source),
+        };
+        let source_path = match &imp_src {
+            ImportSource::ModulePath(m) => m.clone(),
+            ImportSource::FilePath(f) => f.clone(),
+        };
+        let effective_base = file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .or(base_dir);
+        let resolved_path =
+            effective_base.map(|dir| resolve_import_fs_path(dir, &imp_src, in_memory_files));
+        let origin = SourceOrigin {
+            sentence_index: idx,
+            file_path,
+            symbol_context: targets.first().cloned().unwrap_or_else(|| "_".into()),
+            raw_ast: sentence.clone(),
+        };
+        hir.imports.push(HirImport {
+            targets,
+            source_path,
+            resolved_path,
+            origin,
+        });
+        return;
+    }
+
     let kind = classify_sentence(sentence);
     match kind {
         SemanticKind::FormDef { name, body, tail } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
@@ -209,6 +398,7 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         SemanticKind::GenericDef { name, params, body } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
@@ -220,6 +410,7 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         SemanticKind::AlgebraicDef { name, expr } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
@@ -246,6 +437,7 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
@@ -256,6 +448,7 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         SemanticKind::StreamOrBranch { name, stream } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
@@ -266,23 +459,15 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         SemanticKind::Binding { key, value } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: key.clone(),
                 raw_ast: sentence.clone(),
             };
 
-            // 1. Проверяем импорт (`_ root.base`, `_ Path"../../../base"`, `Http std.net.http`)
-            if let Some(import_source) = detect_import_source(&key, &value) {
-                hir.imports.push(HirImport {
-                    targets: vec![key.clone()],
-                    source_path: import_source,
-                    origin: origin.clone(),
-                });
-            }
-
-            // 2. Обработка `Product (Compile & [ { id Int, title String } . derive_json ])` или алиасов типов `Age Int`, `One Succ(Zero)`
+            // Обработка `Product (Compile & [ { id Int, title String } . derive_json ])` или алиасов типов `Age Int`, `One Succ(Zero)`
             match value.as_slice() {
                 [Token::Path(base_type)]
-                    if is_pascal_case(&key) && is_known_type(base_type, hir) =>
+                    if is_pascal_case(&key) && is_pascal_case(base_type) =>
                 {
                     let form = lower_form_expr(&key, vec![], vec![], &value, origin.clone(), hir);
                     register_form(hir, key.clone(), form);
@@ -344,14 +529,13 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
         SemanticKind::TupleBinding { tuple, value } => {
             let origin = SourceOrigin {
                 sentence_index: idx,
+                file_path,
                 symbol_context: "<tuple_binding>".into(),
                 raw_ast: sentence.clone(),
             };
             let inferred_type = infer_hir_type(&value, hir);
-            let mut targets = Vec::new();
             for elem_sent in tuple {
                 if let [Token::Path(var_name)] = elem_sent.as_slice() {
-                    targets.push(var_name.clone());
                     register_global(
                         hir,
                         var_name.clone(),
@@ -359,15 +543,6 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
                         value.clone(),
                         origin.clone(),
                     );
-                }
-            }
-            if !targets.is_empty() {
-                if let Some(src) = detect_import_source(&targets[0], &value) {
-                    hir.imports.push(HirImport {
-                        targets,
-                        source_path: src,
-                        origin,
-                    });
                 }
             }
         }
@@ -379,6 +554,7 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
                 if op == "." {
                     let origin = SourceOrigin {
                         sentence_index: idx,
+                        file_path,
                         symbol_context: name.clone(),
                         raw_ast: sentence.clone(),
                     };
@@ -395,6 +571,16 @@ fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule)
 }
 
 fn register_function(hir: &mut HirModule, name: String, func: HirFunction) {
+    if let Some(existing) = hir.functions.get(&name) {
+        if !existing.is_prelude && !func.is_prelude && func.origin.file_path.is_none() {
+            hir.duplicates.push(DuplicateSymbol {
+                name: name.clone(),
+                kind: "Function",
+                first_sentence_index: existing.origin.sentence_index,
+                duplicate_origin: func.origin.clone(),
+            });
+        }
+    }
     if !hir.function_order.contains(&name) {
         hir.function_order.push(name.clone());
     }
@@ -446,12 +632,17 @@ fn build_hir_function(
     origin: SourceOrigin,
     hir: &HirModule,
 ) -> HirFunction {
-    let (params, auto_unpacks) = lower_fn_params(args, hir);
     let (ret_tokens, visibility, is_compile_time) = parse_fn_tail_metadata(tail, hir);
+    let (params, auto_unpacks) = lower_fn_params_with_ret(args, &ret_tokens, hir);
     let return_type = if ret_tokens.is_empty() {
         None
     } else {
         Some(format_tokens_as_type(&ret_tokens))
+    };
+    let inferred_return_type = if return_type.is_none() && !body.is_empty() {
+        infer_fn_body_return_type(&params, &body, None, None, hir)
+    } else {
+        None
     };
     HirFunction {
         name: name.to_string(),
@@ -459,10 +650,79 @@ fn build_hir_function(
         auto_unpacks,
         body,
         return_type,
+        inferred_return_type,
         is_contract,
         is_compile_time,
+        is_prelude: false,
         visibility,
         origin,
+    }
+}
+
+fn infer_fn_body_return_type(
+    params: &[HirParam],
+    body: &[Sentence],
+    enclosing_form_name: Option<&str>,
+    enclosing_fields: Option<&HashMap<String, HirField>>,
+    hir: &HirModule,
+) -> Option<String> {
+    let mut local_types: HashMap<String, String> = HashMap::new();
+    if let Some(form_name) = enclosing_form_name {
+        local_types.insert("self".into(), form_name.to_string());
+        local_types.insert("Self".into(), form_name.to_string());
+    }
+    if let Some(fields) = enclosing_fields {
+        for (k, f) in fields {
+            local_types.insert(k.clone(), f.inferred_type.clone());
+            local_types.insert(format!("self.{k}"), f.inferred_type.clone());
+        }
+    }
+    for p in params {
+        if !p.type_constraint.is_empty() {
+            local_types.insert(p.name.clone(), p.type_constraint.clone());
+            if local_types.get("_").is_none() && !p.is_type_param {
+                local_types.insert("_".into(), p.type_constraint.clone());
+            }
+        }
+    }
+    for sent in body {
+        match classify_sentence(sent) {
+            SemanticKind::Binding { key, value }
+            | SemanticKind::AlgebraicDef {
+                name: key,
+                expr: value,
+            } => {
+                let ty = infer_hir_type_with_locals(&value, &local_types, hir);
+                if ty != "Any" {
+                    local_types.insert(key, ty);
+                }
+            }
+            _ => {}
+        }
+    }
+    let last = body.last()?;
+
+     if let [Token::Path(p)] = last.as_slice() {
+        if p == "self" {
+            if let Some(fields) = enclosing_fields {
+                if let Some(domain_field) = fields.values().find(|f| {
+                    !f.is_reactive
+                        && !matches!(
+                            f.inferred_type.as_str(),
+                            "Any" | "ReactiveStream" | "self" | "Self" | "Float" | "Int" | "Bool"
+                        )
+                }) {
+                    return Some(domain_field.inferred_type.clone());
+                }
+            }
+        }
+    }
+
+    let inferred = infer_hir_type_with_locals(last, &local_types, hir);
+    if matches!(inferred.as_str(), "" | "Any" | "Stream" | "self") {
+        None
+    } else {
+        Some(inferred)
     }
 }
 
@@ -494,27 +754,17 @@ fn is_stream_composition(expr: &[Token], hir: &HirModule) -> bool {
     false
 }
 
-fn detect_import_source(key: &str, value: &[Token]) -> Option<String> {
-    match value {
-        // `_ Path"../../../base"` desugars to `[Path("Path"), Group(')', [[Lit(String("../../../base"))]])]`
-        [Token::Path(p), Token::Group(')', args)] if key == "_" && p == "Path" => {
-            if let Some([Token::Lit(Literal::String(s) | Literal::RawString(s))]) =
-                args.first().map(Vec::as_slice)
-            {
-                return Some(s.clone());
-            }
-            None
-        }
-        [Token::Path(p)]
-            if key == "_" || p.starts_with("root.") || p.starts_with("std.") || p == "base" =>
-        {
-            Some(p.clone())
-        }
-        _ => None,
-    }
-}
-
 fn register_form(hir: &mut HirModule, name: String, form: HirForm) {
+    if let Some(existing) = hir.forms.get(&name) {
+        if !existing.is_prelude && !form.is_prelude && form.origin.file_path.is_none() {
+            hir.duplicates.push(DuplicateSymbol {
+                name: name.clone(),
+                kind: "Form",
+                first_sentence_index: existing.origin.sentence_index,
+                duplicate_origin: form.origin.clone(),
+            });
+        }
+    }
     hir.form_order.retain(|n| n != &name);
     hir.form_order.push(name.clone());
     hir.forms.insert(name, form);
@@ -722,9 +972,17 @@ fn register_stdlib_hir(hir: &mut HirModule) {
         for (idx, sentence) in prelude_sentences.iter().enumerate() {
             lower_sentence_into_hir(idx, sentence, hir);
         }
-        for form in hir.forms.values_mut() {
-            form.is_prelude = true;
+    }
+    if let Ok(ide_sentences) = crate::parser::parse_code(IDE_STDLIB_SOURCE) {
+        for (idx, sentence) in ide_sentences.iter().enumerate() {
+            lower_sentence_into_hir(idx, sentence, hir);
         }
+    }
+    for form in hir.forms.values_mut() {
+        form.is_prelude = true;
+    }
+    for func in hir.functions.values_mut() {
+        func.is_prelude = true;
     }
 }
 
@@ -827,6 +1085,9 @@ fn lower_form_expr(
                         union_variants.extend(base_form.union_variants.clone());
                     }
                 } else {
+                    if is_pascal_case(first_type) && first_type != name {
+                        ancestors.push(first_type.clone());
+                    }
                     union_variants.push(first_type.clone());
                 }
             }
@@ -926,7 +1187,8 @@ fn inherit_from_base_form(
     }
     for m in &base_form.method_order {
         if let Some(mf) = base_form.methods.get(m) {
-            insert_hir_method(methods, method_order, mf.clone());
+            let substituted = apply_subst_to_method(mf, &subst);
+            insert_hir_method(methods, method_order, substituted);
         }
     }
     for anc in &base_form.ancestors {
@@ -934,6 +1196,56 @@ fn inherit_from_base_form(
             ancestors.push(anc.clone());
         }
     }
+}
+
+pub fn substitute_type_vars(input: &str, subst: &HashMap<String, String>) -> String {
+    if subst.is_empty() || input.is_empty() {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut current_word = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            current_word.push(ch);
+        } else {
+            if !current_word.is_empty() {
+                if let Some(rep) = subst.get(&current_word) {
+                    out.push_str(rep);
+                } else {
+                    out.push_str(&current_word);
+                }
+                current_word.clear();
+            }
+            out.push(ch);
+        }
+    }
+    if !current_word.is_empty() {
+        if let Some(rep) = subst.get(&current_word) {
+            out.push_str(rep);
+        } else {
+            out.push_str(&current_word);
+        }
+    }
+    out
+}
+
+fn apply_subst_to_method(mf: &HirFunction, subst: &HashMap<String, String>) -> HirFunction {
+    if subst.is_empty() {
+        return mf.clone();
+    }
+    let mut cloned = mf.clone();
+    for p in &mut cloned.params {
+        if !p.type_constraint.is_empty() {
+            p.type_constraint = substitute_type_vars(&p.type_constraint, subst);
+        }
+    }
+    if let Some(ret) = &mut cloned.return_type {
+        *ret = substitute_type_vars(ret, subst);
+    }
+    if let Some(inf_ret) = &mut cloned.inferred_return_type {
+        *inf_ret = substitute_type_vars(inf_ret, subst);
+    }
+    cloned
 }
 
 fn insert_hir_field(
@@ -973,7 +1285,8 @@ fn populate_hir_form_members(
 ) {
     for (f_idx, s) in sentences.iter().enumerate() {
         let member_origin = SourceOrigin {
-            sentence_index: f_idx,
+            sentence_index: owner_origin.sentence_index,
+            file_path: owner_origin.file_path.clone(),
             symbol_context: format!("{owner_name}.{f_idx}"),
             raw_ast: s.clone(),
         };
@@ -1064,12 +1377,15 @@ fn populate_hir_form_members(
                 name: field_name,
                 stream,
             } => {
+                let reactive_ty =
+                    infer_fn_body_return_type(&[], &stream, Some(owner_name), Some(fields), hir)
+                        .unwrap_or_else(|| "ReactiveStream".into());
                 insert_hir_field(
                     fields,
                     field_order,
                     HirField {
                         name: field_name,
-                        inferred_type: "ReactiveStream".into(),
+                        inferred_type: reactive_ty,
                         origin_form: owner_name.to_string(),
                         default_expr: vec![Token::Group('[', stream)],
                         is_reactive: true,
@@ -1086,7 +1402,7 @@ fn populate_hir_form_members(
                 body: fn_body,
                 tail: fn_tail,
             } => {
-                let func = build_hir_function(
+                let mut func = build_hir_function(
                     &method_name,
                     &args,
                     fn_body,
@@ -1095,6 +1411,21 @@ fn populate_hir_form_members(
                     member_origin,
                     hir,
                 );
+                if func.return_type.is_none() && func.inferred_return_type.is_none() {
+                    func.inferred_return_type = infer_fn_body_return_type(
+                        &func.params,
+                        &func.body,
+                        Some(owner_name),
+                        Some(fields),
+                        hir,
+                    );
+                }
+                if func.inferred_return_type.is_none()
+                    && matches!(method_name.as_str(), "+" | "-" | "*" | "/")
+                    && is_pascal_case(owner_name)
+                {
+                    func.inferred_return_type = Some(owner_name.to_string());
+                }
                 insert_hir_method(methods, method_order, func);
             }
             SemanticKind::GenericDef {
@@ -1193,7 +1524,23 @@ fn resolve_type_algebra_into_fields(
                             method_order.retain(|k| methods.contains_key(k));
                         }
                         Token::Path(rhs_type) => {
+                            let rhs_type_args = if let Some(Token::Group(')', args)) = tail.get(i + 2)
+                            {
+                                extract_type_params(args)
+                            } else {
+                                Vec::new()
+                            };
                             if let Some(rhs_form) = hir.forms.get(rhs_type) {
+                                let mut subst = HashMap::new();
+                                for (param_raw, arg_val) in
+                                    rhs_form.type_params.iter().zip(rhs_type_args.iter())
+                                {
+                                    let param_name =
+                                        param_raw.split_whitespace().next().unwrap_or(param_raw);
+                                    let param_clean =
+                                        param_name.split('(').next().unwrap_or(param_name);
+                                    subst.insert(param_clean.to_string(), arg_val.clone());
+                                }
                                 if rhs_form.is_bypass {
                                     *is_bypass = true;
                                 }
@@ -1211,8 +1558,13 @@ fn resolve_type_algebra_into_fields(
                                 }
                                 for k in &rhs_form.field_order {
                                     if let Some(rhs_f) = rhs_form.fields.get(k) {
+                                        let mut cloned_f = rhs_f.clone();
+                                        if !subst.is_empty() {
+                                            cloned_f.inferred_type =
+                                                substitute_type_vars(&cloned_f.inferred_type, &subst);
+                                        }
                                         if let Some(existing) = fields.get_mut(k) {
-                                            if existing.origin_form != rhs_f.origin_form
+                                            if existing.origin_form != cloned_f.origin_form
                                                 && existing.origin_form != owner_name
                                             {
                                                 existing.is_ambiguous = true;
@@ -1226,16 +1578,16 @@ fn resolve_type_algebra_into_fields(
                                                 }
                                                 if !existing
                                                     .conflicting_origins
-                                                    .contains(&rhs_f.origin_form)
+                                                    .contains(&cloned_f.origin_form)
                                                 {
                                                     existing
                                                         .conflicting_origins
-                                                        .push(rhs_f.origin_form.clone());
+                                                        .push(cloned_f.origin_form.clone());
                                                 }
                                             }
                                         } else {
                                             field_order.push(k.clone());
-                                            fields.insert(k.clone(), rhs_f.clone());
+                                            fields.insert(k.clone(), cloned_f);
                                         }
                                     }
                                 }
@@ -1243,7 +1595,10 @@ fn resolve_type_algebra_into_fields(
                                     if let Some(rhs_m) = rhs_form.methods.get(m) {
                                         if !methods.contains_key(m) {
                                             method_order.push(m.clone());
-                                            methods.insert(m.clone(), rhs_m.clone());
+                                            methods.insert(
+                                                m.clone(),
+                                                apply_subst_to_method(rhs_m, &subst),
+                                            );
                                         }
                                     }
                                 }
@@ -1401,6 +1756,14 @@ fn resolve_type_algebra_into_fields(
 /// • Деструктуризация полей `read_unpacked({ name } WithName)` -> связывает поле `name` напрямую (Law 1d)
 /// • Явный именованный слот `fn(u User)`, `fn(ctx User & Cart)`, `fn(host String "localhost")` -> связывает переменную `u`, `ctx`, `host`
 pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bool) {
+    lower_fn_params_with_ret(args, &[], hir)
+}
+
+pub fn lower_fn_params_with_ret(
+    args: &[Sentence],
+    ret_tokens: &[Token],
+    hir: &HirModule,
+) -> (Vec<HirParam>, bool) {
     let mut out = Vec::new();
     let mut auto_unpacks = false;
 
@@ -1456,14 +1819,14 @@ pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bo
             [Token::Path(single)] => {
                 let is_upper = is_pascal_case(single);
                 if is_upper {
-                    // Если этот `PascalCase` идентификатор используется далее в сигнатуре как тип другого параметра (`A` в `fmap(A, B, fa F(A))`),
-                    // и его нет среди известных форм — это чистый Type Parameter!
                     let used_as_type_later = args.iter().skip(idx + 1).any(|later| {
                         later
                             .iter()
                             .skip(1)
                             .any(|t| token_references_ident(t, single))
-                    });
+                    }) || ret_tokens
+                        .iter()
+                        .any(|t| token_references_ident(t, single));
                     if used_as_type_later && !is_known_type(single, hir) {
                         out.push(HirParam {
                             name: single.clone(),
@@ -1474,12 +1837,8 @@ pub fn lower_fn_params(args: &[Sentence], hir: &HirModule) -> (Vec<HirParam>, bo
                             destructured_fields: vec![],
                         });
                     } else {
-                        // Закон 1c: Одиночный известный тип `fn(Age)` -> авто-привязывает `age` (или `TargetForm` для макроса `derive_json(TargetForm)`)
-                        let var_name = if is_known_type(single, hir) {
-                            pascal_to_snake_case(single)
-                        } else {
-                            single.clone()
-                        };
+                        // Закон 1c: Одиночный PascalCase тип `fn(User)` всегда авто-привязывает snake_case `user`
+                        let var_name = pascal_to_snake_case(single);
                         auto_unpacks = true;
                         out.push(HirParam {
                             name: var_name,
@@ -1651,16 +2010,165 @@ pub fn format_tokens_as_type(tokens: &[Token]) -> String {
 }
 
 pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
+    infer_hir_type_with_locals(tokens, &HashMap::new(), hir)
+}
+
+pub fn infer_hir_type_with_locals(
+    tokens: &[Token],
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+) -> String {
     if tokens.is_empty() {
         return "Any".into();
     }
 
-    if has_algebra_op(tokens) && !has_pipe_op(tokens) {
+    // 1. Пайплайн `head . step1 . step2`
+    if has_pipe_op(tokens) {
+        let (head, steps) = crate::parser::split_pipeline(tokens);
+        let mut current = infer_hir_type_with_locals(&head, locals, hir);
+        for step in steps {
+            match step.op {
+                crate::parser::PipeOp::Tap => {}
+                crate::parser::PipeOp::Filter => {}
+                crate::parser::PipeOp::Parallel => {
+                    current = "Form".into();
+                }
+                crate::parser::PipeOp::Enrich => {
+                    let step_ty = infer_hir_type_with_locals(&step.expr, locals, hir);
+                    if step_ty != "Any" && step_ty != "Form" && step_ty != "Stream" {
+                        current = format!("{current} & {step_ty}");
+                    }
+                }
+                crate::parser::PipeOp::Dot => {
+                    match step.expr.as_slice() {
+                        [Token::Group('{', branches)] => {
+                            let mut branch_types = Vec::new();
+                            for b in branches {
+                                match classify_sentence(b) {
+                                    SemanticKind::StreamOrBranch { name, stream } => {
+                                        let mut b_locals = locals.clone();
+                                        if is_pascal_case(&name) {
+                                            b_locals.insert(pascal_to_snake_case(&name), name.clone());
+                                            b_locals.insert("_".into(), name);
+                                        }
+                                        if let Some(last) = stream.last() {
+                                            let bt = infer_hir_type_with_locals(last, &b_locals, hir);
+                                            if bt != "Any" && !branch_types.contains(&bt) {
+                                                branch_types.push(bt);
+                                            }
+                                        }
+                                    }
+                                    SemanticKind::PatternBranch { body, .. }
+                                    | SemanticKind::LambdaOrTupleBranch { body, .. } => {
+                                        if let Some(last) = body.last() {
+                                            let bt = infer_hir_type_with_locals(last, locals, hir);
+                                            if bt != "Any" && !branch_types.contains(&bt) {
+                                                branch_types.push(bt);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !branch_types.is_empty() {
+                                current = branch_types.join(" | ");
+                            }
+                        }
+                        [Token::Path(callee), ..] => {
+                            if let Some(ret) = resolve_callee_return_type(callee, hir) {
+                                current = ret;
+                            }
+                        }
+                        [Token::Group('[', stream)] => {
+                            if let Some(last) = stream.last() {
+                                let mut s_locals = locals.clone();
+                                s_locals.insert("_".into(), current.clone());
+                                current = infer_hir_type_with_locals(last, &s_locals, hir);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        return current;
+    }
+
+    if has_algebra_op(tokens) {
         if tokens
             .iter()
             .any(|t| matches!(t, Token::Op(op) if op == "|"))
         {
             return format_tokens_as_type(tokens);
+        }
+        // `o & Reserved { ... }` или `my_car & { ... }` или `entity / Cloud.name`
+        if let [Token::Path(lhs), Token::Op(op), Token::Path(rhs), Token::Group('{', _)] = tokens {
+            if op == "&" && is_pascal_case(rhs) {
+                let lhs_ty = locals.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
+                return format!("{lhs_ty} & {rhs}");
+            }
+        }
+        if let [Token::Path(lhs), Token::Op(op), Token::Group('{', _)] = tokens {
+            if op == "&" {
+                return locals.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
+            }
+        }
+        if let [Token::Path(lhs), Token::Group(')', targs), Token::Op(op), Token::Group('{', _)] =
+            tokens
+        {
+            if op == "&" && is_pascal_case(lhs) {
+                let _ = targs;
+                return format_tokens_as_type(&tokens[..2]);
+            }
+        }
+        if let [Token::Path(lhs), Token::Op(op), Token::Path(rhs)] = tokens {
+            if op == "/" {
+                let lhs_ty = locals.get(lhs).cloned().unwrap_or_else(|| lhs.clone());
+                return format!("{lhs_ty} / {rhs}");
+            }
+        }
+    }
+
+    // 2. Логические и сравнительные выражения
+    if tokens.iter().any(|t| {
+        matches!(
+            t,
+            Token::Op(op)
+                if matches!(
+                    op.as_str(),
+                    "==" | "!=" | ">" | "<" | ">=" | "<=" | "&&" | "||" | "!"
+                )
+        )
+    }) {
+        return "Bool".into();
+    }
+
+    // 3. Бинарные арифметические операции (`self.price * self.quantity`, `a + b`)
+    if tokens.len() >= 3 {
+        if let Some(Token::Op(op)) = tokens.get(1) {
+            if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "**" | "<<" | ">>") {
+                let lhs_ty = infer_hir_type_with_locals(&tokens[..1], locals, hir);
+                let rhs_ty = infer_hir_type_with_locals(&tokens[2..], locals, hir);
+                if let Some(hf) = hir.forms.get(&lhs_ty) {
+                    if let Some(m) = hf.methods.get(op) {
+                        if let Some(ret) = m.effective_return_type() {
+                            return ret.to_string();
+                        }
+                    }
+                    if is_pascal_case(&lhs_ty) && hf.methods.contains_key(op) {
+                        return lhs_ty;
+                    }
+                }
+                if lhs_ty == "Float" || rhs_ty == "Float" {
+                    return "Float".into();
+                }
+                if lhs_ty == "Int" && rhs_ty == "Int" {
+                    return "Int".into();
+                }
+                if lhs_ty == "String" && op == "+" {
+                    return "String".into();
+                }
+            }
         }
     }
 
@@ -1674,41 +2182,43 @@ pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
             Literal::Symbol(s) => format!("'{s}'"),
         },
         Some(Token::Path(p)) => {
-            if matches!(tokens.get(1), Some(Token::Group(')', _))) {
-                // Конструктор типа, экземпляр дженерика `Atom(CounterState) & { ... }` или `Type"..."` сахар
+            // Инстанцирование формы `Order { id "o1", amount 100 }`
+            if matches!(tokens.get(1), Some(Token::Group('{', _))) && is_pascal_case(p) {
+                return p.clone();
+            }
+            if let Some(Token::Group(')', args)) = tokens.get(1) {
+                // Вызов функции или метода `connect(...)` / `Money.from_scaled(...)`
+                if let Some(ret) = resolve_callee_return_type(p, hir) {
+                    return ret;
+                }
                 if hir
                     .forms
                     .get(p)
                     .map(|f| f.type_params.is_empty())
                     .unwrap_or(false)
                     || p == "Signal"
-                    || matches!(tokens.get(2), Some(Token::Op(op)) if op == "&")
                 {
-                    p.clone()
-                } else {
-                    format_tokens_as_type(tokens)
+                    return p.clone();
                 }
+                if let Some(hf) = hir.forms.get(p) {
+                    if !hf.type_params.is_empty() {
+                        if let Some(first_arg) = args.first() {
+                            let inner_ty = infer_hir_type_with_locals(first_arg, locals, hir);
+                            if inner_ty != "Any" && is_pascal_case(&inner_ty) {
+                                return format!("{p}({inner_ty})");
+                            }
+                        }
+                    }
+                }
+                format_tokens_as_type(tokens)
             } else {
-                p.clone()
+                resolve_path_type_in_context(p, locals, hir)
             }
         }
         Some(Token::Range(_, _)) => "Range".into(),
         Some(Token::Group('(', inner)) => {
             if inner.len() == 1 {
-                let sent = &inner[0];
-                if sent.iter().any(|t| {
-                    matches!(
-                        t,
-                        Token::Op(op)
-                            if matches!(
-                                op.as_str(),
-                                "==" | "!=" | ">" | "<" | ">=" | "<=" | "&&" | "||" | "!"
-                            )
-                    )
-                }) {
-                    return "Bool".into();
-                }
-                return infer_hir_type(sent, hir);
+                return infer_hir_type_with_locals(&inner[0], locals, hir);
             }
             "Tuple".into()
         }
@@ -1716,4 +2226,102 @@ pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
         Some(Token::Group('[', _)) => "Stream".into(),
         _ => "Any".into(),
     }
+}
+
+fn resolve_callee_return_type(callee: &str, hir: &HirModule) -> Option<String> {
+    if let Some(f) = hir.functions.get(callee) {
+        return f.effective_return_type().map(str::to_string);
+    }
+    if let Some((owner, method)) = callee.rsplit_once('.') {
+        let owner_type = hir
+            .globals
+            .get(owner)
+            .map(|g| g.inferred_type.as_str())
+            .unwrap_or(owner);
+        let base_owner = owner_type.split('(').next().unwrap_or(owner_type);
+        if let Some(hf) = hir.forms.get(base_owner) {
+            if let Some(m) = hf.methods.get(method) {
+                return m.effective_return_type().map(str::to_string);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_path_type_in_context(
+    path: &str,
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+) -> String {
+    if let Some(ty) = locals.get(path) {
+        return ty.clone();
+    }
+    if let Some((root, rest)) = path.split_once('.') {
+        let root_clean = root.strip_suffix("()").unwrap_or(root);
+        let mut current_ty = locals
+            .get(root_clean)
+            .cloned()
+            .or_else(|| hir.globals.get(root_clean).map(|g| g.inferred_type.clone()))
+            .unwrap_or_else(|| root_clean.to_string());
+
+        for seg in rest.split('.') {
+            let (seg_name, is_call) = seg
+                .strip_suffix("()")
+                .map(|s| (s, true))
+                .unwrap_or((seg, false));
+            if seg_name == "to_float" {
+                current_ty = "Float".into();
+                continue;
+            }
+            if seg_name == "round_to_int" || seg_name == "length" {
+                current_ty = "Int".into();
+                continue;
+            }
+            let base_form = current_ty.split('(').next().unwrap_or(&current_ty);
+            let type_arg = current_ty
+                .split_once('(')
+                .and_then(|(_, r)| r.strip_suffix(')'));
+            if let Some(hf) = hir.forms.get(base_form) {
+                if is_call {
+                    if let Some(m) = hf.methods.get(seg_name) {
+                        if let Some(ret) = m.effective_return_type() {
+                            current_ty = substitute_type_param(ret, &hf.type_params, type_arg);
+                            continue;
+                        }
+                    }
+                }
+                if let Some(f) = hf.fields.get(seg_name) {
+                    current_ty = substitute_type_param(&f.inferred_type, &hf.type_params, type_arg);
+                    continue;
+                }
+                if let Some(m) = hf.methods.get(seg_name) {
+                    if let Some(ret) = m.effective_return_type() {
+                        current_ty = substitute_type_param(ret, &hf.type_params, type_arg);
+                        continue;
+                    }
+                }
+                if hf.ancestors.contains(&seg_name.to_string()) {
+                    current_ty = seg_name.to_string();
+                    continue;
+                }
+            }
+        }
+        return current_ty;
+    }
+    if let Some(g) = hir.globals.get(path) {
+        return g.inferred_type.clone();
+    }
+    path.to_string()
+}
+
+fn substitute_type_param(raw_ty: &str, type_params: &[String], type_arg: Option<&str>) -> String {
+    if let (Some(first_tp), Some(arg)) = (type_params.first(), type_arg) {
+        if raw_ty == first_tp {
+            return arg.to_string();
+        }
+        if raw_ty.contains(&format!("({first_tp})")) {
+            return raw_ty.replace(&format!("({first_tp})"), &format!("({arg})"));
+        }
+    }
+    raw_ty.to_string()
 }

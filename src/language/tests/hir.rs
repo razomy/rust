@@ -436,4 +436,10 @@ fn hir_08_full_v5_7_specification_lowers_cleanly() {
     assert!(hir.forms.contains_key("AuthModule"));
     assert!(hir.forms.contains_key("Product"));
     assert!(hir.functions.contains_key("main"));
+
+    // Verify that `Monad(M(_)) & Functor(M)` substituted `F` -> `M` in inherited `fmap`
+    let monad = hir.forms.get("Monad").unwrap();
+    let monad_fmap = monad.methods.get("fmap").unwrap();
+    assert_eq!(monad_fmap.params[2].type_constraint, "M(A)");
+    assert_eq!(monad_fmap.return_type.as_deref(), Some("M(B)"));
 }

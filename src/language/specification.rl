@@ -1728,6 +1728,7 @@ render_for_mobile(screen_graph) [
 // --- Architectural Best Practices for Graph Rewriting ---
 // Rule 1: Preserve Lineage (`my_btn PlayButton & MyIdContext`) instead of destructive edits.
 // Rule 2: Use Default Parameter Slots for 90% of variation instead of AST rewriting:
+StartNode Element
 Element(id_attr ProceduralId) Cuboid & StartNode {
   id id_attr
 }

@@ -890,3 +890,47 @@ fn test_runtime_spec_sec17_sec23_sec25_scoped_fs_ai_agent_and_transfer_safe() {
         ])
     );
 }
+
+#[test]
+fn test_runtime_named_call_arguments_and_compile_time_static_verify() {
+    let code = r#"
+        User       { id String, name String, password_hash String }
+        PublicUser User / User.password_hash
+
+        connect(host String "localhost", port Int 8080, tls Bool false) [
+            "Connecting to {host}:{port} (TLS: {tls})"
+        ]
+
+        VerifyPublicUserSafety (Compile & [
+            (PublicUser . Meta.fields_of . map([ _.name ]) . contains("password_hash")) . {
+                true  [ "LEAKED" ]
+                false [ "SAFE" ]
+            }
+        ])
+
+        main() [
+            c1 connect()
+            c2 connect("db.internal")
+            c3 connect(port 9090, tls true)
+            (c1, c2, c3, VerifyPublicUserSafety)
+        ]
+    "#;
+
+    let res = run_and_log("Named call arguments & Compile verification", code);
+    assert_eq!(
+        res,
+        Value::Tuple(vec![
+            Value::String("Connecting to localhost:8080 (TLS: false)".into()),
+            Value::String("Connecting to db.internal:8080 (TLS: false)".into()),
+            Value::String("Connecting to localhost:9090 (TLS: true)".into()),
+            Value::String("SAFE".into()),
+        ])
+    );
+}
+
+#[test]
+fn test_runtime_full_specification_compact_executes_cleanly() {
+    let spec = std::fs::read_to_string("./specification.rl")
+        .expect("Failed to read specification.rl");
+    let _ = run_and_log("Full specification.rl execution", &spec);
+}

@@ -22,11 +22,19 @@ fn test_analyzer_law1_named_vs_auto_named_slots_v57() {
 
     let report = analyze_source(code);
 
-    let anon_fn = report.hir.functions.get("greet_anon").expect("greet_anon function");
+    let anon_fn = report
+        .hir
+        .functions
+        .get("greet_anon")
+        .expect("greet_anon function");
     assert!(anon_fn.auto_unpacks);
     assert_eq!(anon_fn.params[0].name, "user");
 
-    let named_fn = report.hir.functions.get("greet_named").expect("greet_named function");
+    let named_fn = report
+        .hir
+        .functions
+        .get("greet_named")
+        .expect("greet_named function");
     assert!(!named_fn.auto_unpacks);
 
     let law1_warnings: Vec<_> = report
@@ -282,4 +290,126 @@ fn test_analyzer_module_visibility_and_imports_v57() {
     assert!(!pub_mod.fields.contains_key("salt"));
     assert!(!pub_mod.methods.contains_key("hash"));
     assert!(pub_mod.methods.contains_key("verify"));
+
+    let clean_mod = report.hir.forms.get("CleanModule").unwrap();
+    assert!(!clean_mod.fields.contains_key("salt"));
+    assert!(!clean_mod.methods.contains_key("hash"));
+    assert!(clean_mod.methods.contains_key("verify"));
+}
+
+#[test]
+fn test_specification_compact_has_zero_diagnostics() {
+    let spec = std::fs::read_to_string("./specification.rl")
+        .expect("Failed to read specification.rl");
+    let report = analyze_source(&spec);
+
+    assert!(
+        report.diagnostics.is_empty(),
+        "specification_compact.rl должна проходить анализ с 0 ошибок и 0 предупреждений, но получено:\n{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn test_analyzer_generic_form_methods_and_parenthesized_union_constraints() {
+    let code = r#"
+        Order      { id String, amount Int }
+        Reserved   { reserved_at Int }
+        Paid       { transaction_id String }
+        OutOfStock { reason String } & Bypass
+        NoMoney    { reason String } & Bypass
+
+        Map(K, V) {
+            (K) V
+            get(m Map(K, V), key K) [ m ]
+            bad_method(x UnknownTypeInMethod) [ x ]
+        }
+
+        Comparable(Other) {
+            < (other Other) Bool
+        }
+
+        Functor(F(_)) {
+            fmap(A, B, fa F(A), f (A) [B]) F(B)
+        }
+
+        Monad(M(_)) & Functor(M) {
+            pure(A, a A) M(A)
+            flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
+        }
+
+        Channel(T) {
+            send(val T) [ val ]
+        }
+
+        audit_any_outcome(outcome (Order & Reserved & Paid) | OutOfStock | NoMoney) [
+            "Audit: {outcome}"
+        ]
+    "#;
+
+    let report = analyze_source(code);
+
+    // Единственной ошибкой должен быть `UnknownTypeInMethod` в `Map.bad_method`
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "Неожиданные диагностики: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(report.diagnostics[0].code, "E11_UNKNOWN_TYPE");
+    assert_eq!(
+        report.diagnostics[0].context_symbol.as_deref(),
+        Some("Map.bad_method")
+    );
+    assert_eq!(
+        report.diagnostics[0].highlight_token.as_deref(),
+        Some("UnknownTypeInMethod")
+    );
+}
+
+#[test]
+fn test_analyzer_law1_form_field_keys_vs_field_values() {
+    let code = r#"
+        CounterState { count Int }
+        Increment    { by Int }
+        HttpRequest  { method Symbol, body String }
+        HttpResponse { status Int, body String }
+        AgentState   { retries Int, err String }
+
+        // Корректно: ключи полей `count`, `body`, `retries`, `err` не являются чтением переменных
+        update_counter_good(s CounterState, inc Increment) [
+            CounterState { count (s.count + inc.by) }
+        ]
+
+        api_router_good(req HttpRequest) [
+            HttpResponse { status 200, body "OK" }
+        ]
+
+        agent_step_good(state AgentState) [
+            state & { retries (state.retries - 1), err state.err }
+        ]
+
+        // Ошибка Закона 1: в значении поля написано `count` вместо `s.count`
+        update_counter_bad(s CounterState) [
+            CounterState { count (count + 1) }
+        ]
+    "#;
+
+    let report = analyze_source(code);
+    let warnings: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.starts_with("W001_LAW1"))
+        .collect();
+
+    assert_eq!(
+        warnings.len(),
+        1,
+        "Ожидалось ровно 1 предупреждение Закона 1 (в update_counter_bad), получено: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        warnings[0].context_symbol.as_deref(),
+        Some("update_counter_bad")
+    );
 }

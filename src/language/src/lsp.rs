@@ -14,12 +14,16 @@
 use pest::Parser;
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
-use crate::analyzer::{AnalysisReport, Severity};
-use crate::hir::is_pascal_case;
-use crate::parser::{RazomyParser, Rule};
+use crate::analyzer::{AnalysisReport, CompletionItem, Severity};
+use crate::hir::{is_pascal_case, SourceOrigin};
+use crate::parser::{
+    classify_sentence, extract_import, has_pipe_op, normalize_path, parse_code,
+    recover_source_for_ide, split_pipeline, ImportDirective, ImportSource, Literal, PipeOp,
+    RazomyParser, Rule, SemanticKind, Sentence, Token,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LspPosition {
@@ -47,6 +51,7 @@ pub struct DocumentState {
     pub uri: String,
     pub version: i64,
     pub text: String,
+    pub recovered_text: String,
     pub line_starts: Vec<usize>,
     pub sentence_spans: Vec<(usize, usize)>,
     pub non_code_spans: Vec<(usize, usize)>,
@@ -55,21 +60,51 @@ pub struct DocumentState {
 
 impl DocumentState {
     pub fn new(uri: String, version: i64, text: String) -> Self {
+        Self::new_with_memory(uri, version, text, &HashMap::new())
+    }
+
+    pub fn new_with_memory(
+        uri: String,
+        version: i64,
+        text: String,
+        in_memory_files: &HashMap<PathBuf, String>,
+    ) -> Self {
         let line_starts = compute_line_starts(&text);
-        let sentence_spans = collect_sentence_spans(&text);
+        let recovered_text = if RazomyParser::parse(Rule::Program, &text).is_ok() {
+            text.clone()
+        } else {
+            recover_source_for_ide(&text)
+        };
+        let sentence_spans = collect_sentence_spans(&recovered_text);
         let non_code_spans = collect_non_code_spans(&text);
         let file_path = uri_to_path(&uri);
-        let report = crate::analyzer::analyze_source_with_path(&text, file_path.as_deref());
+        let report = crate::analyzer::analyze_source_with_path_and_memory(
+            &text,
+            file_path.as_deref(),
+            in_memory_files,
+        );
 
         Self {
             uri,
             version,
             text,
+            recovered_text,
             line_starts,
             sentence_spans,
             non_code_spans,
             report,
         }
+    }
+
+    pub fn sentence_index_at_offset(&self, offset: usize) -> Option<usize> {
+        self.sentence_spans
+            .iter()
+            .position(|&(s, e)| offset >= s && offset <= e)
+    }
+
+    pub fn sentence_index_at_pos(&self, pos: LspPosition) -> Option<usize> {
+        let offset = self.position_to_offset(pos);
+        self.sentence_index_at_offset(offset)
     }
 
     pub fn is_in_non_code(&self, byte_offset: usize) -> bool {
@@ -122,13 +157,19 @@ impl DocumentState {
     ) -> LspRange {
         if let Some(idx) = sentence_idx {
             if let Some(&(s_start, s_end)) = self.sentence_spans.get(idx) {
-                let sent_slice = &self.text[s_start..s_end];
+                let sent_slice = &self.text[s_start..s_end.min(self.text.len())];
                 if let Some(sym) = symbol_hint {
-                    let clean_sym = sym.split('.').last().unwrap_or(sym);
-                    if !clean_sym.is_empty() {
-                        if let Some(rel) = find_word_in_slice(sent_slice, clean_sym) {
+                    if !sym.is_empty() {
+                        if let Some(rel) = find_word_in_slice(sent_slice, sym) {
                             let start = s_start + rel;
-                            return self.span_to_range(start, start + clean_sym.len());
+                            return self.span_to_range(start, start + sym.len());
+                        }
+                        let clean_sym = sym.split('.').last().unwrap_or(sym);
+                        if !clean_sym.is_empty() {
+                            if let Some(rel) = find_word_in_slice(sent_slice, clean_sym) {
+                                let start = s_start + rel;
+                                return self.span_to_range(start, start + clean_sym.len());
+                            }
                         }
                     }
                 }
@@ -137,6 +178,17 @@ impl DocumentState {
                     .map(|nl| s_start + nl)
                     .unwrap_or(s_end);
                 return self.span_to_range(s_start, first_line_end);
+            }
+        }
+        // Fallback: если индекс смещен из-за импортов, ищем точное слово symbol_hint в коде документа
+        if let Some(sym) = symbol_hint {
+            let clean_sym = sym.split('.').last().unwrap_or(sym);
+            if !clean_sym.is_empty() {
+                if let Some(rel) = find_word_in_slice(&self.text, clean_sym) {
+                    if !self.is_in_non_code(rel) {
+                        return self.span_to_range(rel, rel + clean_sym.len());
+                    }
+                }
             }
         }
         LspRange::default()
@@ -160,17 +212,89 @@ impl DocumentState {
     }
 }
 
-/// Кроссплатформенный декодер `file://` URI в `PathBuf` (поддерживает Windows `file:///C:/...` и `%20`)
-fn uri_to_path(uri: &str) -> Option<PathBuf> {
+/// Если курсор находится внутри инициализации формы `User { id "1", name "Алексей" }` или `u User { name "Алексей" }`,
+/// возвращает имя этой формы (`"User"`), чтобы работали Go to Definition и Hover при клике на `name`!
+fn find_enclosing_struct_init_form(
+    doc: &DocumentState,
+    pos: LspPosition,
+    sent_idx: Option<usize>,
+) -> Option<String> {
+    let offset = doc.position_to_offset(pos);
+    let before = &doc.text[..offset];
+    let mut depth = 0i32;
+    let mut open_brace_idx = None;
+    for (i, ch) in before.char_indices().rev() {
+        match ch {
+            '}' => depth += 1,
+            '{' => {
+                if depth == 0 {
+                    open_brace_idx = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let open_brace = open_brace_idx?;
+    let before_brace = before[..open_brace].trim_end();
+    let before_amp = before_brace
+        .strip_suffix('&')
+        .map(str::trim_end)
+        .unwrap_or(before_brace);
+    let target_ident: String = before_amp
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if target_ident.is_empty() {
+        return None;
+    }
+    let scope = doc.report.scope_for_sentence(sent_idx);
+    let (hf, _) = doc.report.resolve_target_form_in_scope(&target_ident, scope)?;
+    Some(hf.name)
+}
+
+pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let raw = uri.strip_prefix("file://")?;
     let decoded = percent_decode(raw);
     let bytes = decoded.as_bytes();
     // На Windows URI имеет вид `/C:/path/to/file.rl`
-    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        Some(PathBuf::from(&decoded[1..]))
+    let pb = if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+    {
+        PathBuf::from(&decoded[1..])
     } else {
-        Some(PathBuf::from(decoded))
+        PathBuf::from(decoded)
+    };
+    Some(normalize_path(&pb))
+}
+
+/// Кроссплатформенный конвертер `Path` в `file://` URI (без Windows `\\?\` префиксов)
+pub fn path_to_uri(path: &std::path::Path) -> String {
+    let norm = normalize_path(path);
+    let raw = norm.to_string_lossy().replace('\\', "/");
+    let s = raw.strip_prefix("//?/").unwrap_or(&raw);
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
     }
+}
+
+fn paths_match(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if normalize_path(a) == normalize_path(b) {
+        return true;
+    }
+    if let (Ok(ca), Ok(cb)) = (a.canonicalize(), b.canonicalize()) {
+        return ca == cb;
+    }
+    false
 }
 
 fn percent_decode(input: &str) -> String {
@@ -503,6 +627,12 @@ impl RazomyLanguageServer {
                     write_rpc_response(writer, req_id, res)?;
                 }
             }
+            "razomy/inspect" => {
+                if let Some(req_id) = id {
+                    let res = self.on_razomy_inspect(&params);
+                    write_rpc_response(writer, req_id, res)?;
+                }
+            }
             _ => {
                 if let Some(req_id) = id {
                     write_rpc_response(writer, req_id, JsonValue::Null)?;
@@ -513,15 +643,83 @@ impl RazomyLanguageServer {
         Ok(false)
     }
 
+    pub fn in_memory_files(&self) -> HashMap<PathBuf, String> {
+        let mut map = HashMap::new();
+        for (uri, doc) in &self.documents {
+            if let Some(path) = uri_to_path(uri) {
+                map.insert(path, doc.text.clone());
+            }
+        }
+        map
+    }
+
+    pub fn find_doc_by_path(&self, target_path: &std::path::Path) -> Option<&DocumentState> {
+        let direct_uri = path_to_uri(target_path);
+        if let Some(doc) = self.documents.get(&direct_uri) {
+            return Some(doc);
+        }
+        self.documents.values().find(|doc| {
+            uri_to_path(&doc.uri).map_or(false, |doc_path| paths_match(&doc_path, target_path))
+        })
+    }
+
+    /// Преобразует `SourceOrigin` любого символа (включая символы из импортированных файлов!)
+    /// в точный LSP Location `{ "uri": ..., "range": ... }`.
+    pub fn location_for_origin(
+        &self,
+        current_doc: &DocumentState,
+        origin: &SourceOrigin,
+        symbol_name: &str,
+    ) -> Option<JsonValue> {
+        if let Some(ref target_path) = origin.file_path {
+            if let Some(target_doc) = self.find_doc_by_path(target_path) {
+                return Some(build_location_in_doc(
+                    target_doc,
+                    origin.sentence_index,
+                    symbol_name,
+                ));
+            }
+            // Если импортированный файл еще не был открыт в кэше, читаем его с диска на лету
+            if let Ok(text) = std::fs::read_to_string(target_path) {
+                let temp_doc = DocumentState::new_with_memory(
+                    path_to_uri(target_path),
+                    1,
+                    text,
+                    &self.in_memory_files(),
+                );
+                return Some(build_location_in_doc(
+                    &temp_doc,
+                    origin.sentence_index,
+                    symbol_name,
+                ));
+            }
+            return None;
+        }
+        Some(build_location_in_doc(
+            current_doc,
+            origin.sentence_index,
+            symbol_name,
+        ))
+    }
+
     fn ensure_document_loaded(&mut self, uri: &str) {
         if self.documents.contains_key(uri) {
             return;
         }
         if let Some(path) = uri_to_path(uri) {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                let state = DocumentState::new(uri.to_string(), 1, text);
-                self.documents.insert(uri.to_string(), state);
-            }
+            self.ensure_path_loaded(&path);
+        }
+    }
+
+    fn ensure_path_loaded(&mut self, path: &std::path::Path) {
+        if self.find_doc_by_path(path).is_some() {
+            return;
+        }
+        if let Ok(text) = std::fs::read_to_string(path) {
+            let uri = path_to_uri(path);
+            let mem = self.in_memory_files();
+            let state = DocumentState::new_with_memory(uri.clone(), 1, text, &mem);
+            self.documents.insert(uri, state);
         }
     }
 
@@ -732,7 +930,10 @@ impl RazomyLanguageServer {
                     if let Some(paren_hint) = d.message.rsplit('(').next() {
                         let explicit_path = paren_hint.trim_end_matches(").");
                         if explicit_path.contains('.') {
-                            let range = doc.sentence_range(d.sentence_index, None);
+                            let range = doc.sentence_range(
+                                d.sentence_index,
+                                d.highlight_token.as_deref(),
+                            );
                             actions.push(json!({
                                 "title": format!("Уточнить путь предка: '{explicit_path}' (Закон 2)"),
                                 "kind": "quickfix",
@@ -741,6 +942,61 @@ impl RazomyLanguageServer {
                                         doc.uri.clone(): [{
                                             "range": range.to_json(),
                                             "newText": explicit_path
+                                        }]
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                }
+                // E08: Неизвестное поле — замена на ближайшее похожее поле формы
+                "E08_UNKNOWN_MEMBER" => {
+                    if let Some(suggested) = d
+                        .message
+                        .split("Возможно, вы имели в виду '")
+                        .nth(1)
+                        .and_then(|s| s.strip_suffix("'?"))
+                    {
+                        if let Some(tok) = &d.highlight_token {
+                            let replacement = if let Some((obj, _)) = tok.rsplit_once('.') {
+                                format!("{obj}.{suggested}")
+                            } else {
+                                suggested.to_string()
+                            };
+                            let range = doc.sentence_range(d.sentence_index, Some(tok));
+                            actions.push(json!({
+                                "title": format!("Исправить опечатку на '{replacement}'"),
+                                "kind": "quickfix",
+                                "edit": {
+                                    "changes": {
+                                        doc.uri.clone(): [{
+                                            "range": range.to_json(),
+                                            "newText": replacement
+                                        }]
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                }
+                // E11: Неизвестный тип — замена на ближайшую существующую форму (например, User -> User2)
+                "E11_UNKNOWN_TYPE" => {
+                    if let Some(suggested) = d
+                        .message
+                        .split("Возможно, вы имели в виду '")
+                        .nth(1)
+                        .and_then(|s| s.strip_suffix("'?"))
+                    {
+                        if let Some(tok) = &d.highlight_token {
+                            let range = doc.sentence_range(d.sentence_index, Some(tok));
+                            actions.push(json!({
+                                "title": format!("Заменить тип '{tok}' на '{suggested}'"),
+                                "kind": "quickfix",
+                                "edit": {
+                                    "changes": {
+                                        doc.uri.clone(): [{
+                                            "range": range.to_json(),
+                                            "newText": suggested
                                         }]
                                     }
                                 }
@@ -765,7 +1021,11 @@ impl RazomyLanguageServer {
         let mut results = Vec::new();
         for doc in self.documents.values() {
             for (name, hf) in &doc.report.hir.forms {
-                if !hf.is_prelude && name.to_lowercase().contains(&query) {
+                if !hf.is_prelude
+                    && hf.origin.file_path.is_none()
+                    && is_pascal_case(name)
+                    && name.to_lowercase().contains(&query)
+                {
                     let range = doc.sentence_range(Some(hf.origin.sentence_index), Some(name));
                     results.push(json!({
                         "name": name,
@@ -775,7 +1035,10 @@ impl RazomyLanguageServer {
                 }
             }
             for (name, f) in &doc.report.hir.functions {
-                if name.to_lowercase().contains(&query) {
+                if !f.is_prelude
+                    && f.origin.file_path.is_none()
+                    && name.to_lowercase().contains(&query)
+                {
                     let range = doc.sentence_range(Some(f.origin.sentence_index), Some(name));
                     results.push(json!({
                         "name": name,
@@ -840,9 +1103,67 @@ impl RazomyLanguageServer {
         text: String,
         writer: &mut W,
     ) -> io::Result<()> {
-        let state = DocumentState::new(uri.clone(), version, text);
+        let mut mem = self.in_memory_files();
+        let current_path = uri_to_path(&uri);
+        if let Some(ref p) = current_path {
+            mem.insert(p.clone(), text.clone());
+        }
+
+        let state = DocumentState::new_with_memory(uri.clone(), version, text, &mem);
+
+        // 1. Подгружаем все явно импортированные файлы (`_ models`, `_ Path"./models.rl"`, и т.д.)
+        let imported_paths: Vec<PathBuf> = state
+            .report
+            .hir
+            .imports
+            .iter()
+            .filter_map(|imp| imp.resolved_path.clone())
+            .collect();
+        for target_path in imported_paths {
+            self.ensure_path_loaded(&target_path);
+        }
+
+        // 2. Подгружаем соседние `.rl` файлы из той же директории (для Find References / Rename по проекту)
+        if let Some(base_dir) = current_path.as_deref().and_then(|p| p.parent()) {
+            if let Ok(entries) = std::fs::read_dir(base_dir) {
+                for entry in entries.flatten().take(32) {
+                    let ep = entry.path();
+                    if ep.is_file() && ep.extension().and_then(|e| e.to_str()) == Some("rl") {
+                        self.ensure_path_loaded(&ep);
+                    }
+                }
+            }
+        }
+
         self.publish_diagnostics(&state, writer)?;
-        self.documents.insert(uri, state);
+        self.documents.insert(uri.clone(), state);
+
+        // 3. Если обновился файл, который импортируется другими открытыми документами в IDE,
+        // пересчитываем диагностику и типы для зависимых открытых файлов!
+        if let Some(ref updated_path) = current_path {
+            let full_mem = self.in_memory_files();
+            let dependent_uris: Vec<(String, i64, String)> = self
+                .documents
+                .values()
+                .filter(|doc| {
+                    doc.uri != uri
+                        && doc.report.hir.imports.iter().any(|imp| {
+                            imp.resolved_path
+                                .as_deref()
+                                .map_or(false, |rp| paths_match(rp, updated_path))
+                        })
+                })
+                .map(|doc| (doc.uri.clone(), doc.version, doc.text.clone()))
+                .collect();
+
+            for (dep_uri, dep_ver, dep_text) in dependent_uris {
+                let refreshed =
+                    DocumentState::new_with_memory(dep_uri.clone(), dep_ver, dep_text, &full_mem);
+                self.publish_diagnostics(&refreshed, writer)?;
+                self.documents.insert(dep_uri, refreshed);
+            }
+        }
+
         Ok(())
     }
 
@@ -864,7 +1185,11 @@ impl RazomyLanguageServer {
             let range = if d.code == "E00_SYNTAX" {
                 extract_pest_error_range(doc)
             } else {
-                doc.sentence_range(d.sentence_index, d.context_symbol.as_deref())
+                let hint = d
+                    .highlight_token
+                    .as_deref()
+                    .or(d.context_symbol.as_deref());
+                doc.sentence_range(d.sentence_index, hint)
             };
 
             lsp_diags.push(json!({
@@ -895,71 +1220,31 @@ impl RazomyLanguageServer {
         if word.is_empty() {
             return JsonValue::Null;
         }
+        let sent_idx = doc.sentence_index_at_pos(pos);
 
         let target = word.trim_matches('.');
-        if let Some(md) = doc.report.hover(target) {
+        if let Some(md) = doc.report.hover_at(target, sent_idx) {
             return json!({
                 "contents": { "kind": "markdown", "value": md },
                 "range": range.to_json()
             });
         }
 
-        // Проверяем составной путь `Form.field`, `var.field` или `Form.method`
-        if let Some((base, member)) = target.rsplit_once('.') {
-            let root = base.split('.').next().unwrap_or(base);
-            let resolved_form = doc.report.hir.forms.get(root).or_else(|| {
-                doc.report
-                    .hir
-                    .globals
-                    .get(root)
-                    .and_then(|g| doc.report.hir.forms.get(&g.inferred_type))
-            });
-
-            if let Some(hf) = resolved_form {
-                if let Some(field) = hf.fields.get(member) {
-                    let kind_badge = if field.is_reactive {
-                        " [Reactive Stream Getter]"
-                    } else {
-                        ""
-                    };
-                    let md = format!(
-                        "```razomy\n{}.{}: {} (from {}){}\n```",
-                        hf.name, field.name, field.inferred_type, field.origin_form, kind_badge
-                    );
-                    return json!({
-                        "contents": { "kind": "markdown", "value": md },
-                        "range": range.to_json()
-                    });
-                }
-                if let Some(method) = hf.methods.get(member) {
-                    let params_str = method
-                        .params
-                        .iter()
-                        .filter(|p| !p.is_type_param)
-                        .map(|p| {
-                            if p.type_constraint.is_empty() {
-                                p.name.clone()
-                            } else {
-                                format!("{} {}", p.name, p.type_constraint)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ret = method.return_type.as_deref().unwrap_or("Any");
-                    let md = format!(
-                        "```razomy\n{}.{}({}) -> {}\n```",
-                        hf.name, method.name, params_str, ret
-                    );
-                    return json!({
-                        "contents": { "kind": "markdown", "value": md },
-                        "range": range.to_json()
-                    });
-                }
+        if let Some(enclosing_form) = find_enclosing_struct_init_form(doc, pos, sent_idx) {
+            let member = target.split('.').last().unwrap_or(target);
+            if let Some(md) = doc
+                .report
+                .hover_at(&format!("{enclosing_form}.{member}"), sent_idx)
+            {
+                return json!({
+                    "contents": { "kind": "markdown", "value": md },
+                    "range": range.to_json()
+                });
             }
         }
 
         let last_seg = target.split('.').last().unwrap_or(target);
-        if let Some(md) = doc.report.hover(last_seg) {
+        if let Some(md) = doc.report.hover_at(last_seg, sent_idx) {
             return json!({
                 "contents": { "kind": "markdown", "value": md },
                 "range": range.to_json()
@@ -974,16 +1259,21 @@ impl RazomyLanguageServer {
             return json!({ "isIncomplete": false, "items": [] });
         };
 
-        let (word, _) = doc.word_at_position(pos);
-        let query = if word.is_empty() || word == "." {
-            find_piped_receiver_before_cursor(doc, pos).unwrap_or(word)
-        } else {
-            word
-        };
+        let sent_idx = doc.sentence_index_at_pos(pos);
+        let query = extract_completion_query(doc, pos);
 
-        let items = doc.report.completions(&query);
+        let mut items = Vec::new();
+        // Если курсор внутри блока инициализации формы `FormName { <cursor> }` или роутера `expr . { <cursor> }`
+        if !query.contains('.') {
+            items.extend(complete_brace_context(doc, pos, &query, sent_idx));
+        }
+
+        items.extend(doc.report.completions_at(&query, sent_idx));
+
+        let mut seen = std::collections::HashSet::new();
         let lsp_items: Vec<JsonValue> = items
             .into_iter()
+            .filter(|it| seen.insert(it.label.clone()))
             .map(|item| {
                 let kind_num = match item.kind {
                     "Method" => 2,
@@ -1016,64 +1306,160 @@ impl RazomyLanguageServer {
         };
         let (word, _) = doc.word_at_position(pos);
         let target = word.trim_matches('.');
-        if target.is_empty() {
-            return JsonValue::Null;
-        }
+        let sent_idx = doc.sentence_index_at_pos(pos);
+        let scope = doc.report.scope_for_sentence(sent_idx);
 
-        // 1. Точный переход к полю или методу `Form.member` или `var.member`
-        if let Some((base, member)) = target.rsplit_once('.') {
-            let root = base.split('.').next().unwrap_or(base);
-            for candidate_doc in std::iter::once(doc).chain(self.documents.values()) {
-                let resolved_form = candidate_doc.report.hir.forms.get(root).or_else(|| {
-                    candidate_doc
-                        .report
-                        .hir
-                        .globals
-                        .get(root)
-                        .and_then(|g| candidate_doc.report.hir.forms.get(&g.inferred_type))
-                });
-
-                if let Some(hf) = resolved_form {
-                    // Если поле унаследовано из другого предка — переходим к форме-источнику (origin_form)
-                    let origin_form_name = hf
-                        .fields
-                        .get(member)
-                        .map(|f| f.origin_form.as_str())
-                        .unwrap_or(&hf.name);
-                    let target_hf = candidate_doc
-                        .report
-                        .hir
-                        .forms
-                        .get(origin_form_name)
-                        .unwrap_or(hf);
-                    if !target_hf.is_prelude {
-                        let range = candidate_doc
-                            .sentence_range(Some(target_hf.origin.sentence_index), Some(member));
-                        return json!({ "uri": candidate_doc.uri, "range": range.to_json() });
+        // 0. Если кликнули на строку импорта (`_ models`, `Base root.base`, `_ Path"./models.rl"`)
+        if let Some(idx) = sent_idx {
+            if let Some(imp) = doc
+                .report
+                .hir
+                .imports
+                .iter()
+                .find(|i| i.origin.file_path.is_none() && i.origin.sentence_index == idx)
+            {
+                let clean_word = target.split('.').next().unwrap_or(target);
+                let is_destructured_symbol =
+                    imp.targets.iter().any(|t| t != "_" && t == clean_word)
+                        && (doc.report.hir.forms.contains_key(clean_word)
+                            || doc.report.hir.functions.contains_key(clean_word));
+                if !is_destructured_symbol {
+                    if let Some(ref target_path) = imp.resolved_path {
+                        let uri = self
+                            .find_doc_by_path(target_path)
+                            .map(|d| d.uri.clone())
+                            .unwrap_or_else(|| path_to_uri(target_path));
+                        return json!({
+                            "uri": uri,
+                            "range": LspRange::default().to_json()
+                        });
                     }
                 }
             }
         }
 
-        // 2. Ищем символ (форму, функцию или глобальную переменную) во всех открытых документах
-        let clean = target.split('.').next().unwrap_or(target);
-        for candidate_doc in std::iter::once(doc).chain(self.documents.values()) {
-            if let Some(hf) = candidate_doc.report.hir.forms.get(clean) {
-                if !hf.is_prelude {
-                    let range =
-                        candidate_doc.sentence_range(Some(hf.origin.sentence_index), Some(clean));
-                    return json!({ "uri": candidate_doc.uri, "range": range.to_json() });
+        if target.is_empty() {
+            return JsonValue::Null;
+        }
+
+        // Определяем цель перехода: учитываем пайп `cat . greet` и поля внутри `User { id "1", name "Alex" }`
+        let effective_target = if !target.contains('.') {
+            if let Some(piped) = find_piped_receiver_before_cursor(doc, pos, target) {
+                piped
+            } else if let Some(enclosing_form) = find_enclosing_struct_init_form(doc, pos, sent_idx)
+            {
+                if doc
+                    .report
+                    .resolve_type_to_form(&enclosing_form)
+                    .map_or(false, |hf| hf.fields.contains_key(target))
+                {
+                    format!("{enclosing_form}.{target}")
+                } else {
+                    target.to_string()
+                }
+            } else {
+                target.to_string()
+            }
+        } else {
+            target.to_string()
+        };
+
+        // 1. Переход к полю, методу, UFCS-функции или предку (`my_car.brand`, `cat . greet`, `User { name "Alex" }`)
+        if let Some((base, member)) = effective_target.rsplit_once('.') {
+            if let Some((hf, _)) = doc.report.resolve_target_form_in_scope(base, scope) {
+                if let Some(field) = hf.fields.get(member) {
+                    let is_prelude = doc
+                        .report
+                        .hir
+                        .forms
+                        .get(&field.origin_form)
+                        .map_or(false, |f| f.is_prelude);
+                    if !is_prelude {
+                        if let Some(loc) = self.location_for_origin(doc, &field.origin, member) {
+                            return loc;
+                        }
+                    }
+                }
+                if let Some(method) = hf.methods.get(member) {
+                    if !method.is_prelude {
+                        if let Some(loc) = self.location_for_origin(doc, &method.origin, member) {
+                            return loc;
+                        }
+                    }
+                }
+                if let Some(ufcs_fn) = doc.report.hir.functions.get(member) {
+                    if !ufcs_fn.is_prelude {
+                        if let Some(loc) = self.location_for_origin(doc, &ufcs_fn.origin, member) {
+                            return loc;
+                        }
+                    }
+                }
+                if let Some(anc_hf) = doc.report.hir.forms.get(member) {
+                    if !anc_hf.is_prelude {
+                        if let Some(loc) = self.location_for_origin(doc, &anc_hf.origin, member) {
+                            return loc;
+                        }
+                    }
                 }
             }
-            if let Some(f) = candidate_doc.report.hir.functions.get(clean) {
-                let range =
-                    candidate_doc.sentence_range(Some(f.origin.sentence_index), Some(clean));
-                return json!({ "uri": candidate_doc.uri, "range": range.to_json() });
+        }
+
+        // 2. Переход к форме, функции или глобальной переменной (в текущем или импортированном файле)
+        let clean = target.split('.').next().unwrap_or(target);
+        if let Some(hf) = doc.report.hir.forms.get(clean) {
+            if !hf.is_prelude && (is_pascal_case(clean) || !doc.report.hir.globals.contains_key(clean))
+            {
+                if let Some(loc) = self.location_for_origin(doc, &hf.origin, clean) {
+                    return loc;
+                }
             }
-            if let Some(g) = candidate_doc.report.hir.globals.get(clean) {
-                let range =
-                    candidate_doc.sentence_range(Some(g.origin.sentence_index), Some(clean));
-                return json!({ "uri": candidate_doc.uri, "range": range.to_json() });
+        }
+        if let Some(f) = doc.report.hir.functions.get(clean) {
+            if !f.is_prelude {
+                if let Some(loc) = self.location_for_origin(doc, &f.origin, clean) {
+                    return loc;
+                }
+            }
+        }
+        if let Some(g) = doc.report.hir.globals.get(clean) {
+            if let Some(loc) = self.location_for_origin(doc, &g.origin, clean) {
+                return loc;
+            }
+        }
+
+        // Fallback: поиск по всем открытым документам воркспейса (даже если файл ещё не импортирован)
+        for cand in self.documents.values() {
+            if let Some(hf) = cand.report.hir.forms.get(clean) {
+                if !hf.is_prelude && hf.origin.file_path.is_none() && is_pascal_case(clean) {
+                    if let Some(loc) = self.location_for_origin(cand, &hf.origin, clean) {
+                        return loc;
+                    }
+                }
+            }
+            if let Some(f) = cand.report.hir.functions.get(clean) {
+                if !f.is_prelude && f.origin.file_path.is_none() {
+                    if let Some(loc) = self.location_for_origin(cand, &f.origin, clean) {
+                        return loc;
+                    }
+                }
+            }
+        }
+
+        // 3. Переход к локальной переменной или параметру внутри текущей функции/формы
+        if let Some(sc) = scope {
+            if let Some(var_ty) = sc.var_types.get(clean) {
+                let origin = SourceOrigin {
+                    sentence_index: sc.sentence_index,
+                    file_path: None,
+                    symbol_context: sc.context_name.clone(),
+                    raw_ast: vec![],
+                };
+                if let Some(loc) = self.location_for_origin(doc, &origin, clean) {
+                    return loc;
+                }
+                if let Some(loc) = self.location_for_origin(doc, &origin, var_ty) {
+                    return loc;
+                }
             }
         }
 
@@ -1096,7 +1482,7 @@ impl RazomyLanguageServer {
 
         for name in &doc.report.hir.form_order {
             if let Some(hf) = doc.report.hir.forms.get(name) {
-                if hf.is_prelude {
+                if hf.is_prelude || hf.origin.file_path.is_some() || !is_pascal_case(name) {
                     continue;
                 }
                 let range = doc.sentence_range(Some(hf.origin.sentence_index), Some(name));
@@ -1142,10 +1528,13 @@ impl RazomyLanguageServer {
 
         for fn_name in &doc.report.hir.function_order {
             if let Some(f) = doc.report.hir.functions.get(fn_name) {
+                if f.is_prelude || f.origin.file_path.is_some() {
+                    continue;
+                }
                 let range = doc.sentence_range(Some(f.origin.sentence_index), Some(fn_name));
                 symbols.push(json!({
                     "name": f.name,
-                    "detail": f.return_type.clone().unwrap_or_else(|| "Stream".into()),
+                    "detail": f.effective_return_type().unwrap_or("Stream"),
                     "kind": 12,
                     "range": range.to_json(),
                     "selectionRange": range.to_json()
@@ -1154,10 +1543,13 @@ impl RazomyLanguageServer {
         }
 
         for g_name in &doc.report.hir.global_order {
-            if doc.report.hir.forms.contains_key(g_name) {
+            if is_pascal_case(g_name) && doc.report.hir.forms.contains_key(g_name) {
                 continue;
             }
             if let Some(g) = doc.report.hir.globals.get(g_name) {
+                if g.origin.file_path.is_some() {
+                    continue;
+                }
                 let range = doc.sentence_range(Some(g.origin.sentence_index), Some(g_name));
                 symbols.push(json!({
                     "name": g.key,
@@ -1201,6 +1593,7 @@ impl RazomyLanguageServer {
         };
 
         let mut hints = Vec::new();
+        // 1. Inlay hints для глобальных привязок
         for g_name in &doc.report.hir.global_order {
             if doc.report.hir.forms.contains_key(g_name) || g_name == "_" {
                 continue;
@@ -1211,6 +1604,56 @@ impl RazomyLanguageServer {
                     hints.push(json!({
                         "position": { "line": r.end.line, "character": r.end.character },
                         "label": format!(": {}", g.inferred_type),
+                        "kind": 1,
+                        "paddingLeft": false,
+                        "paddingRight": true
+                    }));
+                }
+            }
+        }
+        // 2. Inlay hints для выведенных возвращаемых типов функций и локальных переменных
+        for fn_name in &doc.report.hir.function_order {
+            let Some(f) = doc.report.hir.functions.get(fn_name) else {
+                continue;
+            };
+            if f.is_prelude {
+                continue;
+            }
+            if f.return_type.is_none() {
+                if let Some(inf_ret) = &f.inferred_return_type {
+                    if let Some(&(s_start, s_end)) = doc.sentence_spans.get(f.origin.sentence_index)
+                    {
+                        let slice = &doc.text[s_start..s_end.min(doc.text.len())];
+                        if let Some(open_bracket) = slice.find('[') {
+                            let pos_before = doc.offset_to_position(s_start + open_bracket);
+                            hints.push(json!({
+                                "position": { "line": pos_before.line, "character": pos_before.character },
+                                "label": format!("-> {inf_ret} "),
+                                "kind": 1,
+                                "paddingLeft": true,
+                                "paddingRight": true
+                            }));
+                        }
+                    }
+                }
+            }
+            if let Some(sc) = doc.report.scopes.get(fn_name) {
+                let param_names: std::collections::HashSet<&str> =
+                    f.params.iter().map(|p| p.name.as_str()).collect();
+                for (var_name, var_ty) in &sc.var_types {
+                    if matches!(
+                        var_name.as_str(),
+                        "self" | "Self" | "_" | "_0" | "_1" | "_2" | "_3"
+                    ) || param_names.contains(var_name.as_str())
+                        || is_pascal_case(var_name)
+                        || var_ty == "Any"
+                    {
+                        continue;
+                    }
+                    let r = doc.sentence_range(Some(f.origin.sentence_index), Some(var_name));
+                    hints.push(json!({
+                        "position": { "line": r.end.line, "character": r.end.character },
+                        "label": format!(": {var_ty}"),
                         "kind": 1,
                         "paddingLeft": false,
                         "paddingRight": true
@@ -1234,36 +1677,46 @@ impl RazomyLanguageServer {
         let callee: String = before_paren
             .chars()
             .rev()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
             .collect::<String>()
             .chars()
             .rev()
             .collect();
 
-        if let Some(f) = doc.report.hir.functions.get(&callee) {
-            let active_param = prefix[open_paren..].matches(',').count();
-            let params_json: Vec<JsonValue> = f
-                .params
-                .iter()
-                .filter(|p| !p.is_type_param)
-                .map(|p| {
-                    let label = if p.type_constraint.is_empty() {
-                        p.name.clone()
-                    } else {
-                        format!("{} {}", p.name, p.type_constraint)
-                    };
-                    json!({ "label": label })
-                })
-                .collect();
+        let active_param = prefix[open_paren..].matches(',').count();
+        let sent_idx = doc.sentence_index_at_pos(pos);
+        let scope = doc.report.scope_for_sentence(sent_idx);
 
-            return json!({
-                "signatures": [{
-                    "label": format!("{}({})", f.name, params_json.iter().filter_map(|p| p.get("label").and_then(JsonValue::as_str)).collect::<Vec<_>>().join(", ")),
-                    "parameters": params_json
-                }],
-                "activeSignature": 0,
-                "activeParameter": active_param
-            });
+        // 1. Глобальная функция
+        if let Some(f) = doc.report.hir.functions.get(&callee) {
+            return build_signature_help_json(&f.name, &f.params, f.effective_return_type(), active_param);
+        }
+
+        // 2. Метод формы `Db.find_user(` или `my_car.method(`
+        if let Some((base, method_name)) = callee.rsplit_once('.') {
+            if let Some((hf, _)) = doc.report.resolve_target_form_in_scope(base, scope) {
+                if let Some(m) = hf.methods.get(method_name) {
+                    let full_name = format!("{}.{}", hf.name, m.name);
+                    return build_signature_help_json(
+                        &full_name,
+                        &m.params,
+                        m.effective_return_type(),
+                        active_param,
+                    );
+                }
+            }
+        }
+
+        // 3. Конструктор параметризованной формы `MathOps(10, 2)` или `Money("199.99")`
+        if let Some(hf) = doc.report.hir.forms.get(&callee) {
+            if !hf.value_params.is_empty() {
+                return build_signature_help_json(
+                    &hf.name,
+                    &hf.value_params,
+                    Some(&hf.name),
+                    active_param,
+                );
+            }
         }
 
         JsonValue::Null
@@ -1282,14 +1735,125 @@ impl RazomyLanguageServer {
     }
 }
 
-fn find_piped_receiver_before_cursor(doc: &DocumentState, pos: LspPosition) -> Option<String> {
-    let offset = doc.position_to_offset(pos);
-    let before = doc.text[..offset].trim_end();
-    let before_dot = before.strip_suffix('.')?.trim_end();
-    let token: String = before_dot
+fn build_signature_help_json(
+    name: &str,
+    params: &[crate::hir::HirParam],
+    ret_ty: Option<&str>,
+    active_param: usize,
+) -> JsonValue {
+    let params_json: Vec<JsonValue> = params
+        .iter()
+        .filter(|p| !p.is_type_param)
+        .map(|p| {
+            let label = if p.type_constraint.is_empty() {
+                p.name.clone()
+            } else {
+                format!("{} {}", p.name, p.type_constraint)
+            };
+            json!({ "label": label })
+        })
+        .collect();
+    let param_labels: Vec<&str> = params_json
+        .iter()
+        .filter_map(|p| p.get("label").and_then(JsonValue::as_str))
+        .collect();
+    let ret_suffix = ret_ty.map(|r| format!(" -> {r}")).unwrap_or_default();
+    json!({
+        "signatures": [{
+            "label": format!("{}({}){}", name, param_labels.join(", "), ret_suffix),
+            "parameters": params_json
+        }],
+        "activeSignature": 0,
+        "activeParameter": active_param
+    })
+}
+
+fn build_location_in_doc(
+    target_doc: &DocumentState,
+    sentence_idx: usize,
+    symbol_name: &str,
+) -> JsonValue {
+    let range = target_doc.sentence_range(Some(sentence_idx), Some(symbol_name));
+    json!({
+        "uri": target_doc.uri,
+        "range": range.to_json()
+    })
+}
+
+/// Единый экстрактор запроса автодополнения: одинаково чисто разбирает
+/// слитную точку (`cat.`, `cat.gr`, `state.err.`) и пробельный пайп (`cat .`, `cat . `, `cat .gr`, `cat . gr`).
+fn extract_completion_query(doc: &DocumentState, pos: LspPosition) -> String {
+    let offset = doc.position_to_offset(pos).min(doc.text.len());
+    let before = &doc.text[..offset];
+
+    let prefix: String = before
         .chars()
         .rev()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+
+    let before_prefix = &before[..before.len() - prefix.len()];
+    let before_trimmed = before_prefix.trim_end_matches([' ', '\t', '\r', '\n']);
+
+    let before_op = before_trimmed
+        .strip_suffix(".>")
+        .or_else(|| before_trimmed.strip_suffix(".&"))
+        .or_else(|| before_trimmed.strip_suffix(".?"))
+        .or_else(|| {
+            if before_trimmed.ends_with("..") {
+                None
+            } else {
+                before_trimmed.strip_suffix('.')
+            }
+        });
+
+    if let Some(recv_part) = before_op {
+        let recv_trimmed = recv_part.trim_end_matches([' ', '\t', '\r', '\n']);
+        let receiver: String = recv_trimmed
+            .chars()
+            .rev()
+            .take_while(|c| {
+                c.is_ascii_alphanumeric() || matches!(*c, '_' | '.' | '(' | ')' | '-')
+            })
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let clean_recv = receiver.trim_matches('.');
+        if !clean_recv.is_empty() {
+            return format!("{clean_recv}.{prefix}");
+        }
+    }
+
+    prefix
+}
+
+fn find_piped_receiver_before_cursor(
+    doc: &DocumentState,
+    pos: LspPosition,
+    current_word: &str,
+) -> Option<String> {
+    let offset = doc.position_to_offset(pos).min(doc.text.len());
+    let clean_word = current_word.trim_start_matches('.');
+    let word_start = doc.text[..offset]
+        .rfind(clean_word)
+        .unwrap_or_else(|| offset.saturating_sub(clean_word.len()));
+    let before = doc.text[..word_start].trim_end();
+    let before_op = before
+        .strip_suffix(".>")
+        .or_else(|| before.strip_suffix(".&"))
+        .or_else(|| before.strip_suffix(".?"))
+        .or_else(|| before.strip_suffix('.'))?
+        .trim_end();
+    let token: String = before_op
+        .chars()
+        .rev()
+        .take_while(|c| {
+            c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '(' || *c == ')'
+        })
         .collect::<String>()
         .chars()
         .rev()
@@ -1297,8 +1861,697 @@ fn find_piped_receiver_before_cursor(doc: &DocumentState, pos: LspPosition) -> O
     if token.is_empty() {
         None
     } else {
-        Some(format!("{token}."))
+        Some(format!("{token}.{clean_word}"))
     }
+}
+
+/// Автодополнение полей при инициализации формы `User { <cursor> }` и веток роутера `g . { <cursor> }`
+fn complete_brace_context(
+    doc: &DocumentState,
+    pos: LspPosition,
+    prefix: &str,
+    sent_idx: Option<usize>,
+) -> Vec<CompletionItem> {
+    let mut out = Vec::new();
+    let offset = doc.position_to_offset(pos);
+    let before = &doc.text[..offset];
+    let Some(open_brace) = before.rfind('{') else {
+        return out;
+    };
+    if before[open_brace..].contains('}') {
+        return out;
+    }
+
+    let before_brace = before[..open_brace].trim_end();
+    let scope = doc.report.scope_for_sentence(sent_idx);
+
+    // 1. Роутер по объединению типов: `g . { <cursor> }`
+    if let Some(before_dot) = before_brace.strip_suffix('.') {
+        let recv: String = before_dot
+            .trim_end()
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.' || *c == '(' || *c == ')')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if let Some(ty) = doc.report.resolve_expr_type(&recv, scope) {
+            let variants: Vec<String> = if let Some(hf) = doc.report.hir.forms.get(&ty) {
+                hf.union_variants.clone()
+            } else if ty.contains('|') {
+                ty.split('|').map(|s| s.trim().to_string()).collect()
+            } else {
+                vec![]
+            };
+            for v in variants {
+                let v_clean = v.split('(').next().unwrap_or(&v).trim();
+                if v_clean.starts_with(prefix) {
+                    out.push(CompletionItem {
+                        label: v_clean.to_string(),
+                        kind: "Form",
+                        detail: format!("Router branch for {v}"),
+                        insert_text: format!("{v_clean} [ ]"),
+                    });
+                }
+            }
+        }
+        return out;
+    }
+
+    // 2. Инициализация или обновление формы: `User { <cursor> }` или `my_car & { <cursor> }`
+    let before_amp = before_brace
+        .strip_suffix('&')
+        .map(str::trim_end)
+        .unwrap_or(before_brace);
+    let target_ident: String = before_amp
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if target_ident.is_empty() {
+        return out;
+    }
+
+    if let Some((hf, _)) = doc.report.resolve_target_form_in_scope(&target_ident, scope) {
+        for fname in &hf.field_order {
+            if fname.starts_with(prefix) {
+                if let Some(f) = hf.fields.get(fname) {
+                    if !f.is_reactive {
+                        out.push(CompletionItem {
+                            label: fname.clone(),
+                            kind: "Field",
+                            detail: format!("{}: {} (in {})", fname, f.inferred_type, hf.name),
+                            insert_text: format!("{fname} "),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+// =============================================================================
+// ИНСПЕКТОР ПАРСЕРА, AST, HIR И ДИАГНОСТИКИ ДЛЯ PARSER.HTML (`razomy/inspect`)
+// =============================================================================
+
+impl RazomyLanguageServer {
+    pub fn on_razomy_inspect(&mut self, params: &JsonValue) -> JsonValue {
+        let uri = params
+            .get("textDocument")
+            .and_then(|t| t.get("uri"))
+            .or_else(|| params.get("uri"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or("file:///workspace/playground.rl")
+            .to_string();
+
+        if let Some(text) = params.get("text").and_then(JsonValue::as_str) {
+            let version = params.get("version").and_then(JsonValue::as_i64).unwrap_or(1);
+            let mut sink = Vec::new();
+            let _ = self.update_document(uri.clone(), version, text.to_string(), &mut sink);
+        } else {
+            self.ensure_document_loaded(&uri);
+        }
+
+        let Some(doc) = self.documents.get(&uri) else {
+            return JsonValue::Null;
+        };
+
+        let sentences_ast = parse_code(&doc.text)
+            .or_else(|_| parse_code(&doc.recovered_text))
+            .unwrap_or_default();
+
+        let mut sentences_json = Vec::new();
+        for (idx, sent) in sentences_ast.iter().enumerate() {
+            let (s_byte, e_byte) = doc.sentence_spans.get(idx).copied().unwrap_or((0, 0));
+            let range = doc.span_to_range(s_byte, e_byte);
+            let raw_slice = doc
+                .text
+                .get(s_byte..e_byte.min(doc.text.len()))
+                .unwrap_or("")
+                .trim();
+            sentences_json.push(serialize_sentence_inspection(
+                idx, s_byte, e_byte, range, raw_slice, sent,
+            ));
+        }
+
+        let mut forms_json = Vec::new();
+        for name in &doc.report.hir.form_order {
+            if let Some(hf) = doc.report.hir.forms.get(name) {
+                if hf.is_prelude {
+                    continue;
+                }
+                let range = doc.sentence_range(Some(hf.origin.sentence_index), Some(name));
+                let fields: Vec<JsonValue> = hf
+                    .field_order
+                    .iter()
+                    .filter_map(|fname| hf.fields.get(fname))
+                    .map(|f| {
+                        json!({
+                            "name": f.name,
+                            "type": f.inferred_type,
+                            "origin": f.origin_form,
+                            "defaultExpr": format_token_list(&f.default_expr),
+                            "reactive": f.is_reactive,
+                            "ambiguous": f.is_ambiguous,
+                            "conflicts": f.conflicting_origins,
+                            "visibility": format!("{:?}", f.visibility),
+                            "sentenceIndex": f.origin.sentence_index,
+                        })
+                    })
+                    .collect();
+
+                let methods: Vec<JsonValue> = hf
+                    .method_order
+                    .iter()
+                    .filter_map(|mname| hf.methods.get(mname))
+                    .map(serialize_hir_function)
+                    .collect();
+
+                let value_params: Vec<JsonValue> =
+                    hf.value_params.iter().map(serialize_hir_param).collect();
+
+                forms_json.push(json!({
+                    "name": hf.name,
+                    "typeParams": hf.type_params,
+                    "valueParams": value_params,
+                    "typeArgs": hf.type_args,
+                    "ancestors": hf.ancestors,
+                    "unionVariants": hf.union_variants,
+                    "refinementPredicates": hf.refinement_predicates.iter().map(|t| format_token_list(std::slice::from_ref(t))).collect::<Vec<_>>(),
+                    "isBypass": hf.is_bypass,
+                    "isAlgebraicAlias": hf.is_algebraic_alias,
+                    "fields": fields,
+                    "methods": methods,
+                    "sentenceIndex": hf.origin.sentence_index,
+                    "range": range.to_json(),
+                }));
+            }
+        }
+
+        let mut functions_json = Vec::new();
+        for fn_name in &doc.report.hir.function_order {
+            if let Some(f) = doc.report.hir.functions.get(fn_name) {
+                if f.is_prelude {
+                    continue;
+                }
+                let mut f_json = serialize_hir_function(f);
+                let range = doc.sentence_range(Some(f.origin.sentence_index), Some(fn_name));
+                if let Some(obj) = f_json.as_object_mut() {
+                    obj.insert("range".into(), range.to_json());
+                    if let Some(sc) = doc.report.scopes.get(fn_name) {
+                        obj.insert("scopeVars".into(), json!(sc.var_types));
+                    }
+                }
+                functions_json.push(f_json);
+            }
+        }
+
+        let mut globals_json = Vec::new();
+        for g_name in &doc.report.hir.global_order {
+            if let Some(g) = doc.report.hir.globals.get(g_name) {
+                let range = doc.sentence_range(Some(g.origin.sentence_index), Some(g_name));
+                globals_json.push(json!({
+                    "key": g.key,
+                    "type": g.inferred_type,
+                    "valueExpr": format_token_list(&g.value_expr),
+                    "sentenceIndex": g.origin.sentence_index,
+                    "range": range.to_json(),
+                }));
+            }
+        }
+
+        let imports_json: Vec<JsonValue> = doc
+            .report
+            .hir
+            .imports
+            .iter()
+            .map(|imp| {
+                json!({
+                    "targets": imp.targets,
+                    "sourcePath": imp.source_path,
+                    "sentenceIndex": imp.origin.sentence_index,
+                })
+            })
+            .collect();
+
+        let diags_json: Vec<JsonValue> = doc
+            .report
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let severity_num = match d.severity {
+                    Severity::Error => 1,
+                    Severity::Warning => 2,
+                    Severity::Information => 3,
+                    Severity::Hint => 4,
+                };
+                let range = if d.code == "E00_SYNTAX" {
+                    extract_pest_error_range(doc)
+                } else {
+                    let hint = d
+                        .highlight_token
+                        .as_deref()
+                        .or(d.context_symbol.as_deref());
+                    doc.sentence_range(d.sentence_index, hint)
+                };
+                json!({
+                    "severity": severity_num,
+                    "severityLabel": format!("{:?}", d.severity),
+                    "code": d.code,
+                    "message": d.message,
+                    "symbol": d.context_symbol,
+                    "highlightToken": d.highlight_token,
+                    "sentenceIndex": d.sentence_index,
+                    "range": range.to_json(),
+                })
+            })
+            .collect();
+
+        let doc_param = json!({ "textDocument": { "uri": uri } });
+        let inlay_hints = self.on_inlay_hints(&doc_param);
+        let doc_symbols = self.on_document_symbol(&doc_param);
+        let code_actions = self.on_code_action(&doc_param);
+
+        json!({
+            "uri": doc.uri,
+            "version": doc.version,
+            "sentences": sentences_json,
+            "hir": {
+                "forms": forms_json,
+                "functions": functions_json,
+                "globals": globals_json,
+                "imports": imports_json,
+            },
+            "diagnostics": diags_json,
+            "inlayHints": inlay_hints,
+            "documentSymbols": doc_symbols,
+            "codeActions": code_actions,
+        })
+    }
+
+    /// Запускает HTTP JSON-RPC 2.0 сервер для работы `parser.html` с нативным LSP-сервером Razomy
+    pub fn run_http(&mut self, bind_addr: &str) -> io::Result<()> {
+        let listener = std::net::TcpListener::bind(bind_addr)?;
+        eprintln!("[razomy-lsp] HTTP Studio & LSP Server listening on http://{bind_addr}");
+        eprintln!("[razomy-lsp] Open http://{bind_addr} in your browser to inspect Razomy syntax!");
+
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = self.handle_http_connection(&mut stream);
+        }
+        Ok(())
+    }
+
+    fn handle_http_connection(&mut self, stream: &mut std::net::TcpStream) -> io::Result<()> {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut request_line = String::new();
+        if reader.read_line(&mut request_line)? == 0 {
+            return Ok(());
+        }
+
+        let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+        let method = parts.first().copied().unwrap_or("GET");
+        let path = parts.get(1).copied().unwrap_or("/");
+
+        let mut content_length = 0usize;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                if k.trim().eq_ignore_ascii_case("Content-Length") {
+                    content_length = v.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+
+        if method == "OPTIONS" {
+            write!(
+                stream,
+                "HTTP/1.1 204 No Content\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+                 Access-Control-Allow-Headers: Content-Type\r\n\
+                 Content-Length: 0\r\n\r\n"
+            )?;
+            return stream.flush();
+        }
+
+        if method == "GET" && (path == "/" || path.starts_with("/parser.html")) {
+            let html = std::fs::read_to_string("parser.html")
+                .or_else(|_| std::fs::read_to_string("src/parser.html"))
+                .unwrap_or_else(|_| "<h1>parser.html not found in working directory</h1>".into());
+            let bytes = html.as_bytes();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/html; charset=utf-8\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Content-Length: {}\r\n\r\n",
+                bytes.len()
+            )?;
+            stream.write_all(bytes)?;
+            return stream.flush();
+        }
+
+        if method == "POST" {
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body)?;
+
+            let incoming: JsonValue = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+            let mut rpc_out = Vec::new();
+            let _ = self.handle_message(&incoming, &mut rpc_out);
+
+            let mut out_reader = BufReader::new(rpc_out.as_slice());
+            let mut messages = Vec::new();
+            while let Ok(Some(msg)) = read_rpc_message(&mut out_reader) {
+                messages.push(msg);
+            }
+
+            let response_json = match messages.len() {
+                0 => json!({ "jsonrpc": "2.0", "id": incoming.get("id").cloned().unwrap_or(JsonValue::Null), "result": null }),
+                1 => messages.remove(0),
+                _ => json!({
+                    "jsonrpc": "2.0",
+                    "id": incoming.get("id").cloned().unwrap_or(JsonValue::Null),
+                    "result": messages.last().and_then(|m| m.get("result")).cloned().unwrap_or(JsonValue::Null),
+                    "notifications": messages
+                }),
+            };
+
+            let resp_bytes = serde_json::to_vec(&response_json).unwrap_or_default();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json; charset=utf-8\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Content-Length: {}\r\n\r\n",
+                resp_bytes.len()
+            )?;
+            stream.write_all(&resp_bytes)?;
+            return stream.flush();
+        }
+
+        write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n"
+        )?;
+        stream.flush()
+    }
+}
+
+fn serialize_hir_param(p: &crate::hir::HirParam) -> JsonValue {
+    json!({
+        "name": p.name,
+        "typeConstraint": p.type_constraint,
+        "defaultExpr": format_token_list(&p.default_expr),
+        "isAnonymousTypeSlot": p.is_anonymous_type_slot,
+        "isTypeParam": p.is_type_param,
+        "destructuredFields": p.destructured_fields,
+    })
+}
+
+fn serialize_hir_function(f: &crate::hir::HirFunction) -> JsonValue {
+    json!({
+        "name": f.name,
+        "signature": crate::analyzer::format_fn_signature(f),
+        "params": f.params.iter().map(serialize_hir_param).collect::<Vec<_>>(),
+        "autoUnpacks": f.auto_unpacks,
+        "returnType": f.return_type,
+        "inferredReturnType": f.inferred_return_type,
+        "effectiveReturnType": f.effective_return_type(),
+        "isContract": f.is_contract,
+        "isCompileTime": f.is_compile_time,
+        "visibility": format!("{:?}", f.visibility),
+        "sentenceIndex": f.origin.sentence_index,
+    })
+}
+
+fn serialize_sentence_inspection(
+    idx: usize,
+    start_byte: usize,
+    end_byte: usize,
+    range: LspRange,
+    raw_text: &str,
+    sent: &Sentence,
+) -> JsonValue {
+    let import_json = extract_import(sent).map(|imp| match imp {
+        ImportDirective::Wildcard { source } => json!({
+            "kind": "Wildcard",
+            "targets": ["_"],
+            "source": format_import_source(&source),
+        }),
+        ImportDirective::Destructured { names, source } => json!({
+            "kind": "Destructured",
+            "targets": names,
+            "source": format_import_source(&source),
+        }),
+        ImportDirective::Namespaced { alias, source } => json!({
+            "kind": "Namespaced",
+            "targets": [alias],
+            "source": format_import_source(&source),
+        }),
+    });
+
+    let sem = classify_sentence(sent);
+    let (kind_name, summary, details) = match &sem {
+        SemanticKind::FormDef { name, body, tail } => (
+            "FormDef",
+            format!("Form {name} {{ {} sentences }}", body.len()),
+            json!({ "name": name, "bodyCount": body.len(), "tail": format_token_list(tail) }),
+        ),
+        SemanticKind::GenericDef { name, params, body } => (
+            "GenericDef",
+            format!("{name}({} slots) {}", params.len(), format_token_list(body)),
+            json!({ "name": name, "paramsCount": params.len(), "body": format_token_list(body) }),
+        ),
+        SemanticKind::AlgebraicDef { name, expr } => (
+            "AlgebraicDef",
+            format!("{name} = {}", format_token_list(expr)),
+            json!({ "name": name, "expr": format_token_list(expr) }),
+        ),
+        SemanticKind::FunctionDef {
+            name,
+            args,
+            body,
+            tail,
+        } => (
+            "FunctionDef",
+            format!(
+                "fn {name}({} args) {} [ {} steps ]",
+                args.len(),
+                format_token_list(tail),
+                body.len()
+            ),
+            json!({ "name": name, "argsCount": args.len(), "bodyCount": body.len(), "tail": format_token_list(tail) }),
+        ),
+        SemanticKind::StreamOrBranch { name, stream } => (
+            "StreamOrBranch",
+            format!("{name} [ {} steps ]", stream.len()),
+            json!({ "name": name, "stepsCount": stream.len() }),
+        ),
+        SemanticKind::LambdaOrTupleBranch { args, body } => (
+            "LambdaOrTupleBranch",
+            format!("({} args) [ {} steps ]", args.len(), body.len()),
+            json!({ "argsCount": args.len(), "stepsCount": body.len() }),
+        ),
+        SemanticKind::PatternBranch { pattern, body } => (
+            "PatternBranch",
+            format!(
+                "{} [ {} steps ]",
+                format_token_list(std::slice::from_ref(pattern)),
+                body.len()
+            ),
+            json!({ "pattern": format_token_list(std::slice::from_ref(pattern)), "stepsCount": body.len() }),
+        ),
+        SemanticKind::Binding { key, value } => (
+            "Binding",
+            format!("{key} ⟵ {}", format_token_list(value)),
+            json!({ "key": key, "value": format_token_list(value) }),
+        ),
+        SemanticKind::TupleBinding { tuple, value } => (
+            "TupleBinding",
+            format!("({} items) ⟵ {}", tuple.len(), format_token_list(value)),
+            json!({ "tupleItems": tuple.len(), "value": format_token_list(value) }),
+        ),
+        SemanticKind::CallExpr { name, args } => (
+            "CallExpr",
+            format!("{name}({} args) [tight call ')']", args.len()),
+            json!({ "callee": name, "argsCount": args.len() }),
+        ),
+        SemanticKind::Pipeline(tokens) => (
+            "Pipeline",
+            format_token_list(tokens),
+            json!({ "expr": format_token_list(tokens) }),
+        ),
+        SemanticKind::Expression(tokens) => (
+            "Expression",
+            format_token_list(tokens),
+            json!({ "expr": format_token_list(tokens) }),
+        ),
+    };
+
+    let pipeline_json = if has_pipe_op(sent) {
+        let (head, steps) = split_pipeline(sent);
+        let steps_list: Vec<JsonValue> = steps
+            .iter()
+            .map(|st| {
+                let (op_sym, op_name) = match st.op {
+                    PipeOp::Dot => (".", "Dot (Standard Pipe)"),
+                    PipeOp::Tap => (".>", "Tap (Side-Effect)"),
+                    PipeOp::Enrich => (".&", "Enrich (Merge &)"),
+                    PipeOp::Filter => (".?", "Filter (Predicate)"),
+                    PipeOp::Parallel => (".|", "Parallel (Fan-Out)"),
+                };
+                json!({
+                    "op": op_sym,
+                    "opName": op_name,
+                    "expr": format_token_list(&st.expr),
+                    "tokens": st.expr.iter().map(serialize_ast_token).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Some(json!({
+            "head": format_token_list(&head),
+            "headTokens": head.iter().map(serialize_ast_token).collect::<Vec<_>>(),
+            "steps": steps_list,
+        }))
+    } else {
+        None
+    };
+
+    json!({
+        "index": idx,
+        "startByte": start_byte,
+        "endByte": end_byte,
+        "range": range.to_json(),
+        "rawText": raw_text,
+        "semanticKind": if import_json.is_some() { "ImportDirective" } else { kind_name },
+        "summary": summary,
+        "details": details,
+        "import": import_json,
+        "pipeline": pipeline_json,
+        "tokens": sent.iter().map(serialize_ast_token).collect::<Vec<_>>(),
+    })
+}
+
+fn format_import_source(src: &ImportSource) -> String {
+    match src {
+        ImportSource::ModulePath(m) => m.clone(),
+        ImportSource::FilePath(f) => format!("Path\"{f}\""),
+    }
+}
+
+fn serialize_ast_token(tok: &Token) -> JsonValue {
+    match tok {
+        Token::Path(p) => json!({
+            "kind": "Path",
+            "value": p,
+            "isPascalCase": is_pascal_case(p.split('.').next().unwrap_or(p)),
+            "hasIndex": p.split('.').skip(1).any(|s| s.parse::<i32>().is_ok()),
+        }),
+        Token::Lit(lit) => match lit {
+            Literal::Int(i) => json!({ "kind": "Lit", "subKind": "Int", "value": i.to_string() }),
+            Literal::Float(f) => json!({ "kind": "Lit", "subKind": "Float", "value": f.to_string() }),
+            Literal::Bool(b) => json!({ "kind": "Lit", "subKind": "Bool", "value": b.to_string() }),
+            Literal::Byte(b) => json!({ "kind": "Lit", "subKind": "Byte", "value": format!("0x{b:02X}") }),
+            Literal::String(s) => json!({ "kind": "Lit", "subKind": "String", "value": format!("\"{s}\"") }),
+            Literal::RawString(s) => json!({ "kind": "Lit", "subKind": "RawString", "value": format!("r\"{s}\"") }),
+            Literal::Symbol(s) => json!({ "kind": "Lit", "subKind": "Symbol", "value": format!("'{s}'") }),
+        },
+        Token::Op(op) => json!({
+            "kind": "Op",
+            "value": op,
+            "isPipe": matches!(op.as_str(), "." | ".>" | ".&" | ".?" | ".|"),
+            "isAlgebra": matches!(op.as_str(), "&" | "|" | "/"),
+        }),
+        Token::Range(a, b) => json!({
+            "kind": "Range",
+            "value": format!("{}..{}", format_token_list(std::slice::from_ref(a)), format_token_list(std::slice::from_ref(b))),
+            "start": serialize_ast_token(a),
+            "end": serialize_ast_token(b),
+        }),
+        Token::Group(delim, sents) => {
+            let (group_type, bracket_label) = match delim {
+                '{' => ("FormGroup", "{}"),
+                '[' => ("StreamGroup", "[]"),
+                '(' => ("SpacedTupleGroup", "() [spaced]"),
+                ')' => ("TightCallGroup", "() [tight ')']"),
+                _ => ("Group", "()"),
+            };
+            json!({
+                "kind": "Group",
+                "delim": delim.to_string(),
+                "groupType": group_type,
+                "bracketLabel": bracket_label,
+                "sentencesCount": sents.len(),
+                "sentences": sents.iter().enumerate().map(|(i, s)| {
+                    json!({
+                        "index": i,
+                        "semanticKind": format!("{:?}", classify_sentence(s)).split('{').next().unwrap_or("Expr").split('(').next().unwrap_or("Expr").trim(),
+                        "text": format_token_list(s),
+                        "tokens": s.iter().map(serialize_ast_token).collect::<Vec<_>>(),
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }
+    }
+}
+
+fn format_token_list(tokens: &[Token]) -> String {
+    let mut out = Vec::new();
+    for tok in tokens {
+        match tok {
+            Token::Path(p) => out.push(p.clone()),
+            Token::Lit(Literal::Int(i)) => out.push(i.to_string()),
+            Token::Lit(Literal::Float(f)) => out.push(f.to_string()),
+            Token::Lit(Literal::Bool(b)) => out.push(b.to_string()),
+            Token::Lit(Literal::Byte(b)) => out.push(format!("0x{b:02X}")),
+            Token::Lit(Literal::String(s)) => out.push(format!("\"{s}\"")),
+            Token::Lit(Literal::RawString(s)) => out.push(format!("r\"{s}\"")),
+            Token::Lit(Literal::Symbol(s)) => out.push(format!("'{s}'")),
+            Token::Op(op) => out.push(op.clone()),
+            Token::Range(a, b) => out.push(format!(
+                "{}..{}",
+                format_token_list(std::slice::from_ref(a)),
+                format_token_list(std::slice::from_ref(b))
+            )),
+            Token::Group(')', inner) => {
+                let inner_s = inner
+                    .iter()
+                    .map(|s| format_token_list(s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(last) = out.last_mut() {
+                    last.push_str(&format!("({inner_s})"));
+                } else {
+                    out.push(format!("({inner_s})"));
+                }
+            }
+            Token::Group(d, inner) => {
+                let (open, close) = match d {
+                    '{' => ('{', '}'),
+                    '[' => ('[', ']'),
+                    _ => ('(', ')'),
+                };
+                let inner_s = inner
+                    .iter()
+                    .map(|s| format_token_list(s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(format!("{open} {inner_s} {close}"));
+            }
+        }
+    }
+    out.join(" ")
 }
 
 fn extract_pest_error_range(doc: &DocumentState) -> LspRange {
@@ -1327,7 +2580,9 @@ struct RawSemanticToken {
 fn encode_semantic_tokens(doc: &DocumentState) -> Vec<u32> {
     let mut raw_tokens = Vec::new();
 
-    if let Ok(mut pairs) = RazomyParser::parse(Rule::Program, &doc.text) {
+    let parse_res = RazomyParser::parse(Rule::Program, &doc.text)
+        .or_else(|_| RazomyParser::parse(Rule::Program, &doc.recovered_text));
+    if let Ok(mut pairs) = parse_res {
         if let Some(root) = pairs.next() {
             collect_pair_semantic_tokens(root, doc, &mut raw_tokens);
         }
@@ -1419,7 +2674,10 @@ fn classify_path_token(s: &str, end_byte: usize, doc: &DocumentState) -> (u32, u
         return (8, 0);
     }
 
-    let next_char = doc.text[end_byte..].chars().next();
+    let next_char = doc
+        .text
+        .get(end_byte..)
+        .and_then(|s| s.chars().next());
     if next_char == Some('(') {
         if is_pascal_case(s) {
             return (2, 0);

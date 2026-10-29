@@ -11,8 +11,8 @@ use crate::hir::{
     HirParam,
 };
 use crate::parser::{
-    classify_sentence, has_pipe_op, parse_code, split_pipeline, Literal, PipeOp, SemanticKind,
-    Sentence, Token,
+    classify_sentence, extract_import, has_pipe_op, parse_code, split_pipeline, Literal, PipeOp,
+    SemanticKind, Sentence, Token,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +177,26 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
             continue;
         }
         if let Some(hf) = hir.forms.get(form_name) {
+            if hf.is_prelude
+                && matches!(
+                    hf.name.as_str(),
+                    "Decimal"
+                        | "Regex"
+                        | "Json"
+                        | "Http"
+                        | "Port"
+                        | "Ui"
+                        | "Parse"
+                        | "FieldMeta"
+                        | "Meta"
+                        | "Atom"
+                        | "Signal"
+                        | "Channel"
+                        | "Map"
+                )
+            {
+                continue;
+            }
             structs.push(lower_form_to_lir(hf, hir));
         }
     }
@@ -204,11 +224,17 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
 
     for fn_name in &hir.function_order {
         if let Some(hf) = hir.functions.get(fn_name) {
+            if hf.is_prelude {
+                continue;
+            }
             functions.push(lower_fn_to_lir(hf, hir));
         }
     }
 
     for sent in &hir.top_level_sentences {
+        if extract_import(sent).is_some() {
+            continue;
+        }
         if matches!(
             classify_sentence(sent),
             SemanticKind::Pipeline(_) | SemanticKind::CallExpr { .. } | SemanticKind::Expression(_)
@@ -681,6 +707,16 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
                 };
             }
         }
+        let is_named_call = !args.is_empty()
+            && args
+                .iter()
+                .all(|a| matches!(classify_sentence(a), SemanticKind::Binding { .. }));
+        if is_named_call {
+            return LirExpr::Call {
+                callee: fn_name.clone(),
+                args: vec![lower_struct_init("__NamedArgs__", args, hir)],
+            };
+        }
         return LirExpr::Call {
             callee: fn_name.clone(),
             args: args.iter().map(|a| lower_tokens_to_expr(a, hir)).collect(),
@@ -859,7 +895,7 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
                 });
             if is_router {
                 LirExpr::Router {
-                    input: Box::new(LirExpr::Ident("_".into())),
+                    input: Box::new(LirExpr::None),
                     branches: lower_router_branches(sents, hir),
                 }
             } else {

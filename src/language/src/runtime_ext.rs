@@ -176,6 +176,38 @@ fn register_primitives(scope: &mut Scope) {
         ok.set_field("artifact", Value::String("target/release/razomy".into()));
         Ok(Value::Form(Arc::new(RwLock::new(ok))))
     });
+    reg_fn(scope, "native_parse_build_result", |a, _| {
+        if let Some(v) = a.into_iter().next() {
+            return Ok(v);
+        }
+        let mut ok = FormInstance::new("BuildSuccess");
+        ok.set_field("status", Value::String("ok".into()));
+        ok.set_field("artifact", Value::String("target/release/razomy".into()));
+        Ok(Value::Form(Arc::new(RwLock::new(ok))))
+    });
+    reg_fn(scope, "native_ai_llm_request", |_, _| {
+        let mut resp = FormInstance::new("AiResponse");
+        resp.set_field("diff", Value::String("+fix".into()));
+        resp.set_field("explanation", Value::String("Auto-fixed".into()));
+        Ok(Value::Form(Arc::new(RwLock::new(resp))))
+    });
+    reg_fn(scope, "native_map_get", |a, _| {
+        let pair = match a.as_slice() {
+            [Value::Tuple(items)] if items.len() >= 2 => (items[0].clone(), items[1].clone()),
+            [m, k, ..] => (m.clone(), k.clone()),
+            _ => return Ok(make_empty_form("None")),
+        };
+        if let Value::Form(f_arc) = pair.0 {
+            let k_str = match pair.1 {
+                Value::String(s) | Value::Symbol(s) => s,
+                other => other.to_string(),
+            };
+            if let Some(v) = f_arc.read().unwrap().get_field(&k_str) {
+                return Ok(make_some(v));
+            }
+        }
+        Ok(make_empty_form("None"))
+    });
     reg_fn(scope, "native_sha256", |a, _| {
         Ok(Value::String(format!(
             "sha256:{}",

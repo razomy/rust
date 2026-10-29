@@ -616,7 +616,9 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
             eval_lir_pipe_step(inp, op.clone(), step, scope)
         }
         LirExpr::Router { input, branches } => {
-            if matches!(input.as_ref(), LirExpr::Ident(id) if id == "_") && scope.get("_").is_none()
+            if matches!(input.as_ref(), LirExpr::None)
+                || (matches!(input.as_ref(), LirExpr::Ident(id) if id == "_")
+                    && scope.get("_").is_none())
             {
                 return Ok(Value::Router(branches.clone()));
             }
@@ -1549,6 +1551,20 @@ fn bind_compiled_params(
 ) -> Result<(), String> {
     scope.set("_", incoming.clone());
     if let Value::Form(f_arc) = incoming {
+        if f_arc.read().unwrap().type_name == "__NamedArgs__" {
+            let named_fields = f_arc.read().unwrap().fields.clone();
+            for (name, _, def_expr) in params {
+                if let Some(val) = named_fields.get(name) {
+                    scope.set(name, val.clone());
+                } else if let Some(def) = def_expr {
+                    let v = eval_lir_expr(def, scope)?;
+                    scope.set(name, v);
+                } else if name != "_" {
+                    scope.set(name, Value::None);
+                }
+            }
+            return Ok(());
+        }
         if params.len() <= 1 {
             scope.unpack_form(f_arc, true);
         }

@@ -20,7 +20,29 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
     match args.get(1).map(String::as_str) {
-        Some("lsp") => run_lsp_command(),
+        Some("lsp") => {
+            if matches!(args.get(2).map(String::as_str), Some("--http" | "http")) {
+                let port = args.get(3).map(String::as_str).unwrap_or("8765");
+                let addr = if port.contains(':') {
+                    port.to_string()
+                } else {
+                    format!("127.0.0.1:{port}")
+                };
+                run_lsp_http_command(&addr)
+            } else {
+                run_lsp_command()
+            }
+        }
+
+        Some("serve" | "studio") => {
+            let port = args.get(2).map(String::as_str).unwrap_or("8765");
+            let addr = if port.contains(':') {
+                port.to_string()
+            } else {
+                format!("127.0.0.1:{port}")
+            };
+            run_lsp_http_command(&addr)
+        }
 
         Some("run") => {
             let Some(file) = args.get(2) else {
@@ -90,7 +112,20 @@ fn print_help() {
     println!("  razomy check <file.rl>  — Статический анализ (HIR Laws 1–4, E01..E07)");
     println!("  razomy fmt <file.rl>    — Автоформатирование файла на месте");
     println!("  razomy lsp              — Запустить Language Server (JSON-RPC 2.0 stdio)");
+    println!("  razomy lsp --http [port]— Запустить HTTP LSP сервер для parser.html (по умолч. 8765)");
+    println!("  razomy serve [port]     — Запустить веб-студию parser.html + LSP сервер");
     println!("  razomy --version        — Показать версию компилятора");
+}
+
+fn run_lsp_http_command(addr: &str) -> ExitCode {
+    let mut server = RazomyLanguageServer::new();
+    match server.run_http(addr) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("[HTTP LSP Error]: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn run_lsp_command() -> ExitCode {

@@ -201,6 +201,151 @@ pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule
     Ok(parse_sentences(root))
 }
 
+/// Восстанавливает неполный исходный код во время набора в IDE (например, висячую точку `User.`, `u.`, `self.`
+/// или незавершенную инструкцию) с сохранением 100% байтовых смещений и номеров строк.
+pub fn recover_source_for_ide(source: &str) -> String {
+    let mut bytes = source.as_bytes().to_vec();
+    let len = bytes.len();
+
+    // Проход 1: Заменяем висячие точки `ident.` (где после `.` нет идентификатора/индекса/точки)
+    // и висячие пайп-операторы перед закрывающей скобкой или концом файла на пробелы `' '`.
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'#' && matches!(bytes.get(i + 1), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            i += 2;
+            while i < len && bytes[i] != b'#' {
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            i += 1;
+            while i < len && bytes[i] != quote {
+                if bytes[i] == b'\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            if i < len {
+                i += 1;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'.' {
+            let prev_is_ident_or_paren = i > 0
+                && (bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b')');
+            let next_b = bytes.get(i + 1).copied();
+            let next_is_valid_seg = match next_b {
+                Some(b) => {
+                    b.is_ascii_alphanumeric()
+                        || b == b'_'
+                        || b == b'.'
+                        || (b == b'-'
+                            && bytes
+                                .get(i + 2)
+                                .map_or(false, |b2| b2.is_ascii_digit()))
+                }
+                None => false,
+            };
+
+            if prev_is_ident_or_paren && !next_is_valid_seg {
+                bytes[i] = b' ';
+                i += 1;
+                continue;
+            }
+
+            let op_len = if matches!(next_b, Some(b'>' | b'&' | b'?' | b'|')) {
+                2
+            } else if next_b != Some(b'.') {
+                1
+            } else {
+                0
+            };
+            if op_len > 0 && !prev_is_ident_or_paren {
+                let mut lookahead = i + op_len;
+                while lookahead < len && matches!(bytes[lookahead], b' ' | b'\t' | b'\r') {
+                    lookahead += 1;
+                }
+                if lookahead >= len
+                    || matches!(bytes[lookahead], b'\n' | b']' | b')' | b'}' | b',')
+                {
+                    for k in 0..op_len {
+                        bytes[i + k] = b' ';
+                    }
+                    i += op_len;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let mut current = String::from_utf8_lossy(&bytes).into_owned();
+    if RazomyParser::parse(Rule::Program, &current).is_ok() {
+        return current;
+    }
+
+    // Проход 2: Построчное восстановление при незавершенных выражениях (сохраняя скобки и переводы строк)
+    for _ in 0..10 {
+        let Err(err) = RazomyParser::parse(Rule::Program, &current) else {
+            break;
+        };
+        let err_pos = match err.location {
+            pest::error::InputLocation::Pos(p) => p,
+            pest::error::InputLocation::Span((s, _)) => s,
+        };
+        let clamped = err_pos.min(bytes.len());
+        let mut line_start = clamped;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        let mut line_end = clamped;
+        while line_end < bytes.len() && bytes[line_end] != b'\n' {
+            line_end += 1;
+        }
+
+        let mut changed = false;
+        for b in &mut bytes[line_start..line_end] {
+            if !matches!(*b, b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' ') {
+                *b = b' ';
+                changed = true;
+            }
+        }
+        if !changed && line_start > 0 {
+            let prev_end = line_start - 1;
+            let mut prev_start = prev_end;
+            while prev_start > 0 && bytes[prev_start - 1] != b'\n' {
+                prev_start -= 1;
+            }
+            for b in &mut bytes[prev_start..prev_end] {
+                if !matches!(*b, b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' ') {
+                    *b = b' ';
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+        current = String::from_utf8_lossy(&bytes).into_owned();
+    }
+
+    current
+}
+
 // =============================================================================
 // 3. СЕМАНТИЧЕСКИЙ КЛАССИФИКАТОР И ДЕКОМПОЗИЦИЯ ПАЙПЛАЙНОВ (V6.0)
 // =============================================================================
@@ -520,6 +665,32 @@ pub fn analyze_ast(sentences: &[Sentence], depth: usize) {
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct LocatedSentence {
+    pub sentence: Sentence,
+    /// Индекс предложения внутри собственного файла (всегда совпадает с `sentence_spans` этого файла)
+    pub local_index: usize,
+    /// `None` для главного анализируемого файла, `Some(path)` для импортированного модуля
+    pub file_path: Option<PathBuf>,
+}
+
+/// Нормализует путь (`.` и `..`) лексически без платформенных префиксов `\\?\` или `/private`
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ImportDirective {
     /// Именованный модуль: `Base root.base`, `Http std.net.http`, `Models Path"./models"`
     Namespaced {
@@ -592,25 +763,32 @@ pub fn extract_import(sent: &Sentence) -> Option<ImportDirective> {
             Some(ImportDirective::Destructured { names, source })
         }
 
-        // 3. Именованный импорт: `Base root.base` или `Http std.net.http` (Alias начинается с PascalCase)
+        // 3. Именованный импорт: `Base root.base`, `Http std.net.http`, `Models Path"./models"`
+        // Одиночный PascalCase идентификатор справа без точки (`Cat User`, `Age Int`) — это алиас типа, а не модуль!
         [Token::Path(alias), rest @ ..]
-        if !rest.is_empty()
-            && alias.chars().next().map_or(false, |c| c.is_ascii_uppercase()) =>
-            {
-                let next = rest.get(1);
-                let (source, _) = extract_import_source(&rest[0], next)?;
-                Some(ImportDirective::Namespaced {
-                    alias: alias.clone(),
-                    source,
-                })
+            if !rest.is_empty()
+                && alias.chars().next().map_or(false, |c| c.is_ascii_uppercase()) =>
+        {
+            let next = rest.get(1);
+            let (source, _) = extract_import_source(&rest[0], next)?;
+            if let ImportSource::ModulePath(ref m) = source {
+                let first_char = m.chars().next().unwrap_or('_');
+                if first_char.is_ascii_uppercase() && !m.contains('.') {
+                    return None;
+                }
             }
+            Some(ImportDirective::Namespaced {
+                alias: alias.clone(),
+                source,
+            })
+        }
 
         _ => None,
     }
 }
 
 /// Преобразует источник импорта в относительный путь к `.rl` файлу
-fn source_to_fs_path(source: &ImportSource) -> PathBuf {
+pub fn source_to_fs_path(source: &ImportSource) -> PathBuf {
     match source {
         ImportSource::FilePath(p) => {
             let mut pb = PathBuf::from(p);
@@ -631,98 +809,179 @@ fn source_to_fs_path(source: &ImportSource) -> PathBuf {
     }
 }
 
+pub fn resolve_import_fs_path(
+    base_dir: &Path,
+    source: &ImportSource,
+    in_memory_files: &std::collections::HashMap<PathBuf, String>,
+) -> PathBuf {
+    let raw_rel = source_to_fs_path(source);
+    let candidate = normalize_path(&base_dir.join(&raw_rel));
+    if candidate.exists() || in_memory_files.contains_key(&candidate) {
+        return candidate;
+    }
+    if let ImportSource::ModulePath(m) = source {
+        if let Some(stripped) = m.strip_prefix("root.") {
+            let mut pb = PathBuf::from(stripped.replace('.', "/"));
+            if pb.extension().is_none() {
+                pb.set_extension("rl");
+            }
+            let alt = normalize_path(&base_dir.join(pb));
+            if alt.exists() || in_memory_files.contains_key(&alt) {
+                return alt;
+            }
+        }
+    }
+    candidate
+}
+
 /// Рекурсивный резолвер и сборщик модулей
 pub fn parse_code_with_imports(
     source: &str,
     base_dir: Option<&Path>,
 ) -> Result<Vec<Sentence>, String> {
-    let mut visited = HashSet::new();
-    parse_recursive(source, base_dir, &mut visited)
+    parse_code_with_imports_and_memory(source, base_dir, &std::collections::HashMap::new())
 }
 
-fn parse_recursive(
+pub fn parse_code_with_imports_and_memory(
     source: &str,
     base_dir: Option<&Path>,
-    visited: &mut HashSet<PathBuf>,
+    in_memory_files: &std::collections::HashMap<PathBuf, String>,
 ) -> Result<Vec<Sentence>, String> {
-    let raw_sentences = parse_code(source).map_err(|e| format!("Синтаксическая ошибка:\n{e}"))?;
+    let located = parse_located_with_imports_and_memory(source, base_dir, in_memory_files)?;
+    Ok(located.into_iter().map(|ls| ls.sentence).collect())
+}
+
+pub fn parse_located_with_imports_and_memory(
+    source: &str,
+    base_dir: Option<&Path>,
+    in_memory_files: &std::collections::HashMap<PathBuf, String>,
+) -> Result<Vec<LocatedSentence>, String> {
+    let mut visited = HashSet::new();
+    parse_recursive_located(source, base_dir, None, &mut visited, in_memory_files)
+}
+
+fn parse_recursive_located(
+    source: &str,
+    base_dir: Option<&Path>,
+    current_file: Option<&Path>,
+    visited: &mut HashSet<PathBuf>,
+    in_memory_files: &std::collections::HashMap<PathBuf, String>,
+) -> Result<Vec<LocatedSentence>, String> {
+    let raw_sentences = parse_code(source)
+        .or_else(|_| parse_code(&recover_source_for_ide(source)))
+        .map_err(|e| format!("Синтаксическая ошибка:\n{e}"))?;
     let mut expanded = Vec::with_capacity(raw_sentences.len());
     let current_dir = base_dir.unwrap_or_else(|| Path::new("."));
+    let current_file_buf = current_file.map(normalize_path);
 
-    for sent in raw_sentences {
+    for (local_idx, sent) in raw_sentences.into_iter().enumerate() {
         if let Some(import_dir) = extract_import(&sent) {
             match import_dir {
-                // `_ root.base` / `_ Path"..."` — разворачивает все инструкции прямо в текущий модуль
-                ImportDirective::Wildcard { source } => {
-                    let file_path = source_to_fs_path(&source);
-                    let target_path = current_dir.join(file_path);
-
-                    // Если файл существует локально — подгружаем
-                    if target_path.exists() {
-                        let imported_sents = load_imported_file(&target_path, visited)?;
+                ImportDirective::Wildcard { source: imp_src } => {
+                    let target_path =
+                        resolve_import_fs_path(current_dir, &imp_src, in_memory_files);
+                    if target_path.exists() || in_memory_files.contains_key(&target_path) {
+                        let imported_sents =
+                            load_imported_file_located(&target_path, visited, in_memory_files)?;
                         expanded.extend(imported_sents);
+                    }
+                    expanded.push(LocatedSentence {
+                        sentence: sent,
+                        local_index: local_idx,
+                        file_path: current_file_buf.clone(),
+                    });
+                    continue;
+                }
+
+                ImportDirective::Namespaced {
+                    alias,
+                    source: imp_src,
+                } => {
+                    let target_path =
+                        resolve_import_fs_path(current_dir, &imp_src, in_memory_files);
+                    if target_path.exists() || in_memory_files.contains_key(&target_path) {
+                        let imported_sents =
+                            load_imported_file_located(&target_path, visited, in_memory_files)?;
+                        let raw_inner: Vec<Sentence> =
+                            imported_sents.into_iter().map(|ls| ls.sentence).collect();
+                        expanded.push(LocatedSentence {
+                            sentence: sent,
+                            local_index: local_idx,
+                            file_path: current_file_buf.clone(),
+                        });
+                        expanded.push(LocatedSentence {
+                            sentence: vec![Token::Path(alias), Token::Group('{', raw_inner)],
+                            local_index: local_idx,
+                            file_path: Some(target_path),
+                        });
                         continue;
                     }
                 }
 
-                // `Base root.base` — оборачивает файл в Form-пространство имен: `Base { ... }`
-                ImportDirective::Namespaced { alias, source } => {
-                    let file_path = source_to_fs_path(&source);
-                    let target_path = current_dir.join(file_path);
-
-                    if target_path.exists() {
-                        let imported_sents = load_imported_file(&target_path, visited)?;
-                        expanded.push(vec![
-                            Token::Path(alias),
-                            Token::Group('{', imported_sents),
-                        ]);
-                        continue;
-                    }
-                }
-
-                // `(String, Int) root.base` — фильтрует объявления по именам
-                ImportDirective::Destructured { names, source } => {
-                    let file_path = source_to_fs_path(&source);
-                    let target_path = current_dir.join(file_path);
-
-                    if target_path.exists() {
-                        let imported_sents = load_imported_file(&target_path, visited)?;
-                        let filtered: Vec<Sentence> = imported_sents
-                            .into_iter()
-                            .filter(|s| match s.first() {
-                                Some(Token::Path(n)) => names.contains(n),
-                                _ => false,
-                            })
-                            .collect();
+                ImportDirective::Destructured {
+                    names,
+                    source: imp_src,
+                } => {
+                    let target_path =
+                        resolve_import_fs_path(current_dir, &imp_src, in_memory_files);
+                    if target_path.exists() || in_memory_files.contains_key(&target_path) {
+                        let imported_sents =
+                            load_imported_file_located(&target_path, visited, in_memory_files)?;
+                        let filtered =
+                            imported_sents
+                                .into_iter()
+                                .filter(|ls| match ls.sentence.first() {
+                                    Some(Token::Path(n)) => names.contains(n),
+                                    _ => false,
+                                });
                         expanded.extend(filtered);
-                        continue;
                     }
+                    expanded.push(LocatedSentence {
+                        sentence: sent,
+                        local_index: local_idx,
+                        file_path: current_file_buf.clone(),
+                    });
+                    continue;
                 }
             }
         }
 
-        // Если это не импорт или внешний std/sys модуль — оставляем как есть в AST
-        expanded.push(sent);
+        expanded.push(LocatedSentence {
+            sentence: sent,
+            local_index: local_idx,
+            file_path: current_file_buf.clone(),
+        });
     }
 
     Ok(expanded)
 }
 
-fn load_imported_file(
+fn load_imported_file_located(
     candidate: &Path,
     visited: &mut HashSet<PathBuf>,
-) -> Result<Vec<Sentence>, String> {
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|_| format!("Модуль не найден: '{}'", candidate.display()))?;
+    in_memory_files: &std::collections::HashMap<PathBuf, String>,
+) -> Result<Vec<LocatedSentence>, String> {
+    let norm = normalize_path(candidate);
+    let visit_key = candidate.canonicalize().unwrap_or_else(|_| norm.clone());
 
-    // Защита от циклических импортов
-    if !visited.insert(canonical.clone()) {
+    if !visited.insert(visit_key) {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&canonical)
-        .map_err(|e| format!("Ошибка чтения модуля '{}': {e}", canonical.display()))?;
+    let content = if let Some(mem_text) = in_memory_files
+        .get(&norm)
+        .or_else(|| in_memory_files.get(candidate))
+        .or_else(|| {
+            candidate
+                .canonicalize()
+                .ok()
+                .and_then(|c| in_memory_files.get(&c))
+        }) {
+        mem_text.clone()
+    } else {
+        std::fs::read_to_string(&norm)
+            .map_err(|e| format!("Ошибка чтения модуля '{}': {e}", norm.display()))?
+    };
 
-    parse_recursive(&content, canonical.parent(), visited)
+    parse_recursive_located(&content, norm.parent(), Some(&norm), visited, in_memory_files)
 }

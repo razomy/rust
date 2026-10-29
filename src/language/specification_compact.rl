@@ -626,6 +626,7 @@ Cuboid { size (1.0, 1.0, 1.0), anchor (0.5, 0.5, 0.5), position (0.0, 0.0, 0.0),
 PlayButton     Cuboid & { label "Play" }
 FlatPlayButton (PlayButton / Cuboid) & { canvas_2d_rect (0.5, 0.35, 0.15, 0.15) }
 RoundButton    Cuboid & { name String, children {} }
+NativeMobileButton { id String, rect Any, asset Any }
 
 optimize_graph(root) [
   root . Meta.rewrite({
