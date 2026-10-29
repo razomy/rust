@@ -97,7 +97,9 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
             }
         }
 
-        Rule::operator | Rule::callable_op => Token::Op(pair.as_str().to_string()),
+        Rule::operator => Token::Op(pair.as_str().to_string()),
+
+        Rule::callable_op => Token::Path(pair.as_str().to_string()),
 
         Rule::path | Rule::callable_path | Rule::path_core | Rule::type_ident => {
             let s = pair.as_str();
@@ -201,27 +203,20 @@ pub enum SemanticKind {
         tuple: Vec<Sentence>,
         value: Vec<Token>,
     },
-    /// Axiom 2 & 3: `Name { ... }` или `Name { ... } & Trait`
+    /// Axiom 2: `Name { ... }` или `Name { ... } & Trait`
     FormDef {
         name: String,
         body: Vec<Sentence>,
         tail: Vec<Token>,
     },
-    /// Axiom 4: `User Identifiable { ... }`, `ElectricVehicle Vehicle & HasBattery & { ... }`, `global_counter Atom(CounterState) { ... }`
-    SubtypeFormDef {
-        name: String,
-        base: String,
-        body: Vec<Sentence>,
-        tail: Vec<Token>,
-    },
-    /// Именованная функция: `name(args) ReturnType [Body]` или `name(args) [Body]` (с возможным `& Compile` / `& Private`)
+    /// Именованная функция или перегруженный оператор: `name(args) ReturnType [Body]`, `+ (other Vec2) [Body]`
     FunctionDef {
         name: String,
         args: Vec<Sentence>,
         body: Vec<Sentence>,
         tail: Vec<Token>,
     },
-    /// Дженерик-тип / параметризованная форма или контракт метода: `Map(K, V) { (K) V }`, `List(T) None | Cons(T)`, `format() String`
+    /// Дженерик-тип / параметризованная форма или контракт метода/оператора: `Map(K, V) { (K) V }`, `format() String`, `< (other Other) Bool`
     GenericDef {
         name: String,
         params: Vec<Sentence>,
@@ -229,12 +224,6 @@ pub enum SemanticKind {
     },
     /// Реактивное поле / нулевой геттер / ветка паттерн-матчинга по типу: `subtotal [ self.price * self.quantity ]`
     StreamOrBranch { name: String, stream: Vec<Sentence> },
-    /// Перегрузка оператора или контракт метода: `+ (other Vec2) [ ... ]`, `< (other Other) Bool`
-    OperatorMethod {
-        op: String,
-        args: Vec<Sentence>,
-        rest: Vec<Token>,
-    },
     /// Анонимная лямбда или ветка кортежа/выражения в роутере: `(args) [Body]`, `(calc(_)) [ ... ]`
     LambdaOrTupleBranch {
         args: Vec<Sentence>,
@@ -344,16 +333,7 @@ fn split_function_body_and_tail(rest: &[Token]) -> Option<(Vec<Sentence>, Vec<To
 
 pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
     match sentence.as_slice() {
-        // 1. Перегрузка оператора или контракт: `+ (other Vec2) [ ... ]`, `< (other Other) Bool`
-        [Token::Op(op), Token::Group(')' | '(', args), rest @ ..] if !rest.is_empty() => {
-            SemanticKind::OperatorMethod {
-                op: op.clone(),
-                args: args.clone(),
-                rest: rest.to_vec(),
-            }
-        }
-
-        // 2. Анонимная лямбда или ветка кортежа/выражения в роутере: `(args) [Body]`, `(calc(_)) [ ... ]`
+        // 1. Анонимная лямбда или ветка кортежа/выражения в роутере: `(args) [Body]`, `(calc(_)) [ ... ]`
         [Token::Group('(' | ')', args), Token::Group('[', body)] => {
             SemanticKind::LambdaOrTupleBranch {
                 args: args.clone(),
@@ -450,29 +430,39 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
                 stream: stream.clone(),
             },
 
+            // Axiom 3 & 4: `Name Base { ... }` является каноническим сахаром для `Name (Base & { ... })`
             [Token::Path(base), Token::Group('{', body), tail @ ..] => {
                 if has_pipe_op(tail) {
                     SemanticKind::Pipeline(sentence.clone())
                 } else {
-                    SemanticKind::SubtypeFormDef {
+                    let mut expr = vec![
+                        Token::Path(base.clone()),
+                        Token::Op("&".into()),
+                        Token::Group('{', body.clone()),
+                    ];
+                    expr.extend_from_slice(tail);
+                    SemanticKind::AlgebraicDef {
                         name: name.clone(),
-                        base: base.clone(),
-                        body: body.clone(),
-                        tail: tail.to_vec(),
+                        expr,
                     }
                 }
             }
 
-            // Axiom 4 с Generic-базой: `global_counter Atom(CounterState) { value ... }`
-            [Token::Path(base), Token::Group(')', _), Token::Group('{', body), tail @ ..] => {
+            // Axiom 4 с Generic-базой: `global_counter Atom(CounterState) { value ... }` -> `Atom(CounterState) & { ... }`
+            [Token::Path(base), Token::Group(')', targs), Token::Group('{', body), tail @ ..] => {
                 if has_pipe_op(tail) {
                     SemanticKind::Pipeline(sentence.clone())
                 } else {
-                    SemanticKind::SubtypeFormDef {
+                    let mut expr = vec![
+                        Token::Path(base.clone()),
+                        Token::Group(')', targs.clone()),
+                        Token::Op("&".into()),
+                        Token::Group('{', body.clone()),
+                    ];
+                    expr.extend_from_slice(tail);
+                    SemanticKind::AlgebraicDef {
                         name: name.clone(),
-                        base: base.clone(),
-                        body: body.clone(),
-                        tail: tail.to_vec(),
+                        expr,
                     }
                 }
             }

@@ -12,6 +12,7 @@ use crate::hir::{
 use crate::parser::{
     classify_sentence, has_pipe_op, split_pipeline, Literal, PipeOp, SemanticKind, Sentence, Token,
 };
+use crate::parser::{parse_code};
 
 // =============================================================================
 // 1. КАНОНИЧЕСКИЙ LIR (ЯЗЫКОНЕЗАВИСИМОЕ ДЕРЕВО ИСПОЛНЕНИЯ И КОДОГЕНЕРАЦИИ)
@@ -29,19 +30,23 @@ pub struct LirModule {
     pub functions: Vec<LirFunc>,
     pub globals: Vec<LirBinding>,
     pub top_exprs: Vec<LirExpr>,
-    /// Сырые предложения верхнего уровня для гибридного выполнения макросов и мета-операций
-    pub raw_sentences: Vec<Sentence>,
 }
 
 #[derive(Debug, Clone)]
 pub struct LirStruct {
     pub name: String,
+    pub is_prelude: bool,
+    pub sentence_index: usize,
     pub type_params: Vec<String>,
+    pub value_params: Vec<Sentence>,
     pub ancestors: Vec<String>,
     pub fields: Vec<LirField>,
     pub reactive_getters: Vec<LirGetter>,
     pub methods: Vec<LirFunc>,
+    pub submodules: Vec<LirStruct>,
     pub union_variants: Vec<String>,
+    pub union_variant_exprs: Vec<LirExpr>,
+    pub refinement_predicates: Vec<LirExpr>,
     pub is_bypass: bool,
 }
 
@@ -51,6 +56,8 @@ pub struct LirField {
     pub ty: String,
     pub origin: String,
     pub default_val: Option<LirExpr>,
+    pub is_ambiguous: bool,
+    pub conflicting_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +71,8 @@ pub struct LirGetter {
 pub struct LirFunc {
     pub name: String,
     pub raw_name: String,
+    pub is_contract: bool,
+    pub is_stream: bool,
     pub params: Vec<(String, String, Option<LirExpr>)>,
     /// Полное ограничение первого слота значений (например, `Order / Cancelled` или `Order & Reserved`) для Law 3
     pub first_param_constraint: String,
@@ -79,6 +88,7 @@ pub struct LirFunc {
 #[derive(Debug, Clone)]
 pub struct LirBinding {
     pub name: String,
+    pub sentence_index: usize,
     pub ty: String,
     pub value: LirExpr,
 }
@@ -146,40 +156,14 @@ pub enum LirInterpPart {
     Expr(String),
 }
 
+/// Универсальная ветка роутера (Universal Router Axiom, Раздел 3):
+/// любой паттерн понижается один раз в `condition` + `bindings` + `body`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LirBranch {
-    pub cond: LirPattern,
-    /// Закон 1c: Имя авто-привязанной переменной в ветке роутера (`circle` для `Circle [...]`) и распакованные поля
-    pub bound_type_var: Option<String>,
+    pub condition: LirExpr,
+    pub bindings: Vec<(String, LirExpr)>,
     pub unpacked_fields: Vec<String>,
     pub body: Vec<LirStmt>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LirPattern {
-    Wildcard,
-    TypeMatch(String),
-    LiteralMatch(LirExpr),
-    RangeMatch(Box<LirExpr>, Box<LirExpr>),
-    Predicate(LirExpr),
-    TupleMatch(Vec<LirTuplePatElem>),
-    FieldMatch(Vec<(String, LirFieldPatValue)>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LirTuplePatElem {
-    Wildcard,
-    /// Закон 1c в кортежах роутера `(Disconnected, ConnectCmd)`: матчит тип `Disconnected` и связывает `disconnected`!
-    TypeBind { type_name: String, var_name: String },
-    Bind(String),
-    Exact(LirExpr),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LirFieldPatValue {
-    Expr(LirExpr),
-    Bind(String),
-    Tuple(Vec<LirTuplePatElem>),
 }
 
 // =============================================================================
@@ -192,15 +176,8 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
     let mut globals = Vec::new();
     let mut top_exprs = Vec::new();
 
-    // 1. Формы (с уже разрешенными в HIR полями предков, реактивными геттерами и методами)
+    // 1. Формы (включая встроенный prelude, помеченный флагом `is_prelude`)
     for form_name in &hir.form_order {
-        if matches!(
-            form_name.as_str(),
-            "Shell" | "Compile" | "Bypass" | "Public" | "Private"
-        ) {
-            continue;
-        }
-        // Пропускаем `snake_case` экземпляры форм (`global_counter`, `order_1`), которые уже в `globals`
         if !is_pascal_case(form_name) && hir.globals.contains_key(form_name) {
             continue;
         }
@@ -212,11 +189,10 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
     // 2. Глобальные константы и привязки
     for g_name in &hir.global_order {
         if let Some(g) = hir.globals.get(g_name) {
-            // Пропускаем чистые алиасы типов (`BrandName String`, `Age Int`) и импорты (`_ root.base`)
             if g_name == "_"
                 || (is_pascal_case(g_name)
-                && hir.forms.contains_key(g_name)
-                && matches!(g.value_expr.as_slice(), [Token::Path(_)]))
+                    && hir.forms.contains_key(g_name)
+                    && matches!(g.value_expr.as_slice(), [Token::Path(_)]))
             {
                 continue;
             }
@@ -225,6 +201,7 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
             }
             globals.push(LirBinding {
                 name: g.key.clone(),
+                sentence_index: g.origin.sentence_index,
                 ty: g.inferred_type.clone(),
                 value: lower_tokens_to_expr(&g.value_expr, hir),
             });
@@ -259,7 +236,6 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
         functions,
         globals,
         top_exprs,
-        raw_sentences: hir.top_level_sentences.clone(),
     }
 }
 
@@ -268,6 +244,9 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
     let mut reactive_getters = Vec::new();
 
     for fname in &hf.field_order {
+        if hf.submodules.contains_key(fname) {
+            continue;
+        }
         if let Some(f) = hf.fields.get(fname) {
             if f.is_reactive {
                 if let [Token::Group('[', sents)] = f.default_expr.as_slice() {
@@ -278,7 +257,7 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
                     });
                 }
             } else {
-                fields.push(lower_field_to_lir(f, hir));
+                fields.push(lower_field_to_lir(f, hf, hir));
             }
         }
     }
@@ -289,29 +268,86 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
         .filter_map(|m| hf.methods.get(m).map(|mf| lower_fn_to_lir(mf, hir)))
         .collect();
 
+    let submodules = hf
+        .submodules
+        .values()
+        .map(|sub| lower_form_to_lir(sub, hir))
+        .collect();
+
+    let value_params = hf
+        .value_params
+        .iter()
+        .map(|vp| {
+            if vp.is_anonymous_type_slot {
+                vec![Token::Path(vp.type_constraint.clone())]
+            } else {
+                let mut s = vec![
+                    Token::Path(vp.name.clone()),
+                    Token::Path(vp.type_constraint.clone()),
+                ];
+                s.extend(vp.default_expr.clone());
+                s
+            }
+        })
+        .collect();
+
+    let union_variant_exprs = hf
+        .union_variants
+        .iter()
+        .filter_map(|v| parse_code(v).ok()?.into_iter().next())
+        .map(|s| lower_tokens_to_expr(&s, hir))
+        .collect();
+
+    let refinement_predicates = hf
+        .refinement_predicates
+        .iter()
+        .map(|tok| lower_single_token(tok, hir))
+        .collect();
+
+    let is_builtin = hf.is_prelude
+        || matches!(
+            hf.name.as_str(),
+            "Shell" | "Compile" | "Bypass" | "Public" | "Private"
+        );
+
     LirStruct {
         name: hf.name.clone(),
+        is_prelude: is_builtin,
+        sentence_index: hf.origin.sentence_index,
         type_params: hf.type_params.clone(),
+        value_params,
         ancestors: hf.ancestors.clone(),
         fields,
         reactive_getters,
         methods,
+        submodules,
         union_variants: hf.union_variants.clone(),
+        union_variant_exprs,
+        refinement_predicates,
         is_bypass: hf.is_bypass,
     }
 }
 
-fn lower_field_to_lir(f: &HirField, hir: &HirModule) -> LirField {
-    let is_type_only = matches!(
-        f.default_expr.as_slice(),
-        [Token::Path(p)] if matches!(
-            p.as_str(),
-            "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Any"
-        ) || (is_pascal_case(p) && hir.forms.contains_key(p))
-    ) || f
-        .default_expr
-        .iter()
-        .any(|t| matches!(t, Token::Op(op) if op == "|"));
+fn lower_field_to_lir(f: &HirField, hf: &HirForm, hir: &HirModule) -> LirField {
+    let is_type_only = match f.default_expr.as_slice() {
+        [Token::Path(p)] => {
+            matches!(
+                p.as_str(),
+                "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Any" | "Self"
+            ) || hf.type_params.contains(p)
+                || (is_pascal_case(p) && hir.forms.contains_key(p))
+        }
+        [Token::Path(p), Token::Group(')', args)] if is_pascal_case(p) => {
+            matches!(p.as_str(), "Tuple" | "Map" | "List" | "Set" | "Option" | "Tree")
+                || args
+                    .iter()
+                    .all(|a| matches!(a.as_slice(), [Token::Path(tp)] if is_pascal_case(tp)))
+        }
+        _ => f
+            .default_expr
+            .iter()
+            .any(|t| matches!(t, Token::Op(op) if op == "|")),
+    };
 
     let default_val = if f.default_expr.is_empty() || is_type_only {
         None
@@ -324,6 +360,8 @@ fn lower_field_to_lir(f: &HirField, hir: &HirModule) -> LirField {
         ty: f.inferred_type.clone(),
         origin: f.origin_form.clone(),
         default_val,
+        is_ambiguous: f.is_ambiguous,
+        conflicting_origins: f.conflicting_origins.clone(),
     }
 }
 
@@ -386,14 +424,20 @@ pub fn lower_fn_to_lir(hf: &HirFunction, hir: &HirModule) -> LirFunc {
         }
     }
 
-    let raw_args = match classify_sentence(&hf.origin.raw_ast) {
-        SemanticKind::FunctionDef { args, .. } | SemanticKind::OperatorMethod { args, .. } => args,
+    let kind = classify_sentence(&hf.origin.raw_ast);
+    let is_stream = matches!(kind, SemanticKind::StreamOrBranch { .. });
+    let raw_args = match kind {
+        SemanticKind::FunctionDef { args, .. } | SemanticKind::GenericDef { params: args, .. } => {
+            args
+        }
         _ => Vec::new(),
     };
 
     LirFunc {
         name: sanitize_fn_name(&hf.name),
         raw_name: hf.name.clone(),
+        is_contract: hf.is_contract,
+        is_stream,
         params,
         first_param_constraint,
         auto_unpacked_fields,
@@ -440,24 +484,6 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
     for (i, s) in sentences.iter().enumerate() {
         let is_last = i + 1 == len;
         match classify_sentence(s) {
-            SemanticKind::SubtypeFormDef {
-                name,
-                base,
-                body,
-                tail,
-            } => {
-                // Внутри тела функции `raw_order Order { id "o1", amount 100 }` — это связывание локальной переменной `raw_order`!
-                let mut val_tokens = vec![Token::Path(base), Token::Group('{', body)];
-                val_tokens.extend(tail);
-                let expr = lower_tokens_to_expr(&val_tokens, hir);
-                stmts.push(LirStmt::Let {
-                    name: name.clone(),
-                    value: expr,
-                });
-                if is_last {
-                    stmts.push(LirStmt::Return(LirExpr::Ident(name)));
-                }
-            }
             SemanticKind::AlgebraicDef { name, expr: val_tokens } => {
                 let expr = lower_tokens_to_expr(&val_tokens, hir);
                 stmts.push(LirStmt::Let {
@@ -542,6 +568,15 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
                     };
                     continue;
                 }
+            } else if step.op == PipeOp::Parallel {
+                if let [Token::Group('{', sents)] = step.expr.as_slice() {
+                    current = LirExpr::Pipe {
+                        input: Box::new(current),
+                        op: PipeOp::Parallel,
+                        step: Box::new(lower_struct_init("AnonymousForm", sents, hir)),
+                    };
+                    continue;
+                }
             }
             current = LirExpr::Pipe {
                 input: Box::new(current),
@@ -584,7 +619,7 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
 
     // 4. Вызов функции или конструктора `fn(args)` / `Meta.compose([...])` / `Money"199.99"`
     if let [Token::Path(fn_name), Token::Group(')', args)] = tokens {
-        if fn_name == "Compose" || fn_name == "Meta.compose" {
+        if fn_name == "Meta.compose" {
             if let Some([Token::Group('[', stream_sents)]) = args.first().map(Vec::as_slice) {
                 return LirExpr::Call {
                     callee: fn_name.clone(),
@@ -603,9 +638,18 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
         };
     }
 
-    // 5. Инстанцирование структуры `FormName { ... }`
-    if let [Token::Path(type_name), Token::Group('{', sents)] = tokens {
-        return lower_struct_init(type_name, sents, hir);
+    // 5. Инстанцирование структуры `FormName { ... }` или дешугаренной `FormName & { ... }`
+    match tokens {
+        [Token::Path(type_name), Token::Group('{', sents)] => {
+            return lower_struct_init(type_name, sents, hir);
+        }
+        [Token::Path(type_name), Token::Op(op), Token::Group('{', sents)]
+        | [Token::Path(type_name), Token::Group(')', _), Token::Op(op), Token::Group('{', sents)]
+            if op == "&" && is_pascal_case(type_name) =>
+        {
+            return lower_struct_init(type_name, sents, hir);
+        }
+        _ => {}
     }
 
     // 6. Анонимная лямбда `(args) [Body]`
@@ -801,12 +845,12 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
         match classify_sentence(b) {
             SemanticKind::StreamOrBranch { name, stream } => {
                 let mut unpacked_fields = Vec::new();
-                let mut bound_type_var = None;
-                let cond = if name == "_" {
-                    LirPattern::Wildcard
+                let mut bindings = Vec::new();
+                let condition = if name == "_" {
+                    LirExpr::Bool(true)
                 } else {
                     if is_pascal_case(&name) {
-                        bound_type_var = Some(pascal_to_snake_case(&name));
+                        bindings.push((pascal_to_snake_case(&name), LirExpr::Ident("_".into())));
                     }
                     if let Some(form) = hir.forms.get(&name) {
                         for fname in &form.field_order {
@@ -817,72 +861,95 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                             }
                         }
                     }
-                    LirPattern::TypeMatch(name)
+                    LirExpr::Binary {
+                        left: Box::new(LirExpr::Ident("_".into())),
+                        op: "is".into(),
+                        right: Box::new(LirExpr::Ident(name)),
+                    }
                 };
                 out.push(LirBranch {
-                    cond,
-                    bound_type_var,
+                    condition,
+                    bindings,
                     unpacked_fields,
                     body: lower_body_to_stmts(&stream, hir),
                 });
             }
             SemanticKind::LambdaOrTupleBranch { args, body } => {
-                let elems = lower_tuple_pat_elems(&args, hir);
+                let mut conds = Vec::new();
+                let mut bindings = Vec::new();
+                lower_tuple_pattern("_", &args, hir, &mut conds, &mut bindings);
                 out.push(LirBranch {
-                    cond: LirPattern::TupleMatch(elems),
-                    bound_type_var: None,
+                    condition: combine_and(conds),
+                    bindings,
                     unpacked_fields: vec![],
                     body: lower_body_to_stmts(&body, hir),
                 });
             }
             SemanticKind::PatternBranch { pattern, body } => {
-                let cond = match pattern {
-                    Token::Range(a, b) => LirPattern::RangeMatch(
-                        Box::new(lower_single_token(&a, hir)),
-                        Box::new(lower_single_token(&b, hir)),
-                    ),
-                    Token::Group('[', pred_sents) => {
-                        let pred_expr = pred_sents
-                            .first()
-                            .map(|s| lower_tokens_to_expr(s, hir))
-                            .unwrap_or(LirExpr::Bool(true));
-                        LirPattern::Predicate(pred_expr)
-                    }
+                let mut bindings = Vec::new();
+                let condition = match pattern {
+                    Token::Range(a, b) => LirExpr::Binary {
+                        left: Box::new(LirExpr::Binary {
+                            left: Box::new(LirExpr::Ident("_".into())),
+                            op: ">=".into(),
+                            right: Box::new(lower_single_token(&a, hir)),
+                        }),
+                        op: "&&".into(),
+                        right: Box::new(LirExpr::Binary {
+                            left: Box::new(LirExpr::Ident("_".into())),
+                            op: "<=".into(),
+                            right: Box::new(lower_single_token(&b, hir)),
+                        }),
+                    },
+                    Token::Group('[', pred_sents) => pred_sents
+                        .first()
+                        .map(|s| lower_tokens_to_expr(s, hir))
+                        .unwrap_or(LirExpr::Bool(true)),
                     Token::Group('{', field_pats) => {
-                        let mut matches = Vec::new();
+                        let mut conds = Vec::new();
                         for fp in field_pats {
                             if let SemanticKind::Binding { key, value } = classify_sentence(&fp) {
+                                let field_path = format!("_.{key}");
+                                let field_ident = LirExpr::Ident(field_path.clone());
                                 match value.as_slice() {
                                     [Token::Group('(' | ')', t_pats)] => {
-                                        matches.push((
-                                            key,
-                                            LirFieldPatValue::Tuple(lower_tuple_pat_elems(
-                                                t_pats, hir,
-                                            )),
-                                        ));
+                                        lower_tuple_pattern(
+                                            &field_path,
+                                            t_pats,
+                                            hir,
+                                            &mut conds,
+                                            &mut bindings,
+                                        );
                                     }
                                     [Token::Path(var_bind)] if !is_pascal_case(var_bind) => {
-                                        matches
-                                            .push((key, LirFieldPatValue::Bind(var_bind.clone())));
+                                        conds.push(LirExpr::Binary {
+                                            left: Box::new(field_ident.clone()),
+                                            op: "!=".into(),
+                                            right: Box::new(LirExpr::None),
+                                        });
+                                        bindings.push((var_bind.clone(), field_ident));
                                     }
                                     _ => {
-                                        matches.push((
-                                            key,
-                                            LirFieldPatValue::Expr(lower_tokens_to_expr(
-                                                &value, hir,
-                                            )),
-                                        ));
+                                        conds.push(LirExpr::Binary {
+                                            left: Box::new(field_ident),
+                                            op: "==".into(),
+                                            right: Box::new(lower_tokens_to_expr(&value, hir)),
+                                        });
                                     }
                                 }
                             }
                         }
-                        LirPattern::FieldMatch(matches)
+                        combine_and(conds)
                     }
-                    other => LirPattern::LiteralMatch(lower_single_token(&other, hir)),
+                    other => LirExpr::Binary {
+                        left: Box::new(LirExpr::Ident("_".into())),
+                        op: "==".into(),
+                        right: Box::new(lower_single_token(&other, hir)),
+                    },
                 };
                 out.push(LirBranch {
-                    cond,
-                    bound_type_var: None,
+                    condition,
+                    bindings,
                     unpacked_fields: vec![],
                     body: lower_body_to_stmts(&body, hir),
                 });
@@ -893,19 +960,57 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
     out
 }
 
-fn lower_tuple_pat_elems(pat_sents: &[Sentence], hir: &HirModule) -> Vec<LirTuplePatElem> {
-    pat_sents
-        .iter()
-        .map(|s| match s.as_slice() {
-            [Token::Path(v)] if v == "_" => LirTuplePatElem::Wildcard,
-            [Token::Path(v)] if is_pascal_case(v) => LirTuplePatElem::TypeBind {
-                type_name: v.clone(),
-                var_name: pascal_to_snake_case(v),
-            },
-            [Token::Path(v)] => LirTuplePatElem::Bind(v.clone()),
-            other => LirTuplePatElem::Exact(lower_tokens_to_expr(other, hir)),
-        })
-        .collect()
+fn lower_tuple_pattern(
+    target_path: &str,
+    pat_sents: &[Sentence],
+    hir: &HirModule,
+    conds: &mut Vec<LirExpr>,
+    bindings: &mut Vec<(String, LirExpr)>,
+) {
+    conds.push(LirExpr::Binary {
+        left: Box::new(LirExpr::Ident(target_path.into())),
+        op: "tuple_len_eq".into(),
+        right: Box::new(LirExpr::Int(pat_sents.len() as i64)),
+    });
+    for (i, s) in pat_sents.iter().enumerate() {
+        let elem_ident = LirExpr::Ident(format!("{target_path}.{i}"));
+        match s.as_slice() {
+            [Token::Path(v)] if v == "_" => {}
+            [Token::Path(v)] if is_pascal_case(v) => {
+                conds.push(LirExpr::Binary {
+                    left: Box::new(elem_ident.clone()),
+                    op: "is".into(),
+                    right: Box::new(LirExpr::Ident(v.clone())),
+                });
+                bindings.push((pascal_to_snake_case(v), elem_ident));
+            }
+            [Token::Path(v)] => {
+                bindings.push((v.clone(), elem_ident));
+            }
+            other => {
+                conds.push(LirExpr::Binary {
+                    left: Box::new(elem_ident),
+                    op: "==".into(),
+                    right: Box::new(lower_tokens_to_expr(other, hir)),
+                });
+            }
+        }
+    }
+}
+
+fn combine_and(conds: Vec<LirExpr>) -> LirExpr {
+    let mut iter = conds.into_iter();
+    let Some(mut acc) = iter.next() else {
+        return LirExpr::Bool(true);
+    };
+    for next in iter {
+        acc = LirExpr::Binary {
+            left: Box::new(acc),
+            op: "&&".into(),
+            right: Box::new(next),
+        };
+    }
+    acc
 }
 
 fn find_lowest_precedence_op(tokens: &[Token], hir: &HirModule) -> Option<(usize, String)> {

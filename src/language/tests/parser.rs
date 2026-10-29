@@ -60,9 +60,9 @@ MyCar SportsCar {
     assert!(matches!(classify_sentence(&ast[0]), SemanticKind::FormDef { .. }));
     assert!(matches!(classify_sentence(&ast[1]), SemanticKind::FormDef { .. }));
     assert!(matches!(classify_sentence(&ast[2]), SemanticKind::AlgebraicDef { .. }));
-    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::SubtypeFormDef { .. }));
-    assert!(matches!(classify_sentence(&ast[4]), SemanticKind::SubtypeFormDef { .. }));
-    assert!(matches!(classify_sentence(&ast[5]), SemanticKind::SubtypeFormDef { .. }));
+    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::AlgebraicDef { .. }));
+    assert!(matches!(classify_sentence(&ast[4]), SemanticKind::AlgebraicDef { .. }));
+    assert!(matches!(classify_sentence(&ast[5]), SemanticKind::AlgebraicDef { .. }));
 }
 
 // --- ШАГ 3: Слитные пути (Lineage), отрицательные индексы и Perceus in-place мутация ---
@@ -248,9 +248,9 @@ Shape {
     assert_eq!(ast.len(), 2);
     if let Token::Group('{', members) = &ast[0][1] {
         assert_eq!(members.len(), 7);
-        assert!(matches!(classify_sentence(&members[2]), SemanticKind::OperatorMethod { .. }));
-        assert!(matches!(classify_sentence(&members[5]), SemanticKind::OperatorMethod { .. }));
-        assert!(matches!(classify_sentence(&members[6]), SemanticKind::OperatorMethod { .. }));
+        assert!(matches!(classify_sentence(&members[2]), SemanticKind::FunctionDef { .. }));
+        assert!(matches!(classify_sentence(&members[5]), SemanticKind::FunctionDef { .. }));
+        assert!(matches!(classify_sentence(&members[6]), SemanticKind::FunctionDef { .. }));
     } else {
         panic!("Ожидалось тело Vec2");
     }

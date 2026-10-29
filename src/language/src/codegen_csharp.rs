@@ -3,22 +3,23 @@
 // 2. C# EMITTER (.NET 8+ RECORDS & PATTERN MATCHING — RAZOMY V5.7)
 // =============================================================================
 
-use crate::codegen::TargetEmitter;
-use crate::lir::{
-    LirExpr, LirFieldPatValue, LirInterpPart, LirModule, LirPattern, LirStmt, LirTuplePatElem,
-};
-use crate::parser::PipeOp;
+use crate::codegen::{normalize_ts_index_path, CodegenDialect, TargetEmitter};
+use crate::lir::{LirExpr, LirInterpPart, LirModule};
 
 pub struct CSharpEmitter;
 
-impl CSharpEmitter {
+impl CodegenDialect for CSharpEmitter {
+    fn is_csharp(&self) -> bool {
+        true
+    }
+
     fn map_type(&self, ty: &str) -> String {
         if ty.contains(" | ") {
             return "dynamic".into();
         }
         match ty {
             "Int" => "long".into(),
-            "Float" | "Percent" => "double".into(),
+            "Float" => "double".into(),
             "Bool" => "bool".into(),
             "Byte" => "byte".into(),
             "String" | "Symbol" | "Money" | "Usd" | "Date" | "Time" | "Duration" | "Url"
@@ -33,30 +34,6 @@ impl CSharpEmitter {
             }
             other => other.to_string(),
         }
-    }
-
-    fn emit_stmt(&self, stmt: &LirStmt, indent: &str) -> String {
-        match stmt {
-            LirStmt::Let { name, value } => {
-                format!("{indent}var {name} = {};", self.emit_expr(value))
-            }
-            LirStmt::AssignPath { path, value } => {
-                format!("{indent}{path} = {};", self.emit_expr(value))
-            }
-            LirStmt::DestructTuple { names, value } => {
-                format!(
-                    "{indent}var ({}) = {};",
-                    names.join(", "),
-                    self.emit_expr(value)
-                )
-            }
-            LirStmt::Expr(e) => format!("{indent}{};", self.emit_expr(e)),
-            LirStmt::Return(e) => format!("{indent}return {};", self.emit_expr(e)),
-        }
-    }
-
-    fn is_console_log(callee: &str) -> bool {
-        matches!(callee, "Shell.log" | "Shell.Log")
     }
 
     fn emit_expr(&self, expr: &LirExpr) -> String {
@@ -82,7 +59,7 @@ impl CSharpEmitter {
                 if Self::is_console_log(id) {
                     "Console.WriteLine".into()
                 } else {
-                    id.clone()
+                    normalize_ts_index_path(id)
                 }
             }
             LirExpr::Tuple(items) => {
@@ -109,154 +86,20 @@ impl CSharpEmitter {
                 let l = self.emit_expr(left);
                 let r = self.emit_expr(right);
                 match op.as_str() {
+                    "is" => format!("{l} is {r}"),
+                    "tuple_len_eq" => format!("({l}.Length == {r})"),
                     "&" => format!("RazomyRuntime.Merge({l}, {r})"),
                     _ => format!("({l} {op} {r})"),
                 }
             }
             LirExpr::Unary { op, expr } => format!("{op}({})", self.emit_expr(expr)),
             LirExpr::Call { callee, args } => {
-                let mapped = if Self::is_console_log(callee) {
-                    "Console.WriteLine"
-                } else {
-                    callee.as_str()
-                };
+                let mapped = self.map_callee(callee);
                 let arg_str: Vec<String> = args.iter().map(|a| self.emit_expr(a)).collect();
                 format!("{mapped}({})", arg_str.join(", "))
             }
-            LirExpr::Pipe { input, op, step } => {
-                let inp = self.emit_expr(input);
-                let st = self.emit_expr(step);
-                match op {
-                    PipeOp::Dot => match step.as_ref() {
-                        LirExpr::Call { callee, args } => {
-                            let mapped = if Self::is_console_log(callee) {
-                                "Console.WriteLine"
-                            } else {
-                                callee.as_str()
-                            };
-                            let mut all_args = vec![inp];
-                            all_args.extend(args.iter().map(|a| self.emit_expr(a)));
-                            format!("{mapped}({})", all_args.join(", "))
-                        }
-                        _ => format!("{st}({inp})"),
-                    },
-                    PipeOp::Tap => format!("RazomyRuntime.Tap({inp}, {st})"),
-                    PipeOp::Enrich => format!("RazomyRuntime.Merge({inp}, {st}({inp}))"),
-                    PipeOp::Filter => format!("({st}({inp}) ? {inp} : null)"),
-                    PipeOp::Parallel => format!("{st}({inp})"),
-                }
-            }
-            LirExpr::Router { input, branches } => {
-                let inp = self.emit_expr(input);
-                let mut code =
-                    String::from("new Func<dynamic, dynamic>((_) => {\n  var _1 = _; var _2 = _;\n");
-                for b in branches {
-                    let mut extra_binds = Vec::new();
-                    if let Some(bound_var) = &b.bound_type_var {
-                        extra_binds.push(format!("    var {bound_var} = _;\n"));
-                    }
-                    let cond = match &b.cond {
-                        LirPattern::Wildcard => "true".into(),
-                        LirPattern::TypeMatch(t) => format!("_ is {t}"),
-                        LirPattern::LiteralMatch(lit) => {
-                            format!("Equals(_, {})", self.emit_expr(lit))
-                        }
-                        LirPattern::RangeMatch(a, b) => {
-                            format!("(_ >= {} && _ <= {})", self.emit_expr(a), self.emit_expr(b))
-                        }
-                        LirPattern::Predicate(p) => self.emit_expr(p),
-                        LirPattern::TupleMatch(elems) => {
-                            let mut conds = vec![format!("_.Length == {}", elems.len())];
-                            for (i, el) in elems.iter().enumerate() {
-                                match el {
-                                    LirTuplePatElem::Wildcard => {}
-                                    LirTuplePatElem::TypeBind {
-                                        type_name,
-                                        var_name,
-                                    } => {
-                                        conds.push(format!("_[{i}] is {type_name}"));
-                                        extra_binds.push(format!("    var {var_name} = _[{i}];\n"));
-                                    }
-                                    LirTuplePatElem::Bind(v) => {
-                                        extra_binds.push(format!("    var {v} = _[{i}];\n"));
-                                    }
-                                    LirTuplePatElem::Exact(ex) => {
-                                        conds.push(format!(
-                                            "Equals(_[{i}], {})",
-                                            self.emit_expr(ex)
-                                        ));
-                                    }
-                                }
-                            }
-                            conds.join(" && ")
-                        }
-                        LirPattern::FieldMatch(flds) => {
-                            let mut conds = Vec::new();
-                            for (k, v) in flds {
-                                match v {
-                                    LirFieldPatValue::Expr(ex) => {
-                                        conds.push(format!(
-                                            "Equals(_.{k}, {})",
-                                            self.emit_expr(ex)
-                                        ));
-                                    }
-                                    LirFieldPatValue::Bind(var) => {
-                                        extra_binds.push(format!("    var {var} = _.{k};\n"));
-                                    }
-                                    LirFieldPatValue::Tuple(elems) => {
-                                        conds.push(format!("_.{k}.Length == {}", elems.len()));
-                                        for (i, el) in elems.iter().enumerate() {
-                                            match el {
-                                                LirTuplePatElem::Wildcard => {}
-                                                LirTuplePatElem::TypeBind {
-                                                    type_name,
-                                                    var_name,
-                                                } => {
-                                                    conds.push(format!(
-                                                        "_.{k}[{i}] is {type_name}"
-                                                    ));
-                                                    extra_binds.push(format!(
-                                                        "    var {var_name} = _.{k}[{i}];\n"
-                                                    ));
-                                                }
-                                                LirTuplePatElem::Bind(var) => {
-                                                    extra_binds.push(format!(
-                                                        "    var {var} = _.{k}[{i}];\n"
-                                                    ));
-                                                }
-                                                LirTuplePatElem::Exact(ex) => {
-                                                    conds.push(format!(
-                                                        "Equals(_.{k}[{i}], {})",
-                                                        self.emit_expr(ex)
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if conds.is_empty() {
-                                "true".into()
-                            } else {
-                                conds.join(" && ")
-                            }
-                        }
-                    };
-                    code.push_str(&format!("  if ({cond}) {{\n"));
-                    for fname in &b.unpacked_fields {
-                        code.push_str(&format!("    var {fname} = _.{fname};\n"));
-                    }
-                    for bind_line in extra_binds {
-                        code.push_str(&bind_line);
-                    }
-                    for st in &b.body {
-                        code.push_str(&format!("{}\n", self.emit_stmt(st, "    ")));
-                    }
-                    code.push_str("  }\n");
-                }
-                code.push_str(&format!("  return null!;\n}})({inp})"));
-                code
-            }
+            LirExpr::Pipe { input, op, step } => self.emit_pipe(input, op, step),
+            LirExpr::Router { input, branches } => self.emit_router(input, branches),
             LirExpr::Lambda { params, body, .. } => {
                 let p_str = params
                     .iter()
@@ -288,6 +131,9 @@ impl TargetEmitter for CSharpEmitter {
         );
 
         for st in &lir.structs {
+            if st.is_prelude {
+                continue;
+            }
             if !st.union_variants.is_empty() {
                 out.push_str(&format!(
                     "// Union Type {}: {}\n",

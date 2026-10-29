@@ -8,7 +8,7 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
 
 use crate::hir::{
-    is_known_type, is_pascal_case, lower_to_hir, pascal_to_snake_case, HirField, HirFunction,
+    is_known_type, is_pascal_case, lower_to_hir, pascal_to_snake_case, HirForm, HirFunction,
     HirModule, HirParam,
 };
 use crate::parser::{
@@ -33,32 +33,6 @@ pub struct Diagnostic {
     pub sentence_index: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolKind {
-    Form,
-    Function,
-    Stream,
-    Variable,
-    TypeAlgebra,
-}
-
-#[derive(Debug, Clone)]
-pub struct SymbolInfo {
-    pub name: String,
-    pub kind: SymbolKind,
-    pub signature: String,
-    pub documentation: String,
-    pub fields: HashMap<String, HirField>,
-    pub field_order: Vec<String>,
-    pub methods: Vec<String>,
-    pub ancestors: Vec<String>,
-    pub union_variants: Vec<String>,
-    pub params: Vec<(String, String)>,
-    pub return_type: Option<String>,
-    pub auto_unpacks_first_arg: bool,
-    pub is_bypass: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct CompletionItem {
     pub label: String,
@@ -70,9 +44,29 @@ pub struct CompletionItem {
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisReport {
     pub hir: HirModule,
-    pub symbols: HashMap<String, SymbolInfo>,
-    pub symbol_order: Vec<String>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+fn format_fn_signature(hir_fn: &HirFunction) -> String {
+    let param_str = hir_fn
+        .params
+        .iter()
+        .filter(|p| !p.is_type_param)
+        .map(|p| {
+            if p.type_constraint.is_empty() || p.name == p.type_constraint {
+                p.name.clone()
+            } else {
+                format!("{} {}", p.name, p.type_constraint)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret_str = hir_fn
+        .return_type
+        .as_ref()
+        .map(|r| format!(" {r}"))
+        .unwrap_or_default();
+    format!("{}({param_str}){ret_str} [ ... ]", hir_fn.name)
 }
 
 impl AnalysisReport {
@@ -93,16 +87,27 @@ impl AnalysisReport {
         });
     }
 
+    fn resolve_target_form(&self, name: &str) -> Option<(&HirForm, &str)> {
+        if let Some(hf) = self.hir.forms.get(name) {
+            return Some((hf, &hf.name));
+        }
+        if let Some(g) = self.hir.globals.get(name) {
+            if let Some(hf) = self.hir.forms.get(&g.inferred_type) {
+                return Some((hf, &g.inferred_type));
+            }
+        }
+        None
+    }
+
     pub fn to_ide_json(&self) -> JsonValue {
-        let symbols_json: Vec<JsonValue> = self
-            .symbol_order
-            .iter()
-            .filter_map(|name| self.symbols.get(name))
-            .map(|sym| {
-                let fields: Vec<JsonValue> = sym
+        let mut symbols_json = Vec::new();
+
+        for name in &self.hir.form_order {
+            if let Some(hf) = self.hir.forms.get(name) {
+                let fields: Vec<JsonValue> = hf
                     .field_order
                     .iter()
-                    .filter_map(|f| sym.fields.get(f))
+                    .filter_map(|f| hf.fields.get(f))
                     .map(|field| {
                         json!({
                             "name": field.name,
@@ -115,20 +120,37 @@ impl AnalysisReport {
                     })
                     .collect();
 
-                json!({
-                    "name": sym.name,
-                    "kind": format!("{:?}", sym.kind),
-                    "signature": sym.signature,
-                    "doc": sym.documentation,
-                    "ancestors": sym.ancestors,
-                    "unionVariants": sym.union_variants,
-                    "methods": sym.methods,
-                    "autoUnpacks": sym.auto_unpacks_first_arg,
-                    "isBypass": sym.is_bypass,
+                symbols_json.push(json!({
+                    "name": hf.name,
+                    "kind": if hf.is_algebraic_alias { "TypeAlgebra" } else { "Form" },
+                    "signature": format!("Form {} {{ {} fields, {} methods }}", hf.name, hf.field_order.len(), hf.method_order.len()),
+                    "doc": format!("HIR Form (предложение #{})", hf.origin.sentence_index),
+                    "ancestors": hf.ancestors,
+                    "unionVariants": hf.union_variants,
+                    "methods": hf.method_order,
+                    "autoUnpacks": false,
+                    "isBypass": hf.is_bypass,
                     "fields": fields,
-                })
-            })
-            .collect();
+                }));
+            }
+        }
+
+        for fn_name in &self.hir.function_order {
+            if let Some(f) = self.hir.functions.get(fn_name) {
+                symbols_json.push(json!({
+                    "name": f.name,
+                    "kind": if f.params.is_empty() { "Stream" } else { "Function" },
+                    "signature": format_fn_signature(f),
+                    "doc": format!("HIR Function (предложение #{})", f.origin.sentence_index),
+                    "ancestors": [],
+                    "unionVariants": [],
+                    "methods": [],
+                    "autoUnpacks": f.auto_unpacks,
+                    "isBypass": false,
+                    "fields": [],
+                }));
+            }
+        }
 
         let diags_json: Vec<JsonValue> = self
             .diagnostics
@@ -152,48 +174,61 @@ impl AnalysisReport {
     }
 
     pub fn hover(&self, symbol_name: &str) -> Option<String> {
-        let sym = self.symbols.get(symbol_name)?;
-        let mut md = format!("```razomy\n{}\n```\n", sym.signature);
-        if !sym.documentation.is_empty() {
-            md.push_str(&format!("{}\n\n", sym.documentation));
-        }
-        if !sym.ancestors.is_empty() {
-            md.push_str(&format!(
-                "**Lineage (Предки):** `{}`\n\n",
-                sym.ancestors.join(" & ")
-            ));
-        }
-        if !sym.union_variants.is_empty() {
-            md.push_str(&format!(
-                "**Union (Варианты):** `{}`\n\n",
-                sym.union_variants.join(" | ")
-            ));
-        }
-        if !sym.field_order.is_empty() {
-            md.push_str("**Статически разрешенные поля (HIR):**\n");
-            for fname in &sym.field_order {
-                if let Some(f) = sym.fields.get(fname) {
-                    let badge = if f.is_ambiguous {
-                        "⚠️ [КОЛЛИЗИЯ LAW 2]"
-                    } else if f.is_reactive {
-                        "⚡ [Reactive Getter]"
-                    } else {
-                        ""
-                    };
-                    md.push_str(&format!(
-                        "- `{}`: `{}` *(из {})* {}\n",
-                        f.name, f.inferred_type, f.origin_form, badge
-                    ));
+        if let Some((hf, _)) = self.resolve_target_form(symbol_name) {
+            let mut md = format!(
+                "```razomy\nForm {} {{ {} fields, {} methods }}\n```\n",
+                hf.name,
+                hf.field_order.len(),
+                hf.method_order.len()
+            );
+            if !hf.ancestors.is_empty() {
+                md.push_str(&format!(
+                    "**Lineage (Предки):** `{}`\n\n",
+                    hf.ancestors.join(" & ")
+                ));
+            }
+            if !hf.union_variants.is_empty() {
+                md.push_str(&format!(
+                    "**Union (Варианты):** `{}`\n\n",
+                    hf.union_variants.join(" | ")
+                ));
+            }
+            if !hf.field_order.is_empty() {
+                md.push_str("**Статически разрешенные поля (HIR):**\n");
+                for fname in &hf.field_order {
+                    if let Some(f) = hf.fields.get(fname) {
+                        let badge = if f.is_ambiguous {
+                            "⚠️ [КОЛЛИЗИЯ LAW 2]"
+                        } else if f.is_reactive {
+                            "⚡ [Reactive Getter]"
+                        } else {
+                            ""
+                        };
+                        md.push_str(&format!(
+                            "- `{}`: `{}` *(из {})* {}\n",
+                            f.name, f.inferred_type, f.origin_form, badge
+                        ));
+                    }
                 }
             }
-        }
-        if !sym.methods.is_empty() {
-            md.push_str("\n**Методы и операторы:**\n");
-            for m in &sym.methods {
-                md.push_str(&format!("- `{m}`\n"));
+            if !hf.method_order.is_empty() {
+                md.push_str("\n**Методы и операторы:**\n");
+                for m in &hf.method_order {
+                    md.push_str(&format!("- `{m}`\n"));
+                }
             }
+            return Some(md);
         }
-        Some(md)
+
+        if let Some(f) = self.hir.functions.get(symbol_name) {
+            return Some(format!("```razomy\n{}\n```\n", format_fn_signature(f)));
+        }
+
+        if let Some(g) = self.hir.globals.get(symbol_name) {
+            return Some(format!("```razomy\n{} : {}\n```\n", g.key, g.inferred_type));
+        }
+
+        None
     }
 
     /// Закон 4 (UFCS Autocomplete): по `Target.` выдает поля, собственные методы, предков Lineage
@@ -201,10 +236,10 @@ impl AnalysisReport {
     pub fn completions(&self, query: &str) -> Vec<CompletionItem> {
         let mut items = Vec::new();
         if let Some((base, prefix)) = query.rsplit_once('.') {
-            if let Some(sym) = self.symbols.get(base) {
-                for fname in &sym.field_order {
+            if let Some((hf, target_type)) = self.resolve_target_form(base) {
+                for fname in &hf.field_order {
                     if fname.starts_with(prefix) {
-                        let f = &sym.fields[fname];
+                        let f = &hf.fields[fname];
                         items.push(CompletionItem {
                             label: fname.clone(),
                             kind: if f.is_reactive {
@@ -217,7 +252,7 @@ impl AnalysisReport {
                         });
                     }
                 }
-                for m in &sym.methods {
+                for m in &hf.method_order {
                     if m.starts_with(prefix) {
                         items.push(CompletionItem {
                             label: m.clone(),
@@ -227,7 +262,7 @@ impl AnalysisReport {
                         });
                     }
                 }
-                for anc in &sym.ancestors {
+                for anc in &hf.ancestors {
                     if anc.starts_with(prefix) {
                         items.push(CompletionItem {
                             label: anc.clone(),
@@ -237,29 +272,24 @@ impl AnalysisReport {
                         });
                     }
                 }
-                // Закон 4: UFCS функции, принимающие `base` первым аргументом
-                let target_type = if sym.kind == SymbolKind::Form || sym.kind == SymbolKind::TypeAlgebra {
-                    sym.name.as_str()
-                } else {
-                    sym.signature
-                        .split(':')
-                        .nth(1)
-                        .map(str::trim)
-                        .unwrap_or(&sym.name)
-                };
-                for fn_name in &self.symbol_order {
-                    if let Some(fn_sym) = self.symbols.get(fn_name) {
-                        if fn_sym.kind == SymbolKind::Function && fn_name.starts_with(prefix) {
-                            if let Some((_, first_constraint)) = fn_sym.params.first() {
-                                let base_constraint =
-                                    first_constraint.split_whitespace().next().unwrap_or("");
+                for fn_name in &self.hir.function_order {
+                    if fn_name.starts_with(prefix) {
+                        if let Some(fn_hir) = self.hir.functions.get(fn_name) {
+                            if let Some(first_param) =
+                                fn_hir.params.iter().find(|p| !p.is_type_param)
+                            {
+                                let base_constraint = first_param
+                                    .type_constraint
+                                    .split_whitespace()
+                                    .next()
+                                    .unwrap_or("");
                                 if base_constraint == target_type
-                                    || sym.ancestors.contains(&base_constraint.to_string())
+                                    || hf.ancestors.contains(&base_constraint.to_string())
                                 {
                                     items.push(CompletionItem {
                                         label: fn_name.clone(),
                                         kind: "UFCSFunction",
-                                        detail: fn_sym.signature.clone(),
+                                        detail: format_fn_signature(fn_hir),
                                         insert_text: fn_name.clone(),
                                     });
                                 }
@@ -269,21 +299,48 @@ impl AnalysisReport {
                 }
             }
         } else {
-            for name in &self.symbol_order {
+            for name in &self.hir.form_order {
                 if name.starts_with(query) {
-                    let sym = &self.symbols[name];
-                    items.push(CompletionItem {
-                        label: name.clone(),
-                        kind: match sym.kind {
-                            SymbolKind::Form => "Form",
-                            SymbolKind::Function => "Function",
-                            SymbolKind::Stream => "Stream",
-                            SymbolKind::Variable => "Variable",
-                            SymbolKind::TypeAlgebra => "TypeAlgebra",
-                        },
-                        detail: sym.signature.clone(),
-                        insert_text: name.clone(),
-                    });
+                    if let Some(hf) = self.hir.forms.get(name) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: if hf.is_algebraic_alias {
+                                "TypeAlgebra"
+                            } else {
+                                "Form"
+                            },
+                            detail: format!("Form {name}"),
+                            insert_text: name.clone(),
+                        });
+                    }
+                }
+            }
+            for name in &self.hir.function_order {
+                if name.starts_with(query) {
+                    if let Some(f) = self.hir.functions.get(name) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: if f.params.is_empty() {
+                                "Stream"
+                            } else {
+                                "Function"
+                            },
+                            detail: format_fn_signature(f),
+                            insert_text: name.clone(),
+                        });
+                    }
+                }
+            }
+            for name in &self.hir.global_order {
+                if name.starts_with(query) && !self.hir.forms.contains_key(name) {
+                    if let Some(g) = self.hir.globals.get(name) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: "Variable",
+                            detail: format!("{} : {}", g.key, g.inferred_type),
+                            insert_text: name.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -307,114 +364,51 @@ pub fn analyze_source(source: &str) -> AnalysisReport {
 }
 
 pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
-    // 1. Формы + проверка Закона 1c (E02, E03) и Закона 2 (I002_LAW2_COLLISION)
-    for form_name in &hir.form_order {
-        if let Some(hf) = hir.forms.get(form_name) {
-            verify_form_slot_rules(hf, &hir, report);
+    report.hir = hir;
 
-            for fname in &hf.field_order {
-                if let Some(field) = hf.fields.get(fname) {
-                    if field.is_ambiguous {
-                        report.push_diag(
-                            Severity::Information,
-                            "I002_LAW2_COLLISION",
-                            format!(
-                                "Закон 2 (Lineage, #{}): В '{}' поле '{}' унаследовано от: {}. Используйте явный путь ({}.{fname}).",
+    // 1. Формы + проверка Закона 1c (E02, E03) и Закона 2 (I002_LAW2_COLLISION)
+    let form_order = report.hir.form_order.clone();
+    for form_name in &form_order {
+        if let Some(hf) = report.hir.forms.get(form_name).cloned() {
+            if !hf.is_prelude {
+                verify_form_slot_rules(&hf, report);
+
+                for fname in &hf.field_order {
+                    if let Some(field) = hf.fields.get(fname) {
+                        if field.is_ambiguous {
+                            report.push_diag(
+                                Severity::Information,
+                                "I002_LAW2_COLLISION",
+                                format!(
+                                    "Закон 2 (Lineage, #{}): В '{}' поле '{}' унаследовано от: {}. Используйте явный путь ({}.{fname}).",
+                                    hf.origin.sentence_index,
+                                    form_name,
+                                    fname,
+                                    field.conflicting_origins.join(" и "),
+                                    field.conflicting_origins.first().cloned().unwrap_or_default()
+                                ),
+                                Some(form_name),
                                 hf.origin.sentence_index,
-                                form_name,
-                                fname,
-                                field.conflicting_origins.join(" и "),
-                                field.conflicting_origins.first().cloned().unwrap_or_default()
-                            ),
-                            Some(form_name),
-                            hf.origin.sentence_index,
-                        );
+                            );
+                        }
                     }
                 }
             }
-
-            report.symbol_order.push(form_name.clone());
-            report.symbols.insert(
-                form_name.clone(),
-                SymbolInfo {
-                    name: form_name.clone(),
-                    kind: if hf.is_algebraic_alias {
-                        SymbolKind::TypeAlgebra
-                    } else {
-                        SymbolKind::Form
-                    },
-                    signature: format!(
-                        "Form {form_name} {{ {} fields, {} methods }}",
-                        hf.field_order.len(),
-                        hf.method_order.len()
-                    ),
-                    documentation: format!(
-                        "HIR Form (предложение #{})",
-                        hf.origin.sentence_index
-                    ),
-                    fields: hf.fields.clone(),
-                    field_order: hf.field_order.clone(),
-                    methods: hf.method_order.clone(),
-                    ancestors: hf.ancestors.clone(),
-                    union_variants: hf.union_variants.clone(),
-                    params: vec![],
-                    return_type: None,
-                    auto_unpacks_first_arg: false,
-                    is_bypass: hf.is_bypass,
-                },
-            );
         }
     }
 
     // 2. Глобальные привязки + проверка E07_STATIC_ASSERT_FAILED для `Compile & [...]`
-    for g_name in &hir.global_order {
-        if let Some(g) = hir.globals.get(g_name) {
-            verify_compile_time_assertion(g_name, &g.value_expr, g.origin.sentence_index, &hir, report);
-
-            let base = report.symbols.get(&g.inferred_type).cloned();
-            if !report.symbol_order.contains(g_name) {
-                report.symbol_order.push(g_name.clone());
-            }
-            report.symbols.insert(
-                g_name.clone(),
-                SymbolInfo {
-                    name: g.key.clone(),
-                    kind: SymbolKind::Variable,
-                    signature: format!("{} : {}", g.key, g.inferred_type),
-                    documentation: format!(
-                        "Global Binding (предложение #{})",
-                        g.origin.sentence_index
-                    ),
-                    fields: base.as_ref().map(|b| b.fields.clone()).unwrap_or_default(),
-                    field_order: base
-                        .as_ref()
-                        .map(|b| b.field_order.clone())
-                        .unwrap_or_default(),
-                    methods: base.as_ref().map(|b| b.methods.clone()).unwrap_or_default(),
-                    ancestors: base
-                        .as_ref()
-                        .map(|b| b.ancestors.clone())
-                        .unwrap_or_default(),
-                    union_variants: vec![],
-                    params: vec![],
-                    return_type: None,
-                    auto_unpacks_first_arg: false,
-                    is_bypass: false,
-                },
-            );
+    let global_order = report.hir.global_order.clone();
+    for g_name in &global_order {
+        if let Some(g) = report.hir.globals.get(g_name).cloned() {
+            verify_compile_time_assertion(g_name, &g.value_expr, g.origin.sentence_index, report);
         }
     }
 
-    // 3. Регистрация всех функций в таблице символов (чтобы вызовы и пайплайны видели все сигнатуры)
-    for fn_name in &hir.function_order {
-        if let Some(hir_fn) = hir.functions.get(fn_name) {
-            register_function_symbol(hir_fn, report);
-        }
-    }
-
-    // 4. Верификация параметров и тел функций и методов (Законы 1–3, E01..E06)
-    for fn_name in &hir.function_order {
-        if let Some(hir_fn) = hir.functions.get(fn_name) {
+    // 3. Верификация параметров и тел функций и методов (Законы 1–3, E01..E06)
+    let function_order = report.hir.function_order.clone();
+    for fn_name in &function_order {
+        if let Some(hir_fn) = report.hir.functions.get(fn_name).cloned() {
             verify_function_slots(&hir_fn.name, &hir_fn.params, hir_fn.origin.sentence_index, report);
             verify_function_body(
                 &hir_fn.name,
@@ -428,8 +422,11 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
         }
     }
 
-    for form_name in &hir.form_order {
-        if let Some(hf) = hir.forms.get(form_name) {
+    for form_name in &form_order {
+        if let Some(hf) = report.hir.forms.get(form_name).cloned() {
+            if hf.is_prelude {
+                continue;
+            }
             for m_name in &hf.method_order {
                 if let Some(m_fn) = hf.methods.get(m_name) {
                     let full_name = format!("{form_name}.{m_name}");
@@ -447,12 +444,10 @@ pub fn analyze_from_hir(hir: HirModule, report: &mut AnalysisReport) {
             }
         }
     }
-
-    report.hir = hir;
 }
 
 /// Проверка `E02_DUPLICATE_UNNAMED_TYPE` и `E03_TYPE_PARAM_SHADOWS_TYPE` в слотах формы `Name(Slots) { ... }`
-fn verify_form_slot_rules(hf: &crate::hir::HirForm, hir: &HirModule, report: &mut AnalysisReport) {
+fn verify_form_slot_rules(hf: &HirForm, report: &mut AnalysisReport) {
     let mut seen_anon_types = HashSet::new();
     for vp in &hf.value_params {
         if vp.is_anonymous_type_slot {
@@ -468,8 +463,6 @@ fn verify_form_slot_rules(hf: &crate::hir::HirForm, hir: &HirModule, report: &mu
                     hf.origin.sentence_index,
                 );
             }
-            // Проверка E03: если в `Wrapper(User)` `User` (уже существующий тип в скоупе) используется внутри `{ val User }`
-            // как тип поля, значит разработчик пытался объявить generic type parameter `User`, затеняющий существующий тип!
             for f in hf.fields.values() {
                 if f.name != vp.name && f.inferred_type == vp.type_constraint {
                     report.push_diag(
@@ -489,7 +482,7 @@ fn verify_form_slot_rules(hf: &crate::hir::HirForm, hir: &HirModule, report: &mu
 
     for tp in &hf.type_params {
         let base_tp = tp.split('(').next().unwrap_or(tp).trim();
-        if is_known_type(base_tp, hir) && base_tp != hf.name {
+        if is_known_type(base_tp, &report.hir) && base_tp != hf.name {
             report.push_diag(
                 Severity::Error,
                 "E03_TYPE_PARAM_SHADOWS_TYPE",
@@ -535,7 +528,6 @@ fn verify_compile_time_assertion(
     name: &str,
     value_expr: &[Token],
     sentence_idx: usize,
-    hir: &HirModule,
     report: &mut AnalysisReport,
 ) {
     if let [Token::Group('(', inner)] = value_expr {
@@ -543,98 +535,27 @@ fn verify_compile_time_assertion(
             inner.first().map(Vec::as_slice)
         {
             if c == "Compile" && amp == "&" {
-                // Если внутри `Compile & [...]` проверяется `PublicUser` на утечку поля и условие истинно:
                 for s in sents {
-                    check_static_assert_sentence(name, s, sentence_idx, hir, report);
+                    if let [Token::Path(p), Token::Group(')', args)] = s.as_slice() {
+                        if p == "Compile.error" {
+                            let msg = args
+                                .first()
+                                .and_then(|a| a.first())
+                                .map(|t| format!("{t:?}"))
+                                .unwrap_or_else(|| "Static assert failed".into());
+                            report.push_diag(
+                                Severity::Error,
+                                "E07_STATIC_ASSERT_FAILED",
+                                format!("Статическое утверждение '{name}' не выполнено: {msg}"),
+                                Some(name),
+                                sentence_idx,
+                            );
+                        }
+                    }
                 }
             }
         }
     }
-}
-
-fn check_static_assert_sentence(
-    name: &str,
-    sent: &[Token],
-    sentence_idx: usize,
-    _hir: &HirModule,
-    report: &mut AnalysisReport,
-) {
-    for tok in sent {
-        if let Token::Path(p) = tok {
-            if p == "Compile.error" && sent.len() == 2 {
-                if let Token::Group(')', args) = &sent[1] {
-                    let msg = args
-                        .first()
-                        .and_then(|a| a.first())
-                        .map(|t| format!("{t:?}"))
-                        .unwrap_or_else(|| "Static assert failed".into());
-                    report.push_diag(
-                        Severity::Error,
-                        "E07_STATIC_ASSERT_FAILED",
-                        format!("Статическое утверждение '{name}' не выполнено: {msg}"),
-                        Some(name),
-                        sentence_idx,
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn register_function_symbol(hir_fn: &HirFunction, report: &mut AnalysisReport) {
-    let params_tuple: Vec<(String, String)> = hir_fn
-        .params
-        .iter()
-        .filter(|p| !p.is_type_param)
-        .map(|p| (p.name.clone(), p.type_constraint.clone()))
-        .collect();
-
-    let param_str = params_tuple
-        .iter()
-        .map(|(n, t)| {
-            if t.is_empty() || n == t {
-                n.clone()
-            } else {
-                format!("{n} {t}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let ret_str = hir_fn
-        .return_type
-        .as_ref()
-        .map(|r| format!(" {r}"))
-        .unwrap_or_default();
-
-    if !report.symbol_order.contains(&hir_fn.name) {
-        report.symbol_order.push(hir_fn.name.clone());
-    }
-    report.symbols.insert(
-        hir_fn.name.clone(),
-        SymbolInfo {
-            name: hir_fn.name.clone(),
-            kind: if hir_fn.params.is_empty() {
-                SymbolKind::Stream
-            } else {
-                SymbolKind::Function
-            },
-            signature: format!("{}({param_str}){ret_str} [ ... ]", hir_fn.name),
-            documentation: format!(
-                "HIR Function (предложение #{}, auto_unpacks: {})",
-                hir_fn.origin.sentence_index, hir_fn.auto_unpacks
-            ),
-            fields: HashMap::new(),
-            field_order: vec![],
-            methods: vec![],
-            ancestors: vec![],
-            union_variants: vec![],
-            params: params_tuple,
-            return_type: hir_fn.return_type.clone(),
-            auto_unpacks_first_arg: hir_fn.auto_unpacks,
-            is_bypass: false,
-        },
-    );
 }
 
 fn verify_function_body(
@@ -670,30 +591,27 @@ fn verify_function_body(
         }
 
         if p.is_anonymous_type_slot {
-            // Закон 1c: Также добавляем поля авто-привязанного типа и проверяем их на коллизию Law 2
             let base = p.type_constraint.split_whitespace().next().unwrap_or("");
-            if let Some(sym) = report.symbols.get(base) {
-                for f in &sym.field_order {
+            if let Some(hf) = report.hir.forms.get(base) {
+                for f in &hf.field_order {
                     local_vars.insert(f.clone());
                 }
             }
             for part in p.type_constraint.split_whitespace() {
                 if !matches!(part, "&" | "|" | "/") {
-                    collect_ambiguous_fields(part, &report.symbols, &mut ambiguous_fields);
+                    collect_ambiguous_fields(part, &report.hir, &mut ambiguous_fields);
                 }
             }
         } else {
-            // Если параметр именованный `fn(u User)`, проверяем как его собственные коллизии (`entity.name` в `entity User & Cloud`),
-            // так и прямое обращение к `Name` без `u.` (W001_LAW1)
             for part in p.type_constraint.split_whitespace() {
                 if !matches!(part, "&" | "|" | "/") {
-                    collect_ambiguous_fields(part, &report.symbols, &mut ambiguous_fields);
+                    collect_ambiguous_fields(part, &report.hir, &mut ambiguous_fields);
                 }
             }
             if !auto_unpacks {
                 let base = p.type_constraint.split_whitespace().next().unwrap_or("");
-                if let Some(sym) = report.symbols.get(base) {
-                    for f in &sym.field_order {
+                if let Some(hf) = report.hir.forms.get(base) {
+                    for f in &hf.field_order {
                         shadowed_named_fields
                             .insert(f.clone(), (p.name.clone(), base.to_string()));
                     }
@@ -704,12 +622,18 @@ fn verify_function_body(
 
     for sent in body {
         match classify_sentence(sent) {
+            SemanticKind::AlgebraicDef { name, expr } => {
+                if let Some(Token::Path(base)) = expr.first() {
+                    var_types.insert(name.clone(), base.clone());
+                }
+                local_vars.insert(name);
+            }
             SemanticKind::Binding { key, value } => {
                 // 1. Проверка `E01_AMBIGUOUS_CALL_OR_BIND`: `area (Circle { radius 5.0 })` (пробел перед `(` у имени функции!)
                 if matches!(value.as_slice(), [Token::Group('(', _)]) && !local_vars.contains(&key)
                 {
-                    if let Some(sym) = report.symbols.get(&key) {
-                        if sym.kind == SymbolKind::Function {
+                    if let Some(f) = report.hir.functions.get(&key) {
+                        if !f.params.is_empty() {
                             report.push_diag(
                                 Severity::Error,
                                 "E01_AMBIGUOUS_CALL_OR_BIND",
@@ -726,7 +650,7 @@ fn verify_function_body(
                 // 2. Проверка `E06_IMMUTABLE_TYPE_BINDING`: попытка мутировать `PascalCase` форму напрямую (`Car.max_speed 500`)
                 let root_ident = key.split('.').next().unwrap_or(&key);
                 if is_pascal_case(root_ident)
-                    && (key.contains('.') || report.symbols.contains_key(root_ident))
+                    && (key.contains('.') || report.hir.forms.contains_key(root_ident))
                 {
                     report.push_diag(
                         Severity::Error,
@@ -739,8 +663,7 @@ fn verify_function_body(
                     );
                 }
 
-                // Отслеживаем тип локальной переменной (включая вычитание `clean_entity (entity / Cloud.name)`)
-                if let Some(inferred) = infer_local_binding_type(&value, &var_types, report) {
+                if let Some(inferred) = infer_local_binding_type(&value, &var_types) {
                     var_types.insert(key.clone(), inferred);
                 }
                 local_vars.insert(key);
@@ -770,7 +693,6 @@ fn verify_function_body(
 fn infer_local_binding_type(
     value: &[Token],
     var_types: &HashMap<String, String>,
-    report: &AnalysisReport,
 ) -> Option<String> {
     let inner = match value {
         [Token::Group('(', sents)] if sents.len() == 1 => sents[0].as_slice(),
@@ -778,7 +700,6 @@ fn infer_local_binding_type(
     };
     match inner {
         [Token::Path(form_name), Token::Group('{', _)] => Some(form_name.clone()),
-        // `clean_entity (entity / Cloud.name)` -> снимает коллизию поля `name`
         [Token::Path(src_var), Token::Op(op), Token::Path(sub_target)] if op == "/" => {
             let base_ty = var_types.get(src_var)?;
             Some(format!("{base_ty} / {sub_target}"))
@@ -789,11 +710,11 @@ fn infer_local_binding_type(
 
 fn collect_ambiguous_fields(
     type_name: &str,
-    symbols: &HashMap<String, SymbolInfo>,
+    hir: &HirModule,
     out: &mut HashMap<String, Vec<String>>,
 ) {
-    if let Some(sym) = symbols.get(type_name) {
-        for (fname, f) in &sym.fields {
+    if let Some(hf) = hir.forms.get(type_name) {
+        for (fname, f) in &hf.fields {
             if f.is_ambiguous {
                 out.insert(fname.clone(), f.conflicting_origins.clone());
             }
@@ -837,30 +758,32 @@ fn verify_identifier(
         return;
     }
 
+    if let Some(origins) = ambiguous.get(ident) {
+        let suggestion = origins
+            .iter()
+            .map(|o| {
+                if is_interp {
+                    format!("{{{o}.{ident}}}")
+                } else {
+                    format!("{o}.{ident}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" или ");
+        report.push_diag(
+            Severity::Error,
+            "E05_AMBIGUOUS_LINEAGE_FIELD",
+            format!(
+                "Нарушение Закона 2 (#{sentence_idx}): В '{fn_name}' поле '{ident}' неоднозначно (предков: {}). Используйте {suggestion}.",
+                origins.join(" & ")
+            ),
+            Some(fn_name),
+            sentence_idx,
+        );
+        return;
+    }
+
     if local_vars.contains(ident) {
-        if let Some(origins) = ambiguous.get(ident) {
-            let suggestion = origins
-                .iter()
-                .map(|o| {
-                    if is_interp {
-                        format!("{{{o}.{ident}}}")
-                    } else {
-                        format!("{o}.{ident}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" или ");
-            report.push_diag(
-                Severity::Error,
-                "E05_AMBIGUOUS_LINEAGE_FIELD",
-                format!(
-                    "Нарушение Закона 2 (#{sentence_idx}): В '{fn_name}' поле '{ident}' неоднозначно (предков: {}). Используйте {suggestion}.",
-                    origins.join(" & ")
-                ),
-                Some(fn_name),
-                sentence_idx,
-            );
-        }
         return;
     }
 
@@ -885,29 +808,6 @@ fn verify_identifier(
             sentence_idx,
         );
     }
-    if let Some(origins) = ambiguous.get(ident) {
-        let suggestion = origins
-            .iter()
-            .map(|o| {
-                if is_interp {
-                    format!("{{{o}.{ident}}}")
-                } else {
-                    format!("{o}.{ident}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" или ");
-        report.push_diag(
-            Severity::Error,
-            "E05_AMBIGUOUS_LINEAGE_FIELD",
-            format!(
-                "Нарушение Закона 2 (#{sentence_idx}): В '{fn_name}' поле '{ident}' неоднозначно (предков: {}). Используйте {suggestion}.",
-                origins.join(" & ")
-            ),
-            Some(fn_name),
-            sentence_idx,
-        );
-    }
 }
 
 fn check_type_expr_field_ambiguity(
@@ -915,9 +815,8 @@ fn check_type_expr_field_ambiguity(
     field_name: &str,
     report: &AnalysisReport,
 ) -> Option<Vec<String>> {
-    // Если это известная форма (например, `UserOrder`), проверяем её таблицу полей:
-    if let Some(sym) = report.symbols.get(ty_expr) {
-        if let Some(f) = sym.fields.get(field_name) {
+    if let Some(hf) = report.hir.forms.get(ty_expr) {
+        if let Some(f) = hf.fields.get(field_name) {
             if f.is_ambiguous {
                 return Some(f.conflicting_origins.clone());
             }
@@ -925,7 +824,6 @@ fn check_type_expr_field_ambiguity(
         return None;
     }
 
-    // Если это составное пересечение в слоте параметра `User & Cloud` (с возможным `/ Cloud.name`):
     let mut origins = Vec::new();
     let mut subtracted = HashSet::new();
     let parts: Vec<&str> = ty_expr.split_whitespace().collect();
@@ -941,8 +839,8 @@ fn check_type_expr_field_ambiguity(
         if parts[i] != "&" && parts[i] != "|" {
             let anc = parts[i];
             if !subtracted.contains(anc) && !subtracted.contains(&format!("{anc}.{field_name}")) {
-                if let Some(sym) = report.symbols.get(anc) {
-                    if sym.fields.contains_key(field_name) {
+                if let Some(hf) = report.hir.forms.get(anc) {
+                    if hf.fields.contains_key(field_name) {
                         origins.push(anc.to_string());
                     }
                 }
@@ -997,8 +895,8 @@ fn check_tokens(
                         report,
                     );
                 }
-                if let Some(fn_sym) = report.symbols.get(target_fn) {
-                    if let Some(ret) = &fn_sym.return_type {
+                if let Some(fn_hir) = report.hir.functions.get(target_fn) {
+                    if let Some(ret) = &fn_hir.return_type {
                         current_type = Some(ret.clone());
                     }
                 }
@@ -1032,7 +930,7 @@ fn check_tokens(
                                 branch_locals.insert(snake.clone());
                                 branch_var_types.insert(snake, name.clone());
                             }
-                            collect_ambiguous_fields(&name, &report.symbols, &mut branch_ambiguous);
+                            collect_ambiguous_fields(&name, &report.hir, &mut branch_ambiguous);
                             for s in &stream {
                                 check_tokens(
                                     fn_name,
@@ -1147,13 +1045,11 @@ fn infer_static_token_type(
     match tokens {
         [Token::Path(name), Token::Group('{', _)] => Some(name.clone()),
         [Token::Path(var)] => var_types.get(var).cloned().or_else(|| {
-            report.symbols.get(var).and_then(|s| {
-                if s.kind == SymbolKind::Form || s.kind == SymbolKind::TypeAlgebra {
-                    Some(var.clone())
-                } else {
-                    s.signature.split(':').nth(1).map(|t| t.trim().to_string())
-                }
-            })
+            if report.hir.forms.contains_key(var) {
+                Some(var.clone())
+            } else {
+                report.hir.globals.get(var).map(|g| g.inferred_type.clone())
+            }
         }),
         _ => None,
     }
@@ -1170,10 +1066,13 @@ fn verify_typestate_and_union_bypass(
     sentence_idx: usize,
     report: &mut AnalysisReport,
 ) {
-    let Some(fn_sym) = report.symbols.get(target_fn).cloned() else {
-        return;
-    };
-    let Some((_, constraint)) = fn_sym.params.first() else {
+    let Some(constraint) = report
+        .hir
+        .functions
+        .get(target_fn)
+        .and_then(|f| f.params.iter().find(|p| !p.is_type_param))
+        .map(|p| p.type_constraint.clone())
+    else {
         return;
     };
     if constraint.is_empty() || constraint == "Any" {
@@ -1187,9 +1086,9 @@ fn verify_typestate_and_union_bypass(
             if branch == expected_base {
                 continue;
             }
-            if let Some(branch_sym) = report.symbols.get(branch) {
-                let is_subtype = branch_sym.ancestors.contains(&expected_base.to_string());
-                if !is_subtype && !branch_sym.is_bypass {
+            if let Some(branch_form) = report.hir.forms.get(branch) {
+                let is_subtype = branch_form.ancestors.contains(&expected_base.to_string());
+                if !is_subtype && !branch_form.is_bypass {
                     report.push_diag(
                         Severity::Error,
                         "E04_UNHANDLED_UNION_BRANCH",
@@ -1206,7 +1105,7 @@ fn verify_typestate_and_union_bypass(
     }
 
     // 2. Проверка Typestate (`Order & Reserved & Paid` или `Order / Cancelled`)
-    let Some(in_sym) = report.symbols.get(input_type).cloned() else {
+    let Some(in_sym) = report.hir.forms.get(input_type).cloned() else {
         return;
     };
     if !constraint.contains('&') && !constraint.contains('/') {

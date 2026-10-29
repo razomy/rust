@@ -101,10 +101,12 @@ pub struct HirForm {
     /// Ветки объединения (`Circle | Rect`, `'draft' | 'published'`, `"a".."z" | "A".."Z"`)
     pub union_variants: Vec<String>,
     /// Предикаты уточнения (`User & is_adult`, `CompileError & [ _.code >= 500 ]`)
-    pub refinement_predicates: Vec<String>,
+    pub refinement_predicates: Vec<Token>,
     /// Закон 3: Помечена ли форма тегом `& Bypass` (`None`, `NotFound`, `IoError`)
     pub is_bypass: bool,
     pub is_algebraic_alias: bool,
+    /// Помечена ли форма как встроенная из `src/prelude.rl` (не эмитится в пользовательский кодоген, если не переопределена)
+    pub is_prelude: bool,
     pub origin: SourceOrigin,
 }
 
@@ -172,6 +174,8 @@ pub struct HirModule {
 // 3. ПОСТРОИТЕЛЬ HIR (LOWERING: AST -> HIR)
 // =============================================================================
 
+pub const PRELUDE_SOURCE: &str = include_str!("prelude.rl");
+
 pub fn lower_to_hir(sentences: &[Sentence]) -> HirModule {
     let mut hir = HirModule {
         top_level_sentences: sentences.to_vec(),
@@ -181,443 +185,284 @@ pub fn lower_to_hir(sentences: &[Sentence]) -> HirModule {
     register_stdlib_hir(&mut hir);
 
     for (idx, sentence) in sentences.iter().enumerate() {
-        let kind = classify_sentence(sentence);
-        match kind {
-            SemanticKind::FormDef { name, body, tail } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-                let prev_base = if hir.forms.contains_key(&name) {
-                    Some(name.as_str())
-                } else {
-                    None
-                };
-                let form = lower_form(
-                    &name,
-                    prev_base,
-                    vec![],
-                    vec![],
-                    vec![],
-                    &body,
-                    &tail,
-                    origin,
-                    &hir,
-                );
-                register_form(&mut hir, name, form);
-            }
-
-            SemanticKind::SubtypeFormDef {
-                name,
-                base,
-                body,
-                tail,
-            } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-                let type_args = match sentence.as_slice() {
-                    [Token::Path(_), Token::Path(_), Token::Group(')', args), ..] => {
-                        extract_type_params(args)
-                    }
-                    _ => vec![],
-                };
-                // В Razomy v5.7 `global_counter Atom(CounterState) { ... }` (snake_case) — это также глобальный экземпляр!
-                let is_snake_instance = !is_pascal_case(&name);
-                let form = lower_form(
-                    &name,
-                    Some(&base),
-                    vec![],
-                    vec![],
-                    type_args,
-                    &body,
-                    &tail,
-                    origin.clone(),
-                    &hir,
-                );
-                register_form(&mut hir, name.clone(), form);
-
-                if is_snake_instance {
-                    let binding = HirGlobalBinding {
-                        key: name.clone(),
-                        inferred_type: base,
-                        value_expr: sentence[1..].to_vec(),
-                        origin,
-                    };
-                    if !hir.global_order.contains(&name) {
-                        hir.global_order.push(name.clone());
-                    }
-                    hir.globals.insert(name, binding);
-                }
-            }
-
-            SemanticKind::GenericDef { name, params, body } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-                let (type_params, value_params) = extract_form_slots(&params, &hir);
-                let form = match body.as_slice() {
-                    [Token::Group('{', form_body), tail @ ..] => lower_form(
-                        &name,
-                        None,
-                        type_params,
-                        value_params,
-                        vec![],
-                        form_body,
-                        tail,
-                        origin,
-                        &hir,
-                    ),
-                    // `Monad(M(_)) & Functor(M) { ... }` или `Element(id_attr ProceduralId) Cuboid & StartNode { ... }`
-                    _ if body.iter().any(|t| matches!(t, Token::Group('{', _))) => {
-                        let brace_idx = body
-                            .iter()
-                            .position(|t| matches!(t, Token::Group('{', _)))
-                            .unwrap();
-                        let Token::Group('{', form_body) = &body[brace_idx] else {
-                            unreachable!()
-                        };
-                        let prefix = &body[..brace_idx];
-                        let suffix = &body[brace_idx + 1..];
-                        let mut combined_tail = Vec::new();
-                        let mut first_base: Option<&str> = None;
-                        if let Some(Token::Path(b)) = prefix.first() {
-                            first_base = Some(b.as_str());
-                            if prefix.len() > 1 {
-                                combined_tail.extend_from_slice(&prefix[1..]);
-                            }
-                        } else {
-                            combined_tail.extend_from_slice(prefix);
-                        }
-                        combined_tail.extend_from_slice(suffix);
-                        lower_form(
-                            &name,
-                            first_base,
-                            type_params,
-                            value_params,
-                            vec![],
-                            form_body,
-                            &combined_tail,
-                            origin,
-                            &hir,
-                        )
-                    }
-                    _ => {
-                        let mut f = lower_algebraic_form(&name, &body, origin, &hir);
-                        f.type_params = type_params;
-                        f.value_params = value_params;
-                        f
-                    }
-                };
-                register_form(&mut hir, name, form);
-            }
-
-            SemanticKind::AlgebraicDef { name, expr } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-
-                // 1. Композиция потоков: `clean_str trim_str & upper_str` или `combined_pipeline step_1 & step_2`
-                if is_stream_composition(&expr, &hir) {
-                    let composed_steps: Vec<Token> = expr
-                        .iter()
-                        .map(|t| match t {
-                            Token::Op(op) if op == "&" => Token::Op(".".into()),
-                            other => other.clone(),
-                        })
-                        .collect();
-                    let func = HirFunction {
-                        name: name.clone(),
-                        params: vec![],
-                        auto_unpacks: false,
-                        body: vec![composed_steps],
-                        return_type: None,
-                        is_contract: false,
-                        is_compile_time: false,
-                        visibility: HirVisibility::Default,
-                        origin: origin.clone(),
-                    };
-                    if !hir.function_order.contains(&name) {
-                        hir.function_order.push(name.clone());
-                    }
-                    hir.functions.insert(name.clone(), func);
-                }
-
-                // 2. Если `name` в `snake_case` (например, `secret_key "xyz987" & Private`, `secure_connect connect & { ... }`, `order_1 Invoice & { ... }`),
-                // также регистрируем как глобальную переменную!
-                if !is_pascal_case(&name) {
-                    let (clean_expr, _) = strip_visibility_and_compile_tail(&expr);
-                    let inferred_type = infer_hir_type(&clean_expr, &hir);
-                    let binding = HirGlobalBinding {
-                        key: name.clone(),
-                        inferred_type,
-                        value_expr: clean_expr,
-                        origin: origin.clone(),
-                    };
-                    if !hir.global_order.contains(&name) {
-                        hir.global_order.push(name.clone());
-                    }
-                    hir.globals.insert(name.clone(), binding);
-                }
-
-                let form = lower_algebraic_form(&name, &expr, origin, &hir);
-                register_form(&mut hir, name, form);
-            }
-
-            SemanticKind::FunctionDef {
-                name,
-                args,
-                body,
-                tail,
-            } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-                let (params, auto_unpacks) = lower_fn_params(&args, &hir);
-                let (ret_tokens, visibility, is_compile_time) =
-                    parse_fn_tail_metadata(&tail, &hir);
-                let return_type = if ret_tokens.is_empty() {
-                    None
-                } else {
-                    Some(format_tokens_as_type(&ret_tokens))
-                };
-                let func = HirFunction {
-                    name: name.clone(),
-                    params,
-                    auto_unpacks,
-                    body,
-                    return_type,
-                    is_contract: false,
-                    is_compile_time,
-                    visibility,
-                    origin,
-                };
-                if !hir.function_order.contains(&name) {
-                    hir.function_order.push(name.clone());
-                }
-                hir.functions.insert(name, func);
-            }
-
-            SemanticKind::StreamOrBranch { name, stream } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: name.clone(),
-                    raw_ast: sentence.clone(),
-                };
-                let func = HirFunction {
-                    name: name.clone(),
-                    params: vec![],
-                    auto_unpacks: false,
-                    body: stream,
-                    return_type: None,
-                    is_contract: false,
-                    is_compile_time: false,
-                    visibility: HirVisibility::Default,
-                    origin,
-                };
-                if !hir.function_order.contains(&name) {
-                    hir.function_order.push(name.clone());
-                }
-                hir.functions.insert(name, func);
-            }
-
-            SemanticKind::Binding { key, value } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: key.clone(),
-                    raw_ast: sentence.clone(),
-                };
-
-                // 1. Проверяем импорт (`_ root.base`, `_ Path"../../../base"`, `Http std.net.http`)
-                if let Some(import_source) = detect_import_source(&key, &value) {
-                    hir.imports.push(HirImport {
-                        targets: vec![key.clone()],
-                        source_path: import_source,
-                        origin: origin.clone(),
-                    });
-                }
-
-                // 2. Обработка `Product (Compile & [ { id Int, title String } . derive_json ])` или алиасов типов `Age Int`, `One Succ(Zero)`
-                match value.as_slice() {
-                    [Token::Path(base_type)]
-                    if is_pascal_case(&key)
-                        && (hir.forms.contains_key(base_type)
-                        || matches!(
-                                    base_type.as_str(),
-                                    "String" | "Int" | "Float" | "Bool" | "Byte" | "Symbol" | "Any"
-                                )) =>
-                        {
-                            let form = lower_algebraic_form(&key, &value, origin.clone(), &hir);
-                            register_form(&mut hir, key.clone(), form);
-                        }
-                    [Token::Path(generic_base), Token::Group(')', args)]
-                    if is_pascal_case(&key) && hir.forms.contains_key(generic_base) =>
-                        {
-                            let type_args = extract_type_params(args);
-                            let form = lower_form(
-                                &key,
-                                Some(generic_base),
-                                vec![],
-                                vec![],
-                                type_args,
-                                &[],
-                                &[],
-                                origin.clone(),
-                                &hir,
-                            );
-                            register_form(&mut hir, key.clone(), form);
-                        }
-                    [Token::Group('(', inner)] if inner.len() == 1 => {
-                        let inner_sent = &inner[0];
-                        // `Product (Compile & [ { id Int, title String } . derive_json ])`
-                        if let [Token::Path(c), Token::Op(amp), Token::Group('[', stream_sents)] =
-                            inner_sent.as_slice()
-                        {
-                            if c == "Compile" && amp == "&" {
-                                if let Some(first_s) = stream_sents.first() {
-                                    if let [Token::Group('{', body), Token::Op(dot), Token::Path(macro_name)] =
-                                        first_s.as_slice()
-                                    {
-                                        if dot == "." {
-                                            let macro_tail = extract_macro_tail(macro_name, &hir);
-                                            let form = lower_form(
-                                                &key,
-                                                None,
-                                                vec![],
-                                                vec![],
-                                                vec![],
-                                                body,
-                                                &macro_tail,
-                                                origin.clone(),
-                                                &hir,
-                                            );
-                                            register_form(&mut hir, key.clone(), form);
-                                        }
-                                    }
-                                }
-                            }
-                        } else if has_algebra_op(inner_sent) {
-                            if is_pascal_case(&key) {
-                                let form =
-                                    lower_algebraic_form(&key, inner_sent, origin.clone(), &hir);
-                                register_form(&mut hir, key.clone(), form);
-                            } else if is_stream_composition(inner_sent, &hir) {
-                                let composed_steps: Vec<Token> = inner_sent
-                                    .iter()
-                                    .map(|t| match t {
-                                        Token::Op(op) if op == "&" => Token::Op(".".into()),
-                                        other => other.clone(),
-                                    })
-                                    .collect();
-                                let func = HirFunction {
-                                    name: key.clone(),
-                                    params: vec![],
-                                    auto_unpacks: false,
-                                    body: vec![composed_steps],
-                                    return_type: None,
-                                    is_contract: false,
-                                    is_compile_time: false,
-                                    visibility: HirVisibility::Default,
-                                    origin: origin.clone(),
-                                };
-                                if !hir.function_order.contains(&key) {
-                                    hir.function_order.push(key.clone());
-                                }
-                                hir.functions.insert(key.clone(), func);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
-                let inferred_type = infer_hir_type(&value, &hir);
-                let binding = HirGlobalBinding {
-                    key: key.clone(),
-                    inferred_type,
-                    value_expr: value,
-                    origin,
-                };
-                if !hir.global_order.contains(&key) {
-                    hir.global_order.push(key.clone());
-                }
-                hir.globals.insert(key, binding);
-            }
-
-            SemanticKind::TupleBinding { tuple, value } => {
-                let origin = SourceOrigin {
-                    sentence_index: idx,
-                    symbol_context: "<tuple_binding>".into(),
-                    raw_ast: sentence.clone(),
-                };
-                let inferred_type = infer_hir_type(&value, &hir);
-                let mut targets = Vec::new();
-                for elem_sent in tuple {
-                    if let [Token::Path(var_name)] = elem_sent.as_slice() {
-                        targets.push(var_name.clone());
-                        let binding = HirGlobalBinding {
-                            key: var_name.clone(),
-                            inferred_type: inferred_type.clone(),
-                            value_expr: value.clone(),
-                            origin: origin.clone(),
-                        };
-                        if !hir.global_order.contains(var_name) {
-                            hir.global_order.push(var_name.clone());
-                        }
-                        hir.globals.insert(var_name.clone(), binding);
-                    }
-                }
-                if !targets.is_empty() {
-                    if let Some(src) = detect_import_source(&targets[0], &value) {
-                        hir.imports.push(HirImport {
-                            targets,
-                            source_path: src,
-                            origin,
-                        });
-                    }
-                }
-            }
-
-            SemanticKind::Pipeline(tokens) => {
-                if let [Token::Path(name), Token::Group('{', body), Token::Op(op), Token::Path(macro_name)] =
-                    tokens.as_slice()
-                {
-                    if op == "." {
-                        let origin = SourceOrigin {
-                            sentence_index: idx,
-                            symbol_context: name.clone(),
-                            raw_ast: sentence.clone(),
-                        };
-                        let macro_tail = extract_macro_tail(macro_name, &hir);
-                        let form = lower_form(
-                            name,
-                            None,
-                            vec![],
-                            vec![],
-                            vec![],
-                            body,
-                            &macro_tail,
-                            origin,
-                            &hir,
-                        );
-                        register_form(&mut hir, name.clone(), form);
-                    }
-                }
-            }
-
-            _ => {}
-        }
+        lower_sentence_into_hir(idx, sentence, &mut hir);
     }
 
     hir
+}
+
+fn lower_sentence_into_hir(idx: usize, sentence: &Sentence, hir: &mut HirModule) {
+    let kind = classify_sentence(sentence);
+    match kind {
+        SemanticKind::FormDef { name, body, tail } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: name.clone(),
+                raw_ast: sentence.clone(),
+            };
+            let mut expr = vec![Token::Group('{', body)];
+            expr.extend(tail);
+            let form = lower_form_expr(&name, vec![], vec![], &expr, origin, hir);
+            register_form(hir, name, form);
+        }
+
+        SemanticKind::GenericDef { name, params, body } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: name.clone(),
+                raw_ast: sentence.clone(),
+            };
+            let (type_params, value_params) = extract_form_slots(&params, hir);
+            let form = lower_form_expr(&name, type_params, value_params, &body, origin, hir);
+            register_form(hir, name, form);
+        }
+
+        SemanticKind::AlgebraicDef { name, expr } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: name.clone(),
+                raw_ast: sentence.clone(),
+            };
+
+            if is_stream_composition(&expr, hir) {
+                register_composed_stream_fn(hir, &name, &expr, origin.clone());
+            }
+
+            if !is_pascal_case(&name) {
+                let (clean_expr, _) = strip_visibility_and_compile_tail(&expr);
+                let inferred_type = infer_hir_type(&clean_expr, hir);
+                register_global(hir, name.clone(), inferred_type, clean_expr, origin.clone());
+            }
+
+            let form = lower_form_expr(&name, vec![], vec![], &expr, origin, hir);
+            register_form(hir, name, form);
+        }
+
+        SemanticKind::FunctionDef {
+            name,
+            args,
+            body,
+            tail,
+        } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: name.clone(),
+                raw_ast: sentence.clone(),
+            };
+            let func = build_hir_function(&name, &args, body, &tail, false, origin, hir);
+            register_function(hir, name, func);
+        }
+
+        SemanticKind::StreamOrBranch { name, stream } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: name.clone(),
+                raw_ast: sentence.clone(),
+            };
+            let func = build_hir_function(&name, &[], stream, &[], false, origin, hir);
+            register_function(hir, name, func);
+        }
+
+        SemanticKind::Binding { key, value } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: key.clone(),
+                raw_ast: sentence.clone(),
+            };
+
+            // 1. Проверяем импорт (`_ root.base`, `_ Path"../../../base"`, `Http std.net.http`)
+            if let Some(import_source) = detect_import_source(&key, &value) {
+                hir.imports.push(HirImport {
+                    targets: vec![key.clone()],
+                    source_path: import_source,
+                    origin: origin.clone(),
+                });
+            }
+
+            // 2. Обработка `Product (Compile & [ { id Int, title String } . derive_json ])` или алиасов типов `Age Int`, `One Succ(Zero)`
+            match value.as_slice() {
+                [Token::Path(base_type)]
+                    if is_pascal_case(&key) && is_known_type(base_type, hir) =>
+                {
+                    let form = lower_form_expr(&key, vec![], vec![], &value, origin.clone(), hir);
+                    register_form(hir, key.clone(), form);
+                }
+                [Token::Path(generic_base), Token::Group(')', _)]
+                    if is_pascal_case(&key) && hir.forms.contains_key(generic_base) =>
+                {
+                    let form = lower_form_expr(&key, vec![], vec![], &value, origin.clone(), hir);
+                    register_form(hir, key.clone(), form);
+                }
+                [Token::Group('(', inner)] if inner.len() == 1 => {
+                    let inner_sent = &inner[0];
+                    if let [Token::Path(c), Token::Op(amp), Token::Group('[', stream_sents)] =
+                        inner_sent.as_slice()
+                    {
+                        if c == "Compile" && amp == "&" {
+                            if let Some([Token::Group('{', body), Token::Op(dot), Token::Path(macro_name)]) =
+                                stream_sents.first().map(Vec::as_slice)
+                            {
+                                if dot == "." {
+                                    let mut expr = vec![Token::Group('{', body.clone())];
+                                    expr.extend(extract_macro_tail(macro_name, hir));
+                                    let form = lower_form_expr(
+                                        &key,
+                                        vec![],
+                                        vec![],
+                                        &expr,
+                                        origin.clone(),
+                                        hir,
+                                    );
+                                    register_form(hir, key.clone(), form);
+                                }
+                            }
+                        }
+                    } else if has_algebra_op(inner_sent) {
+                        if is_pascal_case(&key) {
+                            let form = lower_form_expr(
+                                &key,
+                                vec![],
+                                vec![],
+                                inner_sent,
+                                origin.clone(),
+                                hir,
+                            );
+                            register_form(hir, key.clone(), form);
+                        } else if is_stream_composition(inner_sent, hir) {
+                            register_composed_stream_fn(hir, &key, inner_sent, origin.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            let inferred_type = infer_hir_type(&value, hir);
+            register_global(hir, key, inferred_type, value, origin);
+        }
+
+        SemanticKind::TupleBinding { tuple, value } => {
+            let origin = SourceOrigin {
+                sentence_index: idx,
+                symbol_context: "<tuple_binding>".into(),
+                raw_ast: sentence.clone(),
+            };
+            let inferred_type = infer_hir_type(&value, hir);
+            let mut targets = Vec::new();
+            for elem_sent in tuple {
+                if let [Token::Path(var_name)] = elem_sent.as_slice() {
+                    targets.push(var_name.clone());
+                    register_global(
+                        hir,
+                        var_name.clone(),
+                        inferred_type.clone(),
+                        value.clone(),
+                        origin.clone(),
+                    );
+                }
+            }
+            if !targets.is_empty() {
+                if let Some(src) = detect_import_source(&targets[0], &value) {
+                    hir.imports.push(HirImport {
+                        targets,
+                        source_path: src,
+                        origin,
+                    });
+                }
+            }
+        }
+
+        SemanticKind::Pipeline(tokens) => {
+            if let [Token::Path(name), Token::Group('{', body), Token::Op(op), Token::Path(macro_name)] =
+                tokens.as_slice()
+            {
+                if op == "." {
+                    let origin = SourceOrigin {
+                        sentence_index: idx,
+                        symbol_context: name.clone(),
+                        raw_ast: sentence.clone(),
+                    };
+                    let mut expr = vec![Token::Group('{', body.clone())];
+                    expr.extend(extract_macro_tail(macro_name, hir));
+                    let form = lower_form_expr(name, vec![], vec![], &expr, origin, hir);
+                    register_form(hir, name.clone(), form);
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn register_function(hir: &mut HirModule, name: String, func: HirFunction) {
+    if !hir.function_order.contains(&name) {
+        hir.function_order.push(name.clone());
+    }
+    hir.functions.insert(name, func);
+}
+
+fn register_global(
+    hir: &mut HirModule,
+    key: String,
+    inferred_type: String,
+    value_expr: Vec<Token>,
+    origin: SourceOrigin,
+) {
+    let binding = HirGlobalBinding {
+        key: key.clone(),
+        inferred_type,
+        value_expr,
+        origin,
+    };
+    if !hir.global_order.contains(&key) {
+        hir.global_order.push(key.clone());
+    }
+    hir.globals.insert(key, binding);
+}
+
+fn register_composed_stream_fn(
+    hir: &mut HirModule,
+    name: &str,
+    expr: &[Token],
+    origin: SourceOrigin,
+) {
+    let mut composed_steps = vec![Token::Path("_".into()), Token::Op(".".into())];
+    for t in expr {
+        match t {
+            Token::Op(op) if op == "&" => composed_steps.push(Token::Op(".".into())),
+            other => composed_steps.push(other.clone()),
+        }
+    }
+    let func = build_hir_function(name, &[], vec![composed_steps], &[], false, origin, hir);
+    register_function(hir, name.to_string(), func);
+}
+
+fn build_hir_function(
+    name: &str,
+    args: &[Sentence],
+    body: Vec<Sentence>,
+    tail: &[Token],
+    is_contract: bool,
+    origin: SourceOrigin,
+    hir: &HirModule,
+) -> HirFunction {
+    let (params, auto_unpacks) = lower_fn_params(args, hir);
+    let (ret_tokens, visibility, is_compile_time) = parse_fn_tail_metadata(tail, hir);
+    let return_type = if ret_tokens.is_empty() {
+        None
+    } else {
+        Some(format_tokens_as_type(&ret_tokens))
+    };
+    HirFunction {
+        name: name.to_string(),
+        params,
+        auto_unpacks,
+        body,
+        return_type,
+        is_contract,
+        is_compile_time,
+        visibility,
+        origin,
+    }
 }
 
 fn extract_macro_tail(macro_name: &str, hir: &HirModule) -> Vec<Token> {
@@ -676,9 +521,8 @@ fn detect_import_source(key: &str, value: &[Token]) -> Option<String> {
 }
 
 fn register_form(hir: &mut HirModule, name: String, form: HirForm) {
-    if !hir.form_order.contains(&name) {
-        hir.form_order.push(name.clone());
-    }
+    hir.form_order.retain(|n| n != &name);
+    hir.form_order.push(name.clone());
     hir.forms.insert(name, form);
 }
 
@@ -885,100 +729,22 @@ fn strip_visibility_and_compile_tail(tokens: &[Token]) -> (Vec<Token>, HirVisibi
 }
 
 fn register_stdlib_hir(hir: &mut HirModule) {
-    let dummy_origin = SourceOrigin {
-        sentence_index: 0,
-        symbol_context: "Shell".into(),
-        raw_ast: vec![],
-    };
-
-    for builtin in ["Compile", "Bypass", "Public", "Private"] {
-        hir.form_order.push(builtin.into());
-        hir.forms.insert(
-            builtin.into(),
-            HirForm {
-                name: builtin.into(),
-                type_params: vec![],
-                value_params: vec![],
-                type_args: vec![],
-                fields: HashMap::new(),
-                field_order: vec![],
-                ancestor_fields: HashMap::new(),
-                methods: HashMap::new(),
-                method_order: vec![],
-                submodules: HashMap::new(),
-                ancestors: vec![],
-                union_variants: vec![],
-                refinement_predicates: vec![],
-                is_bypass: builtin == "Bypass",
-                is_algebraic_alias: false,
-                origin: dummy_origin.clone(),
-            },
-        );
+    if let Ok(prelude_sentences) = crate::parser::parse_code(PRELUDE_SOURCE) {
+        for (idx, sentence) in prelude_sentences.iter().enumerate() {
+            lower_sentence_into_hir(idx, sentence, hir);
+        }
+        for form in hir.forms.values_mut() {
+            form.is_prelude = true;
+        }
     }
-
-    let mut fields = HashMap::new();
-    fields.insert(
-        "log".into(),
-        HirField {
-            name: "log".into(),
-            inferred_type: "Fn(msg String) -> None".into(),
-            origin_form: "Shell".into(),
-            default_expr: vec![],
-            is_reactive: false,
-            is_ambiguous: false,
-            conflicting_origins: vec![],
-            visibility: HirVisibility::Public,
-            origin: dummy_origin.clone(),
-        },
-    );
-    fields.insert(
-        "exec".into(),
-        HirField {
-            name: "exec".into(),
-            inferred_type: "Fn(cmd String) -> String".into(),
-            origin_form: "Shell".into(),
-            default_expr: vec![],
-            is_reactive: false,
-            is_ambiguous: false,
-            conflicting_origins: vec![],
-            visibility: HirVisibility::Public,
-            origin: dummy_origin.clone(),
-        },
-    );
-
-    hir.form_order.push("Shell".into());
-    hir.forms.insert(
-        "Shell".into(),
-        HirForm {
-            name: "Shell".into(),
-            type_params: vec![],
-            value_params: vec![],
-            type_args: vec![],
-            fields,
-            field_order: vec!["log".into(), "exec".into()],
-            ancestor_fields: HashMap::new(),
-            methods: HashMap::new(),
-            method_order: vec![],
-            submodules: HashMap::new(),
-            ancestors: vec![],
-            union_variants: vec![],
-            refinement_predicates: vec![],
-            is_bypass: false,
-            is_algebraic_alias: false,
-            origin: dummy_origin,
-        },
-    );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_form(
+/// Единый понижатель всех аксиом форм (`Name { ... }`, `Name(Slots) ...`, `Name Base & { ... }`, `Name A | B`, `Name A / B`)
+fn lower_form_expr(
     name: &str,
-    base: Option<&str>,
     type_params: Vec<String>,
     value_params: Vec<HirParam>,
-    type_args: Vec<String>,
-    body: &[Sentence],
-    tail: &[Token],
+    expr: &[Token],
     origin: SourceOrigin,
     hir: &HirModule,
 ) -> HirForm {
@@ -991,15 +757,14 @@ fn lower_form(
     let mut ancestors = Vec::new();
     let mut union_variants = Vec::new();
     let mut refinement_predicates = Vec::new();
-    let mut is_bypass = false;
+    let mut type_args = Vec::new();
+    let mut is_bypass = name == "Bypass";
 
     // 0. Закон 1a/1c: Слоты значений конструктора `Form(a Int, b Int)` автоматически становятся полями на `self`!
     for vp in &value_params {
-        if !fields.contains_key(&vp.name) {
-            field_order.push(vp.name.clone());
-        }
-        fields.insert(
-            vp.name.clone(),
+        insert_hir_field(
+            &mut fields,
+            &mut field_order,
             HirField {
                 name: vp.name.clone(),
                 inferred_type: vp.type_constraint.clone(),
@@ -1014,62 +779,213 @@ fn lower_form(
         );
     }
 
-    // 1. Статическое копирование полей, истории предков и методов базовой формы (Axiom 4)
-    if let Some(base_name) = base {
-        if base_name != name {
-            ancestors.push(base_name.to_string());
+    // Разворачиваем ведущую скобку `(PlayButton / Cuboid) & { ... }`, если она есть
+    let expanded_expr: Vec<Token>;
+    let expr_slice: &[Token] = if let Some(Token::Group('(', inner)) = expr.first() {
+        if inner.len() == 1 {
+            let mut v = inner[0].clone();
+            v.extend_from_slice(&expr[1..]);
+            expanded_expr = v;
+            &expanded_expr
+        } else {
+            expr
         }
-        if base_name == "Bypass" {
-            is_bypass = true;
+    } else {
+        expr
+    };
+
+    if let Some(first_tok) = expr_slice.first() {
+        let mut start_idx = 1;
+        match first_tok {
+            Token::Group('{', body) => {
+                populate_hir_form_members(
+                    name,
+                    body,
+                    &mut fields,
+                    &mut field_order,
+                    &mut methods,
+                    &mut method_order,
+                    Some(&mut submodules),
+                    &origin,
+                    hir,
+                );
+            }
+            Token::Path(first_type) => {
+                if let Some(Token::Group(')', args)) = expr_slice.get(1) {
+                    type_args = extract_type_params(args);
+                    start_idx = 2;
+                }
+                if first_type == "Bypass" {
+                    is_bypass = true;
+                }
+                if let Some(base_form) = hir.forms.get(first_type) {
+                    if first_type != name {
+                        ancestors.push(first_type.clone());
+                    }
+                    inherit_from_base_form(
+                        first_type,
+                        base_form,
+                        &type_args,
+                        &mut fields,
+                        &mut field_order,
+                        &mut ancestor_fields,
+                        &mut methods,
+                        &mut method_order,
+                        &mut ancestors,
+                        &mut is_bypass,
+                    );
+                    if !base_form.union_variants.is_empty() {
+                        union_variants.extend(base_form.union_variants.clone());
+                    }
+                } else {
+                    union_variants.push(first_type.clone());
+                }
+            }
+            Token::Lit(Literal::Symbol(sym)) => {
+                union_variants.push(format!("'{sym}'"));
+            }
+            Token::Range(start, end) => {
+                union_variants.push(format!(
+                    "{}..{}",
+                    format_single_token(start),
+                    format_single_token(end)
+                ));
+            }
+            _ => {
+                start_idx = 0;
+            }
         }
-        if let Some(base_form) = hir.forms.get(base_name) {
-            if base_form.is_bypass {
-                is_bypass = true;
-            }
-            ancestor_fields.insert(base_name.to_string(), base_form.fields.clone());
-            for (anc_k, anc_map) in &base_form.ancestor_fields {
-                ancestor_fields.insert(anc_k.clone(), anc_map.clone());
-            }
 
-            let mut subst = HashMap::new();
-            for (param_raw, arg_val) in base_form.type_params.iter().zip(type_args.iter()) {
-                let param_name = param_raw.split_whitespace().next().unwrap_or(param_raw);
-                subst.insert(param_name.to_string(), arg_val.clone());
-            }
-
-            for k in &base_form.field_order {
-                if let Some(f) = base_form.fields.get(k) {
-                    let mut cloned = f.clone();
-                    if let Some(concrete_type) = subst.get(&cloned.inferred_type) {
-                        cloned.inferred_type = concrete_type.clone();
-                    }
-                    fields.insert(k.clone(), cloned);
-                    if !field_order.contains(k) {
-                        field_order.push(k.clone());
-                    }
-                }
-            }
-            for m in &base_form.method_order {
-                if let Some(mf) = base_form.methods.get(m) {
-                    methods.insert(m.clone(), mf.clone());
-                    if !method_order.contains(m) {
-                        method_order.push(m.clone());
-                    }
-                }
-            }
-            for anc in &base_form.ancestors {
-                if !ancestors.contains(anc) {
-                    ancestors.push(anc.clone());
-                }
-            }
+        if start_idx < expr_slice.len() {
+            resolve_type_algebra_into_fields(
+                name,
+                &mut fields,
+                &mut field_order,
+                &mut ancestor_fields,
+                &mut methods,
+                &mut method_order,
+                &mut ancestors,
+                &mut union_variants,
+                &mut refinement_predicates,
+                &mut is_bypass,
+                &expr_slice[start_idx..],
+                &origin,
+                hir,
+            );
         }
     }
 
-    // 2. Собственные поля, вложенные подформы, реактивные потоки, методы и контракты внутри `{ ... }`
-    for (f_idx, s) in body.iter().enumerate() {
+    ancestor_fields.insert(name.to_string(), fields.clone());
+    let has_own_body_fields = expr_slice.iter().any(|t| matches!(t, Token::Group('{', _)));
+
+    HirForm {
+        name: name.to_string(),
+        type_params,
+        value_params,
+        type_args,
+        fields,
+        field_order,
+        ancestor_fields,
+        methods,
+        method_order,
+        submodules,
+        ancestors,
+        union_variants,
+        refinement_predicates,
+        is_bypass,
+        is_algebraic_alias: !has_own_body_fields,
+        is_prelude: false,
+        origin,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inherit_from_base_form(
+    base_name: &str,
+    base_form: &HirForm,
+    type_args: &[String],
+    fields: &mut HashMap<String, HirField>,
+    field_order: &mut Vec<String>,
+    ancestor_fields: &mut HashMap<String, HashMap<String, HirField>>,
+    methods: &mut HashMap<String, HirFunction>,
+    method_order: &mut Vec<String>,
+    ancestors: &mut Vec<String>,
+    is_bypass: &mut bool,
+) {
+    if base_form.is_bypass {
+        *is_bypass = true;
+    }
+    ancestor_fields.insert(base_name.to_string(), base_form.fields.clone());
+    for (anc_k, anc_map) in &base_form.ancestor_fields {
+        ancestor_fields.insert(anc_k.clone(), anc_map.clone());
+    }
+
+    let mut subst = HashMap::new();
+    for (param_raw, arg_val) in base_form.type_params.iter().zip(type_args.iter()) {
+        let param_name = param_raw.split_whitespace().next().unwrap_or(param_raw);
+        subst.insert(param_name.to_string(), arg_val.clone());
+    }
+
+    for k in &base_form.field_order {
+        if let Some(f) = base_form.fields.get(k) {
+            let mut cloned = f.clone();
+            if let Some(concrete_type) = subst.get(&cloned.inferred_type) {
+                cloned.inferred_type = concrete_type.clone();
+            }
+            insert_hir_field(fields, field_order, cloned);
+        }
+    }
+    for m in &base_form.method_order {
+        if let Some(mf) = base_form.methods.get(m) {
+            insert_hir_method(methods, method_order, mf.clone());
+        }
+    }
+    for anc in &base_form.ancestors {
+        if !ancestors.contains(anc) {
+            ancestors.push(anc.clone());
+        }
+    }
+}
+
+fn insert_hir_field(
+    fields: &mut HashMap<String, HirField>,
+    field_order: &mut Vec<String>,
+    field: HirField,
+) {
+    if !fields.contains_key(&field.name) {
+        field_order.push(field.name.clone());
+    }
+    fields.insert(field.name.clone(), field);
+}
+
+fn insert_hir_method(
+    methods: &mut HashMap<String, HirFunction>,
+    method_order: &mut Vec<String>,
+    func: HirFunction,
+) {
+    if !methods.contains_key(&func.name) {
+        method_order.push(func.name.clone());
+    }
+    methods.insert(func.name.clone(), func);
+}
+
+/// Единый обработчик членов тела формы `{ ... }` (используется и при объявлении формы, и при `& { ... }` слиянии)
+#[allow(clippy::too_many_arguments)]
+fn populate_hir_form_members(
+    owner_name: &str,
+    sentences: &[Sentence],
+    fields: &mut HashMap<String, HirField>,
+    field_order: &mut Vec<String>,
+    methods: &mut HashMap<String, HirFunction>,
+    method_order: &mut Vec<String>,
+    mut submodules: Option<&mut HashMap<String, HirForm>>,
+    owner_origin: &SourceOrigin,
+    hir: &HirModule,
+) {
+    for (f_idx, s) in sentences.iter().enumerate() {
         let member_origin = SourceOrigin {
             sentence_index: f_idx,
-            symbol_context: format!("{name}.{f_idx}"),
+            symbol_context: format!("{owner_name}.{f_idx}"),
             raw_ast: s.clone(),
         };
 
@@ -1079,26 +995,23 @@ fn lower_form(
                 body: sub_body,
                 tail: sub_tail,
             } => {
-                let sub_form = lower_form(
+                let mut sub_expr = vec![Token::Group('{', sub_body.clone())];
+                sub_expr.extend(sub_tail);
+                let sub_form = lower_form_expr(
                     &sub_name,
-                    None,
                     vec![],
                     vec![],
-                    vec![],
-                    &sub_body,
-                    &sub_tail,
+                    &sub_expr,
                     member_origin.clone(),
                     hir,
                 );
-                if !fields.contains_key(&sub_name) {
-                    field_order.push(sub_name.clone());
-                }
-                fields.insert(
-                    sub_name.clone(),
+                insert_hir_field(
+                    fields,
+                    field_order,
                     HirField {
                         name: sub_name.clone(),
                         inferred_type: "Form".into(),
-                        origin_form: name.to_string(),
+                        origin_form: owner_name.to_string(),
                         default_expr: vec![Token::Group('{', sub_body)],
                         is_reactive: false,
                         is_ambiguous: false,
@@ -1107,20 +1020,20 @@ fn lower_form(
                         origin: member_origin,
                     },
                 );
-                submodules.insert(sub_name, sub_form);
+                if let Some(subs) = submodules.as_deref_mut() {
+                    subs.insert(sub_name, sub_form);
+                }
             }
             SemanticKind::Binding { key, value } => {
                 let (clean_val, visibility) = strip_visibility_and_compile_tail(&value);
                 let (inferred_type, def_expr) = split_type_and_default(&clean_val, hir);
-                if !fields.contains_key(&key) {
-                    field_order.push(key.clone());
-                }
-                fields.insert(
-                    key.clone(),
+                insert_hir_field(
+                    fields,
+                    field_order,
                     HirField {
                         name: key,
                         inferred_type,
-                        origin_form: name.to_string(),
+                        origin_form: owner_name.to_string(),
                         default_expr: def_expr,
                         is_reactive: false,
                         is_ambiguous: false,
@@ -1142,15 +1055,13 @@ fn lower_form(
                     .unwrap_or_else(|| "()".to_string());
                 let (clean_val, visibility) = strip_visibility_and_compile_tail(&value);
                 let inferred_type = infer_hir_type(&clean_val, hir);
-                if !fields.contains_key(&key_str) {
-                    field_order.push(key_str.clone());
-                }
-                fields.insert(
-                    key_str.clone(),
+                insert_hir_field(
+                    fields,
+                    field_order,
                     HirField {
                         name: key_str,
                         inferred_type,
-                        origin_form: name.to_string(),
+                        origin_form: owner_name.to_string(),
                         default_expr: clean_val,
                         is_reactive: false,
                         is_ambiguous: false,
@@ -1164,15 +1075,13 @@ fn lower_form(
                 name: field_name,
                 stream,
             } => {
-                if !fields.contains_key(&field_name) {
-                    field_order.push(field_name.clone());
-                }
-                fields.insert(
-                    field_name.clone(),
+                insert_hir_field(
+                    fields,
+                    field_order,
                     HirField {
                         name: field_name,
                         inferred_type: "ReactiveStream".into(),
-                        origin_form: name.to_string(),
+                        origin_form: owner_name.to_string(),
                         default_expr: vec![Token::Group('[', stream)],
                         is_reactive: true,
                         is_ambiguous: false,
@@ -1188,104 +1097,45 @@ fn lower_form(
                 body: fn_body,
                 tail: fn_tail,
             } => {
-                let (params, auto_unpacks) = lower_fn_params(&args, hir);
-                let (ret_tokens, visibility, is_compile_time) =
-                    parse_fn_tail_metadata(&fn_tail, hir);
-                let return_type = if ret_tokens.is_empty() {
-                    None
-                } else {
-                    Some(format_tokens_as_type(&ret_tokens))
-                };
-                if !methods.contains_key(&method_name) {
-                    method_order.push(method_name.clone());
-                }
-                methods.insert(
-                    method_name.clone(),
-                    HirFunction {
-                        name: method_name,
-                        params,
-                        auto_unpacks,
-                        body: fn_body,
-                        return_type,
-                        is_contract: false,
-                        is_compile_time,
-                        visibility,
-                        origin: member_origin,
-                    },
+                let func = build_hir_function(
+                    &method_name,
+                    &args,
+                    fn_body,
+                    &fn_tail,
+                    false,
+                    member_origin,
+                    hir,
                 );
+                insert_hir_method(methods, method_order, func);
             }
             SemanticKind::GenericDef {
                 name: method_name,
                 params: args,
                 body: ret_tokens,
             } => {
-                let (params, auto_unpacks) = lower_fn_params(&args, hir);
-                let ret_type = format_tokens_as_type(&ret_tokens);
-                if !methods.contains_key(&method_name) {
-                    method_order.push(method_name.clone());
-                }
-                methods.insert(
-                    method_name.clone(),
-                    HirFunction {
-                        name: method_name,
-                        params,
-                        auto_unpacks,
-                        body: vec![],
-                        return_type: Some(ret_type),
-                        is_contract: true,
-                        is_compile_time: false,
-                        visibility: HirVisibility::Default,
-                        origin: member_origin,
-                    },
+                let func = build_hir_function(
+                    &method_name,
+                    &args,
+                    vec![],
+                    &ret_tokens,
+                    true,
+                    member_origin,
+                    hir,
                 );
-            }
-            SemanticKind::OperatorMethod { op, args, rest } => {
-                let (params, auto_unpacks) = lower_fn_params(&args, hir);
-                let (fn_body, return_type, is_contract) = match rest.first() {
-                    Some(Token::Group('[', b)) => (b.clone(), None, false),
-                    _ => (vec![], Some(format_tokens_as_type(&rest)), true),
-                };
-                if !methods.contains_key(&op) {
-                    method_order.push(op.clone());
-                }
-                methods.insert(
-                    op.clone(),
-                    HirFunction {
-                        name: op,
-                        params,
-                        auto_unpacks,
-                        body: fn_body,
-                        return_type,
-                        is_contract,
-                        is_compile_time: false,
-                        visibility: HirVisibility::Default,
-                        origin: member_origin,
-                    },
-                );
-            }
-            SemanticKind::CallExpr {
-                name: field_name,
-                args,
-            } => {
-                // Поле с вызовом конструктора или Tagged String `price Money"100.00"` (если оно распарсилось как CallExpr только при отсутствии пробела)
-                let val_tokens = vec![Token::Path(field_name.clone()), Token::Group(')', args)];
-                let inferred_type = infer_hir_type(&val_tokens, hir);
-                let _ = inferred_type;
+                insert_hir_method(methods, method_order, func);
             }
             _ => {
                 if let [Token::Path(field_name), rest @ ..] = s.as_slice() {
                     if !rest.is_empty() && !has_pipe_op(rest) {
                         let (clean_val, visibility) = strip_visibility_and_compile_tail(rest);
                         let (inferred_type, def_expr) = split_type_and_default(&clean_val, hir);
-                        if !fields.contains_key(field_name) {
-                            field_order.push(field_name.clone());
-                        }
-                        fields.insert(
-                            field_name.clone(),
+                        insert_hir_field(
+                            fields,
+                            field_order,
                             HirField {
                                 name: field_name.clone(),
                                 inferred_type,
-                                origin_form: name.to_string(),
+                                origin_form: owner_name.to_string(),
                                 default_expr: def_expr,
                                 is_reactive: false,
                                 is_ambiguous: false,
@@ -1295,186 +1145,11 @@ fn lower_form(
                             },
                         );
                     }
-                }
-            }
-        }
-    }
-
-    ancestor_fields.insert(name.to_string(), fields.clone());
-
-    // 3. Разрешение алгебры типов `&`, `|` и `/` в статику!
-    if !tail.is_empty() {
-        resolve_type_algebra_into_fields(
-            name,
-            &mut fields,
-            &mut field_order,
-            &mut ancestor_fields,
-            &mut methods,
-            &mut method_order,
-            &mut ancestors,
-            &mut union_variants,
-            &mut refinement_predicates,
-            &mut is_bypass,
-            tail,
-            &origin,
-            hir,
-        );
-    }
-
-    HirForm {
-        name: name.to_string(),
-        type_params,
-        value_params,
-        type_args,
-        fields,
-        field_order,
-        ancestor_fields,
-        methods,
-        method_order,
-        submodules,
-        ancestors,
-        union_variants,
-        refinement_predicates,
-        is_bypass,
-        is_algebraic_alias: false,
-        origin,
-    }
-}
-
-fn lower_algebraic_form(
-    name: &str,
-    expr: &[Token],
-    origin: SourceOrigin,
-    hir: &HirModule,
-) -> HirForm {
-    let mut fields = HashMap::new();
-    let mut field_order = Vec::new();
-    let mut ancestor_fields: HashMap<String, HashMap<String, HirField>> = HashMap::new();
-    let mut methods = HashMap::new();
-    let mut method_order = Vec::new();
-    let mut ancestors = Vec::new();
-    let mut union_variants = Vec::new();
-    let mut refinement_predicates = Vec::new();
-    let mut is_bypass = false;
-
-    // Если выражение начинается со скобки `(PlayButton / Cuboid) & { ... }`, разворачиваем её:
-    let expanded_expr: Vec<Token>;
-    let expr_slice: &[Token] = if let Some(Token::Group('(', inner)) = expr.first() {
-        if inner.len() == 1 {
-            let mut v = inner[0].clone();
-            v.extend_from_slice(&expr[1..]);
-            expanded_expr = v;
-            &expanded_expr
-        } else {
-            expr
-        }
-    } else {
-        expr
-    };
-
-    if let Some(first_tok) = expr_slice.first() {
-        match first_tok {
-            Token::Path(first_type) => {
-                if first_type == "Bypass" {
-                    is_bypass = true;
-                }
-                if let Some(base_form) = hir.forms.get(first_type) {
-                    if base_form.is_bypass {
-                        is_bypass = true;
-                    }
-                    ancestors.push(first_type.clone());
-                    ancestor_fields.insert(first_type.clone(), base_form.fields.clone());
-                    for (anc_k, anc_map) in &base_form.ancestor_fields {
-                        ancestor_fields.insert(anc_k.clone(), anc_map.clone());
-                    }
-                    for anc in &base_form.ancestors {
-                        if !ancestors.contains(anc) {
-                            ancestors.push(anc.clone());
-                        }
-                    }
-                    for k in &base_form.field_order {
-                        if let Some(f) = base_form.fields.get(k) {
-                            fields.insert(k.clone(), f.clone());
-                            field_order.push(k.clone());
-                        }
-                    }
-                    for m in &base_form.method_order {
-                        if let Some(mf) = base_form.methods.get(m) {
-                            methods.insert(m.clone(), mf.clone());
-                            method_order.push(m.clone());
-                        }
-                    }
-                    if !base_form.union_variants.is_empty() {
-                        union_variants.extend(base_form.union_variants.clone());
-                    }
                 } else {
-                    union_variants.push(first_type.clone());
+                    let _ = owner_origin;
                 }
             }
-            Token::Lit(Literal::Symbol(sym)) => {
-                union_variants.push(format!("'{sym}'"));
-            }
-            Token::Range(start, end) => {
-                union_variants.push(format!(
-                    "{}..{}",
-                    format_single_token(start),
-                    format_single_token(end)
-                ));
-            }
-            _ => {}
         }
-
-        if expr_slice.len() > 1 {
-            let start_idx = if matches!(expr_slice.get(1), Some(Token::Group(')', _))) {
-                if let Token::Path(first_type) = first_tok {
-                    if !union_variants.contains(first_type) {
-                        union_variants.push(first_type.clone());
-                    }
-                }
-                2
-            } else {
-                1
-            };
-
-            if start_idx < expr_slice.len() {
-                resolve_type_algebra_into_fields(
-                    name,
-                    &mut fields,
-                    &mut field_order,
-                    &mut ancestor_fields,
-                    &mut methods,
-                    &mut method_order,
-                    &mut ancestors,
-                    &mut union_variants,
-                    &mut refinement_predicates,
-                    &mut is_bypass,
-                    &expr_slice[start_idx..],
-                    &origin,
-                    hir,
-                );
-            }
-        }
-    }
-
-    let has_own_body_fields = expr_slice.iter().any(|t| matches!(t, Token::Group('{', _)));
-
-    HirForm {
-        name: name.to_string(),
-        type_params: vec![],
-        value_params: vec![],
-        type_args: vec![],
-        fields,
-        field_order,
-        ancestor_fields,
-        methods,
-        method_order,
-        submodules: HashMap::new(),
-        ancestors,
-        union_variants,
-        refinement_predicates,
-        is_bypass,
-        is_algebraic_alias: !has_own_body_fields,
-        origin,
     }
 }
 
@@ -1488,7 +1163,7 @@ fn resolve_type_algebra_into_fields(
     method_order: &mut Vec<String>,
     ancestors: &mut Vec<String>,
     union_variants: &mut Vec<String>,
-    refinement_predicates: &mut Vec<String>,
+    refinement_predicates: &mut Vec<Token>,
     is_bypass: &mut bool,
     tail: &[Token],
     owner_origin: &SourceOrigin,
@@ -1500,13 +1175,14 @@ fn resolve_type_algebra_into_fields(
             // Каноническая форма слияния в V5.7: `PrintableUser User & Printable { format() [...] }`
             // или `SortableUser User & Comparable(User) { < (other User) [...] }`, где `{...}` идет после типа без второго `&`!
             Token::Group('{', override_sents) => {
-                apply_brace_overrides(
+                populate_hir_form_members(
                     owner_name,
+                    override_sents,
                     fields,
                     field_order,
                     methods,
                     method_order,
-                    override_sents,
+                    None,
                     owner_origin,
                     hir,
                 );
@@ -1583,7 +1259,7 @@ fn resolve_type_algebra_into_fields(
                                     }
                                 }
                             } else if hir.functions.contains_key(rhs_type) {
-                                refinement_predicates.push(rhs_type.clone());
+                                refinement_predicates.push(Token::Path(rhs_type.clone()));
                             } else if !ancestors.contains(rhs_type) {
                                 ancestors.push(rhs_type.clone());
                             }
@@ -1594,19 +1270,20 @@ fn resolve_type_algebra_into_fields(
                             }
                         }
                         Token::Group('{', override_sents) => {
-                            apply_brace_overrides(
+                            populate_hir_form_members(
                                 owner_name,
+                                override_sents,
                                 fields,
                                 field_order,
                                 methods,
                                 method_order,
-                                override_sents,
+                                None,
                                 owner_origin,
                                 hir,
                             );
                         }
-                        Token::Group('[', _) => {
-                            refinement_predicates.push("<inline_predicate>".into());
+                        tok @ Token::Group('[', _) => {
+                            refinement_predicates.push(tok.clone());
                         }
                         _ => {}
                     }
@@ -1725,123 +1402,6 @@ fn resolve_type_algebra_into_fields(
             _ => {
                 i += 1;
             }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_brace_overrides(
-    owner_name: &str,
-    fields: &mut HashMap<String, HirField>,
-    field_order: &mut Vec<String>,
-    methods: &mut HashMap<String, HirFunction>,
-    method_order: &mut Vec<String>,
-    override_sents: &[Sentence],
-    owner_origin: &SourceOrigin,
-    hir: &HirModule,
-) {
-    for s in override_sents {
-        match classify_sentence(s) {
-            SemanticKind::Binding { key, value } => {
-                let (clean_val, visibility) = strip_visibility_and_compile_tail(&value);
-                let (t, def_expr) = split_type_and_default(&clean_val, hir);
-                if !fields.contains_key(&key) {
-                    field_order.push(key.clone());
-                }
-                fields.insert(
-                    key.clone(),
-                    HirField {
-                        name: key,
-                        inferred_type: t,
-                        origin_form: owner_name.to_string(),
-                        default_expr: def_expr,
-                        is_reactive: false,
-                        is_ambiguous: false,
-                        conflicting_origins: vec![],
-                        visibility,
-                        origin: owner_origin.clone(),
-                    },
-                );
-            }
-            SemanticKind::StreamOrBranch {
-                name: field_name,
-                stream,
-            } => {
-                if !fields.contains_key(&field_name) {
-                    field_order.push(field_name.clone());
-                }
-                fields.insert(
-                    field_name.clone(),
-                    HirField {
-                        name: field_name,
-                        inferred_type: "ReactiveStream".into(),
-                        origin_form: owner_name.to_string(),
-                        default_expr: vec![Token::Group('[', stream)],
-                        is_reactive: true,
-                        is_ambiguous: false,
-                        conflicting_origins: vec![],
-                        visibility: HirVisibility::Default,
-                        origin: owner_origin.clone(),
-                    },
-                );
-            }
-            SemanticKind::FunctionDef {
-                name: method_name,
-                args,
-                body: fn_body,
-                tail: fn_tail,
-            } => {
-                let (params, auto_unpacks) = lower_fn_params(&args, hir);
-                let (ret_tokens, visibility, is_compile_time) =
-                    parse_fn_tail_metadata(&fn_tail, hir);
-                let return_type = if ret_tokens.is_empty() {
-                    None
-                } else {
-                    Some(format_tokens_as_type(&ret_tokens))
-                };
-                if !methods.contains_key(&method_name) {
-                    method_order.push(method_name.clone());
-                }
-                methods.insert(
-                    method_name.clone(),
-                    HirFunction {
-                        name: method_name,
-                        params,
-                        auto_unpacks,
-                        body: fn_body,
-                        return_type,
-                        is_contract: false,
-                        is_compile_time,
-                        visibility,
-                        origin: owner_origin.clone(),
-                    },
-                );
-            }
-            SemanticKind::OperatorMethod { op, args, rest } => {
-                let (params, auto_unpacks) = lower_fn_params(&args, hir);
-                let (fn_body, return_type, is_contract) = match rest.first() {
-                    Some(Token::Group('[', b)) => (b.clone(), None, false),
-                    _ => (vec![], Some(format_tokens_as_type(&rest)), true),
-                };
-                if !methods.contains_key(&op) {
-                    method_order.push(op.clone());
-                }
-                methods.insert(
-                    op.clone(),
-                    HirFunction {
-                        name: op,
-                        params,
-                        auto_unpacks,
-                        body: fn_body,
-                        return_type,
-                        is_contract,
-                        is_compile_time: false,
-                        visibility: HirVisibility::Default,
-                        origin: owner_origin.clone(),
-                    },
-                );
-            }
-            _ => {}
         }
     }
 }
@@ -2120,28 +1680,19 @@ pub fn infer_hir_type(tokens: &[Token], hir: &HirModule) -> String {
         },
         Some(Token::Path(p)) => {
             if matches!(tokens.get(1), Some(Token::Group(')', _))) {
-                // Конструктор типа или Type"..." сахар (`Money("199.99")`, `Url"https://..."`, `Tuple(T)`)
-                if matches!(
-                    p.as_str(),
-                    "Money"
-                        | "Usd"
-                        | "Date"
-                        | "Time"
-                        | "Duration"
-                        | "Pair"
-                        | "Hex"
-                        | "Ip"
-                        | "Version"
-                        | "Url"
-                        | "Path"
-                        | "Signal"
-                ) {
+                // Конструктор типа, экземпляр дженерика `Atom(CounterState) & { ... }` или `Type"..."` сахар
+                if hir
+                    .forms
+                    .get(p)
+                    .map(|f| f.type_params.is_empty())
+                    .unwrap_or(false)
+                    || p == "Signal"
+                    || matches!(tokens.get(2), Some(Token::Op(op)) if op == "&")
+                {
                     p.clone()
                 } else {
                     format_tokens_as_type(tokens)
                 }
-            } else if hir.forms.contains_key(p) {
-                p.clone()
             } else {
                 p.clone()
             }

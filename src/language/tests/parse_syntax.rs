@@ -129,11 +129,11 @@ x . transform
     assert!(matches!(classify_sentence(&ast[0]), SemanticKind::Binding { .. }));
     assert!(matches!(classify_sentence(&ast[1]), SemanticKind::TupleBinding { .. }));
     assert!(matches!(classify_sentence(&ast[2]), SemanticKind::FormDef { .. }));
-    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::SubtypeFormDef { .. }));
+    assert!(matches!(classify_sentence(&ast[3]), SemanticKind::AlgebraicDef { .. }));
     assert!(matches!(classify_sentence(&ast[4]), SemanticKind::FunctionDef { .. }));
     assert!(matches!(classify_sentence(&ast[5]), SemanticKind::GenericDef { .. }));
     assert!(matches!(classify_sentence(&ast[6]), SemanticKind::StreamOrBranch { .. }));
-    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::OperatorMethod { .. }));
+    assert!(matches!(classify_sentence(&ast[7]), SemanticKind::FunctionDef { .. }));
     assert!(matches!(classify_sentence(&ast[8]), SemanticKind::LambdaOrTupleBranch { .. }));
     assert!(matches!(classify_sentence(&ast[9]), SemanticKind::PatternBranch { .. }));
     assert!(matches!(classify_sentence(&ast[10]), SemanticKind::AlgebraicDef { .. }));

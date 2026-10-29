@@ -3,7 +3,7 @@
 // RAZOMY V5.7 — STATIC HIR ANALYZER, ERROR CATALOG (E01..E07) & IDE TEST SUITE
 // =============================================================================
 
-use razomy_language::analyzer::{analyze_source, Severity, SymbolKind};
+use razomy_language::analyzer::analyze_source;
 use razomy_language::hir::HirVisibility;
 
 #[test]
@@ -22,12 +22,12 @@ fn test_analyzer_law1_named_vs_auto_named_slots_v57() {
 
     let report = analyze_source(code);
 
-    let anon_sym = report.symbols.get("greet_anon").expect("greet_anon symbol");
-    assert!(anon_sym.auto_unpacks_first_arg);
-    assert_eq!(anon_sym.params[0].0, "user");
+    let anon_fn = report.hir.functions.get("greet_anon").expect("greet_anon function");
+    assert!(anon_fn.auto_unpacks);
+    assert_eq!(anon_fn.params[0].name, "user");
 
-    let named_sym = report.symbols.get("greet_named").expect("greet_named symbol");
-    assert!(!named_sym.auto_unpacks_first_arg);
+    let named_fn = report.hir.functions.get("greet_named").expect("greet_named function");
+    assert!(!named_fn.auto_unpacks);
 
     let law1_warnings: Vec<_> = report
         .diagnostics
@@ -227,8 +227,8 @@ fn test_analyzer_law4_hover_and_ufcs_completions() {
     "#;
 
     let report = analyze_source(code);
-    let sym = report.symbols.get("User").unwrap();
-    assert_eq!(sym.kind, SymbolKind::Form);
+    let sym = report.hir.forms.get("User").unwrap();
+    assert!(!sym.is_algebraic_alias);
 
     let hover_md = report.hover("User").expect("Hover markdown");
     assert!(hover_md.contains("Identifiable"));
