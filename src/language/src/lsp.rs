@@ -45,7 +45,19 @@ impl LspRange {
         })
     }
 }
-
+fn snap_to_char_boundary(text: &str, index: usize, round_up: bool) -> usize {
+    let mut idx = index.min(text.len());
+    if round_up {
+        while idx < text.len() && !text.is_char_boundary(idx) {
+            idx += 1;
+        }
+    } else {
+        while idx > 0 && !text.is_char_boundary(idx) {
+            idx -= 1;
+        }
+    }
+    idx
+}
 #[derive(Debug, Clone)]
 pub struct DocumentState {
     pub uri: String,
@@ -114,13 +126,19 @@ impl DocumentState {
     }
 
     pub fn offset_to_position(&self, offset: usize) -> LspPosition {
-        let clamped = offset.min(self.text.len());
+        let mut clamped = offset.min(self.text.len());
+        // ФИКС: если offset попал внутрь многобайтового символа (например, p + 1 = 1 внутри 'ф'),
+        // сдвигаем его до конца символа (1 -> 2)
+        while clamped < self.text.len() && !self.text.is_char_boundary(clamped) {
+            clamped += 1;
+        }
+
         let line = match self.line_starts.binary_search(&clamped) {
             Ok(exact) => exact,
             Err(ins) => ins.saturating_sub(1),
         };
         let line_start = self.line_starts.get(line).copied().unwrap_or(0);
-        let slice = &self.text[line_start..clamped];
+        let slice = &self.text[line_start..clamped]; // Строка 123: больше никогда не запаникует!
         let character = slice.encode_utf16().count();
         LspPosition { line, character }
     }

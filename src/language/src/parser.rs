@@ -44,17 +44,34 @@ pub type Sentence = Vec<Token>;
 // 2. КОНВЕРТАЦИЯ PEST PAIRS В ЧИСТОЕ AST
 // =============================================================================
 
-fn extract_raw_string_content(s: &str) -> String {
-    if (s.starts_with("r3\"") && s.ends_with("\"3"))
-        || (s.starts_with("r2\"") && s.ends_with("\"2"))
-        || (s.starts_with("r1\"") && s.ends_with("\"1"))
-    {
-        s[3..s.len() - 2].to_string()
-    } else if s.starts_with("r\"") && s.ends_with('"') {
-        s[2..s.len() - 1].to_string()
-    } else {
-        s.to_string()
+fn strip_raw_string(s: &str) -> String {
+    let mut s = s.to_string();
+
+    if s.starts_with('r') {
+        // Собираем все цифры сразу после 'r' (может быть пусто, если просто r"...")
+        let digits: String = s[1..].chars().take_while(|c| c.is_ascii_digit()).collect();
+
+        let prefix = format!("r{digits}\"");
+        let suffix = format!("\"{digits}");
+
+        // Проверяем, что строка действительно обрамлена этим префиксом и суффиксом
+        // и что они не пересекаются (например, на строке вроде r1"1)
+        if s.len() >= prefix.len() + suffix.len() && s.starts_with(&prefix) && s.ends_with(&suffix)
+        {
+            // Удаляем с конца через pop (цифры + кавычка)
+            for _ in 0..suffix.len() {
+                s.pop();
+            }
+            // Удаляем с начала ('r' + цифры + кавычка)
+            s.drain(..prefix.len());
+        }
     }
+
+    s
+}
+
+fn extract_raw_string_content(s: &str) -> String {
+    strip_raw_string(s)
 }
 
 pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
@@ -145,7 +162,12 @@ pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
                     if let Token::Path(ref p) = tok {
                         if p.starts_with('.') {
                             if let Some(Token::Group(')', args)) = raw_tokens.last() {
-                                if args.is_empty() && matches!(raw_tokens.get(raw_tokens.len().wrapping_sub(2)), Some(Token::Path(_))) {
+                                if args.is_empty()
+                                    && matches!(
+                                        raw_tokens.get(raw_tokens.len().wrapping_sub(2)),
+                                        Some(Token::Path(_))
+                                    )
+                                {
                                     raw_tokens.pop(); // убираем пустую `)`
                                     if let Some(Token::Path(prev_path)) = raw_tokens.last_mut() {
                                         prev_path.push_str("()");
@@ -164,7 +186,8 @@ pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
                 // помечаем её маркером `')'`
                 if let Token::Group(delim, _) = &mut tok {
                     if *delim == '(' {
-                        let after_tight_path = is_tight && matches!(raw_tokens.last(), Some(Token::Path(_)));
+                        let after_tight_path =
+                            is_tight && matches!(raw_tokens.last(), Some(Token::Path(_)));
                         if after_tight_path || prev_was_callable_op {
                             *delim = ')';
                         }
@@ -253,10 +276,7 @@ pub fn recover_source_for_ide(source: &str) -> String {
                     b.is_ascii_alphanumeric()
                         || b == b'_'
                         || b == b'.'
-                        || (b == b'-'
-                            && bytes
-                                .get(i + 2)
-                                .map_or(false, |b2| b2.is_ascii_digit()))
+                        || (b == b'-' && bytes.get(i + 2).map_or(false, |b2| b2.is_ascii_digit()))
                 }
                 None => false,
             };
@@ -279,8 +299,7 @@ pub fn recover_source_for_ide(source: &str) -> String {
                 while lookahead < len && matches!(bytes[lookahead], b' ' | b'\t' | b'\r') {
                     lookahead += 1;
                 }
-                if lookahead >= len
-                    || matches!(bytes[lookahead], b'\n' | b']' | b')' | b'}' | b',')
+                if lookahead >= len || matches!(bytes[lookahead], b'\n' | b']' | b')' | b'}' | b',')
                 {
                     for k in 0..op_len {
                         bytes[i + k] = b' ';
@@ -319,7 +338,10 @@ pub fn recover_source_for_ide(source: &str) -> String {
 
         let mut changed = false;
         for b in &mut bytes[line_start..line_end] {
-            if !matches!(*b, b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' ') {
+            if !matches!(
+                *b,
+                b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' '
+            ) {
                 *b = b' ';
                 changed = true;
             }
@@ -331,7 +353,10 @@ pub fn recover_source_for_ide(source: &str) -> String {
                 prev_start -= 1;
             }
             for b in &mut bytes[prev_start..prev_end] {
-                if !matches!(*b, b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' ') {
+                if !matches!(
+                    *b,
+                    b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\r' | b'\n' | b' '
+                ) {
                     *b = b' ';
                     changed = true;
                 }
@@ -483,8 +508,8 @@ fn split_function_body_and_tail(rest: &[Token]) -> Option<(Vec<Sentence>, Vec<To
             let prefix = &rest[..idx];
             let suffix = &rest[idx + 1..];
             let prefix_has_brace = prefix.iter().any(|t| matches!(t, Token::Group('{', _)));
-            let suffix_valid = suffix.is_empty()
-                || matches!(suffix, [Token::Op(op), ..] if op == "&");
+            let suffix_valid =
+                suffix.is_empty() || matches!(suffix, [Token::Op(op), ..] if op == "&");
             if !prefix_has_brace && suffix_valid {
                 let mut combined_tail = prefix.to_vec();
                 combined_tail.extend_from_slice(suffix);
@@ -523,13 +548,13 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
 
         // 4. Ключ карты в виде строкового или символьного литерала: `"host" "localhost"`
         [Token::Lit(Literal::String(key) | Literal::RawString(key) | Literal::Symbol(key)), rest @ ..]
-        if !rest.is_empty() && !has_pipe_op(rest) && !matches!(rest, [Token::Op(_), ..]) =>
-            {
-                SemanticKind::Binding {
-                    key: key.clone(),
-                    value: rest.to_vec(),
-                }
+            if !rest.is_empty() && !has_pipe_op(rest) && !matches!(rest, [Token::Op(_), ..]) =>
+        {
+            SemanticKind::Binding {
+                key: key.clone(),
+                value: rest.to_vec(),
             }
+        }
 
         // 5. Слитная скобка `Name(Args)` (маркер `')'`):
         // Именованная функция `name(args) [Body]` / `name(args) RetType [Body]`,
@@ -693,19 +718,14 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImportDirective {
     /// Именованный модуль: `Base root.base`, `Http std.net.http`, `Models Path"./models"`
-    Namespaced {
-        alias: String,
-        source: ImportSource,
-    },
+    Namespaced { alias: String, source: ImportSource },
     /// Деструктурирующий импорт: `(String, Int) root.base`
     Destructured {
         names: Vec<String>,
         source: ImportSource,
     },
     /// Wildcard импорт: `_ root.base`, `_ base`, `_ Path"../../../base"`
-    Wildcard {
-        source: ImportSource,
-    },
+    Wildcard { source: ImportSource },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -767,7 +787,10 @@ pub fn extract_import(sent: &Sentence) -> Option<ImportDirective> {
         // Одиночный PascalCase идентификатор справа без точки (`Cat User`, `Age Int`) — это алиас типа, а не модуль!
         [Token::Path(alias), rest @ ..]
             if !rest.is_empty()
-                && alias.chars().next().map_or(false, |c| c.is_ascii_uppercase()) =>
+                && alias
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_ascii_uppercase()) =>
         {
             let next = rest.get(1);
             let (source, _) = extract_import_source(&rest[0], next)?;
@@ -983,5 +1006,11 @@ fn load_imported_file_located(
             .map_err(|e| format!("Ошибка чтения модуля '{}': {e}", norm.display()))?
     };
 
-    parse_recursive_located(&content, norm.parent(), Some(&norm), visited, in_memory_files)
+    parse_recursive_located(
+        &content,
+        norm.parent(),
+        Some(&norm),
+        visited,
+        in_memory_files,
+    )
 }

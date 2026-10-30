@@ -1,8 +1,9 @@
-#1
-=============================================================================
-RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
-=============================================================================
-1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
+name "Razomy language"
+version "5.7"
+extension ".rl"
+tags ("HOMOICONIC", "AXIOMATICS")
+description r2"
+1. STRICT SEPARATION OF THREE BRACKETS:
 {} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
             Parens on a key position `{ (K) V }` define a parameterized/computed Map key
             or a compound AST/path pattern key (e.g. `{ (self.old_id) [ self.new_id ] }`).
@@ -50,7 +51,7 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
 • 'symbol'    — Paired Symbol Literal: exact constant tag without interpolation (`'draft'`, `'GET'`).
 • "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}")
                 and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`, `\}`).
-• r"..."      — Raw String (multiline by default, also numbered `r1"..."1`, `r2"..."2`):
+• r"..."      — Raw String (multiline by default, also numbered `r0"..."0`, `r1"..."1`):
                 zero `\` escapes and zero `{}` interpolation; never uses `#` so comments never collide!
 • Type"..."   — Type-Prefixed String Sugar: ANY `Type"..."` (`Money"199.99"`, `Path"./a.json"`,
                 `Url"https://ex.com"`, `Date"2026-03-30"`, `Hex"#2A9D8F"`, `Pair"1920x1080"`) is
@@ -61,23 +62,39 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
                 is followed by whitespace/newline) is a multiline block comment. Any comment placed
                 immediately before or inline after a declaration is preserved in the AST as `Meta.doc_of`!
 • ' ' (Space) — Pair & Token Separator:
-                (a) Universal Binding Axiom (`key value`, deep in-place path/index update `a.b.0.c val`,
-                    or Tuple destructuring `(a, b) source`): binds a field in `{}`, a module member at root,
-                    or a local variable / Perceus O(1) in-place mutation inside `[]`.
+                (a) Universal Binding & Three-Bracket Unpacking Axiom:
+                    • `key value` or deep path/index update `a.b.0.c val`: binds a field in `{}`, a module
+                      member at root, or a local variable / Perceus O(1) in-place mutation inside `[]`.
+                    • `(a, b) tuple_src`: positional unpacking of a Tuple `()` into `a` (`.0`) and `b` (`.1`).
+                    • `{ k1, k2 } form_src`: named key unpacking of a Form/Module `{}` into `k1` and `k2`.
+                    • `..target` (tight prefix `..` without space): spreads/mixins ALL public members of `target`
+                      into the enclosing Form `{}`, Tuple `()`, or Stream `[]`!
                     (There is NO `=` assignment operator in Razomy!).
                 (b) Tight Call `fn(x)` vs Spaced Binding `x (expr)`:
                     • `name(args)` (NO space before `(`) is a function call or type constructor application.
                     • `name (expr)` (WITH space before `(`) binds or rebinds variable/field `name` to `(expr)`.
                     • COMPILER SAFETY: If `name` in `name (expr)` resolves to an existing Function in scope
                       rather than a variable/field, the compiler emits `E01_AMBIGUOUS_CALL_OR_BIND`!
-                (c) Space-Delimited Lexer Rule: In expressions, all binary operators (`+`, `-`, `*`, `/`,
-                    `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`,
-                    `.?`, `.|`, `&`, `|`) MUST be surrounded by spaces (`a - b`, `a / b`, `a . b`), while
-                    unary `!` prefixes tightly (`!x`). Inside a Form `{}` declaration, operator method
-                    definitions has space to their parameter tuple (`+ (other T) [...]`, `< (other T) [...]`)
-                    exactly like named methods `fn(other T) [...]`.
+                (c) Space-Delimited Binary Operators vs Tight Unary Prefixes:
+                    • Binary operators (`+`, `-`, `*`, `/`, `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`,
+                      `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`, `.?`, `.|`, `&`, `|`) MUST be surrounded by
+                      spaces (`a - b`, `a / b`, `a . b`, `a & b`). Inside a Form `{}` declaration, operator
+                      method definitions have a space before their parameter tuple (`+ (other T) [...]`).
+                    • Unary prefix operators attach TIGHTLY (NO space after operator) to their operand:
+                      - `!x`     — logical negation or negative type/pattern guard
+                      - `-x`     — arithmetic negation (`-offset`, `-(a + b)`, `-42`)
+                      - `.field` — relative path getter (sugar for `[ _.field ]` inside streams)
+                      - `..x`     — context spread / mixin (merges `x` into enclosing `{}`, `()`, or `[]`;
+                                   because `..x` has no trailing space, it NEVER collides with multiline `\n & b`!)
 3. COMPLETE OPERATOR & ALGEBRAIC OVERLOADING REFERENCE:
 'a.b'     (no spaces)   — Tight Path Access: field, module, ancestor `a.Parent.field`, or index `a.0`, `a.-1`
+'.field'  (tight unary) — Relative Getter: sugar for `[ _.field ]` (e.g. `users . map(.name)`)
+'!x'      (tight unary) — Logical / Pattern Negation: boolean `!flag` or negative type guard `!Cancelled`
+'-x'      (tight unary) — Arithmetic Negation: negates number, variable, or group (`-5`, `-vel`, `-(a + b)`)
+'..x'      (tight unary) — Context Spread / Mixin: injects all elements of `x` into the enclosing bracket:
+                          • In `{}` / File: `..root.prelude`, `..Path"../ext.rl"`, `..ParentForm` merges fields into `{}`
+                          • In `()`       : `(1, ..other_tuple, 4)` or `fn(..args_tuple)` spreads tuple items into `()`
+                          • In `[]`       : `[ ..validation_stream, save ]` inlines stream steps into `[]`
 'a . b'   (with spaces) — Dataflow Pipeline: passes `a` left-to-right (`a . b` is sugar for `b(a)`,
                           and `a . b(c, d)` is UFCS sugar for `b(a, c, d)`)
 'a .> b'                — Tap Pipeline: executes side-effect `b(a)` and passes original `a` further
@@ -85,7 +102,7 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
                           (distributes over `Bypass` Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
 'a .? b'                — Safe/Filter Pipe: passes `a` further only if predicate/type `b` matches, else `None`
 'a .| {}'               — Parallel Pipeline: concurrent fan-out execution of branches in `{}`, merged via `&`
-'a & b'                 — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
+'a & b'   (with spaces) — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
                           1. Form & Form       -> Inheritance, Trait `impl`, or Structural Merge with Lineage
                           2. Type & Stream     -> Refinement Type (type constrained by predicate `[...]`)
                           3. Function & Form   -> Partial application / Default & DI override (`fn & { db MockDb }`)
@@ -113,7 +130,7 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
                             `_1` and `_` are identical!), `_2` is the 2nd nested `[...]` input, etc.
                           • Note: Router branch bodies `x . { Pattern [Body] }` are themselves streams `[...]`,
                             so each nested `[...]` increments the depth index (`_1`, `_2`, etc.) predictably!
-                          • In router keys `{ _ [...] }`, Type slots `F(_)`, or imports `_ mod`, `_` is wildcard/hole.
+                          • In router keys `{ _ [...] }`, Type slots `F(_)`, or patterns, `_` is wildcard/hole.
 'self'                  — Current Form Instance: references the enclosing Form `{}` inside its methods/formulas
 'Self'                  — Current Form Type: references the enclosing Form Type in contracts and recursive types
 '{k (e)}' vs '{k [e]}'  — Eager vs Zero-Cost Lazy/Reactive Field:
@@ -132,7 +149,9 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
                           • Predicate stream `[ _ > 10 ]`    -> executes boolean stream directly
 • Modules & Files — Every `.rl` file is an implicit immutable Form `FileName { ... } / Private`;
                           every directory is a nested Form `{ child_file ChildForm }`. NO `import`/`module`/`export` keywords:
-                          - Static Alias (`PascalCase`): `Http std.net.http` binds compile-time Form prototype (0 runtime alloc, NOT a mutable singleton).
+                          - Static Alias (`PascalCase`): `Http std.net.http` or `ExtMod Path"../shared/ext_mod.rl"`
+                          - Named Field Unpack (`{}`): `{ get, post } std.net.http` unpacks specific keys into scope.
+                          - Context Mixin (`..` tight prefix): `..root.prelude` or `..Path"../shared/ext_mod.rl"` merges all public members into current file/Form!
                           - Service Instance (`snake_case`): `db ( std.db.Sqlite { path "./a.db" } )` instantiates runtime Form with state/DI slots.
                           - Submodule: `SubMod { ... } / Private` inside any file. Facade re-export: `Facade (ModA & ModB) / Private`.
 4. FOUR IRON LAWS OF RAZOMY & COMPILER GUARANTEES:
@@ -165,8 +184,7 @@ RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
 - LAW 4 (UFCS AUTOCOMPLETE, ZERO-COST GETTERS & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)`
   in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile
   into zero-allocation machine loops (Tail-Call Optimization).
-=============================================================================
-1#
+"2
 
 
 #
@@ -193,13 +211,19 @@ Vehicle {
   tag       "standard"           // Inferred type `String` with default `"standard"`
 }
 
-// Axiom 3: [FormName] [Parent1] & [Parent2] { [key] [Value] }
-// (Canonical form composition: `Name Parents { fields }` is unified sugar for `Name (Parents & { fields })`)
+// Axiom 3: Form Composition via Binary `Parent1 & Parent2` OR Unary Mixin `&Parent` inside `{}`!
 HasBattery {
   battery_kwh Int 75
 }
 
+// Binary `&` outside `{}` and unary `&Parent` inside `{}` are 100% equivalent:
 ElectricVehicle Vehicle & HasBattery & {
+  charging_port String "Type2"
+}
+
+ElectricVehicleMixinStyle {
+  ..Vehicle                       // Tight unary `..` spreads `Vehicle` fields & lineage into this Form
+  ..HasBattery                    // Tight unary `..` spreads `HasBattery` fields & lineage into this Form
   charging_port String "Type2"
 }
 
@@ -293,7 +317,7 @@ BoundedQueue(T, capacity Int) {
   limit capacity
 }
 
-// --- C. Law 1 Scoping & Depth-Indexed Stream Subjects (`_`, `_0`, `_1`) ---
+// --- C. Law 1 Scoping, Three-Bracket Unpacking & Depth-Indexed Stream Subjects (`_`, `_0`, `_1`) ---
 WithName { name String }
 
 ReadViaSelf {
@@ -305,7 +329,14 @@ ReadViaSelf {
 read_via_type(WithName)                  [ with_name.name ]         // Law 1c: Single known `WithName` auto-binds `with_name`
 join_two(first WithName, second WithName)[ "{first.name} & {second.name}" ] // Law 1d: Explicit names required for 2+ same types!
 read_via_var(w WithName)                 [ w.name ]                 // Law 1d: Explicit parameter variable `w`
-read_unpacked({ name } WithName)         [ name ]                   // Law 1d: Explicit field destructuring `{ name }`
+read_unpacked({ name } WithName)         [ name ]                   // Law 1d: Explicit Form field destructuring `{ name }`
+
+// Three-Bracket Unpacking inside a Stream `[]`:
+unpacking_demo(pair (Int, Int), user_form WithName) [
+  (first_num, second_num) pair                         // `()` unpacks Tuple by position (`.0`, `.1`)
+  { name }                user_form                    // `{}` unpacks Form by field key (`.name`)
+  "{name}: {first_num + second_num}"
+]
 
 // Law 1b: `_` is the input of the nearest enclosing `[...]`, while `_0`, `_1`, `_2` index stream depth!
 extract_name_demo(w WithName) [                        // Root stream `_0`
@@ -348,7 +379,7 @@ Money(raw String "0.00") {
   -   (other Money)   [ Money.from_scaled(self.scaled - other.scaled) ]
   *   (factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
   /   (divisor Float) [ Money.from_scaled((self.scaled.to_float / divisor).round_to_int) ]
-  ==  (other Money)  [ self.scaled == other.scaled ]
+  ==  (other Money)   [ self.scaled == other.scaled ]
 }
 
 Usd(raw String)        { money Money(raw), currency 'USD' }
@@ -379,14 +410,14 @@ and escapes \"quotes\" and \{braces\}."
 // 2. Explicit Constructor `Type("...")` vs Concise Tagged Sugar `Type"..."` (100% Equivalent!):
 HumanLiterals {
   // Explicit Constructor Form              // Equivalent Tagged Sugar Form (used throughout code)
-  money_explicit    Money("199.99"),        money_val    Money"199.99"
-  currency_explicit Usd("500.00"),          currency_val Usd"500.00"
+  money_explicit    Money(199.99),        money_val    Money(199.99)
+  currency_explicit Usd(500.00),          currency_val Usd(500.00)
   date_explicit     Date("2026-03-30"),     date_val     Date"2026-03-30"
   time_explicit     Time("14:30:00"),       time_val     Time"14:30:00"
   duration_explicit Duration("5m30s"),      duration_val Duration"5m30s"
-  coord_explicit    Pair("1920x1080"),      coord_pair   Pair"1920x1080"
+  coord_explicit    Pair(1920,1080),      coord_pair   Pair(1920,1080)
   color_explicit    Hex("#2A9D8F"),         color_val    Hex"#2A9D8F"
-  ip_explicit       Ip("192.168.0.1:8080"), ip_addr      Ip"192.168.0.1:8080"
+  ip_explicit       Ip(192,168,0,1,8080), ip_addr      Ip"192.168.0.1:8080"
   version_explicit  Version("1.4.2-beta"),  version_val  Version"1.4.2-beta"
   url_explicit      Url("https://razomy.org"), web_url   Url"https://razomy.org"
   path_explicit     Path("./data/users.json"), local_file Path"./data/users.json"
@@ -400,9 +431,11 @@ HumanLiterals {
 2. TUPLES `()`, FORMS `{}`, MAPS & TYPE ALGEBRA (`&`, `|`, `/`)
 #
 
-// 1. Tuples are expressed via parens `()` (items separated by `,` or `\n`)
-Point2D (Float, Float)
-origin  (0.0, 0.0)
+// 1. Tuples are expressed via parens `()` (items separated by `,` or `\n`, and spread via tight `&tuple`)
+Point2D    (Float, Float)
+origin     (0.0, 0.0)
+extra_dims (1.0, 2.0)
+point_4d   (..origin, ..extra_dims)           // Spreads both tuples into `(0.0, 0.0, 1.0, 2.0)`!
 
 // 2. Type Unions (Sum Types) with paired symbols `'...'`
 Status    'draft' | 'published' | 'archived'
@@ -515,7 +548,7 @@ update_order_demo() [
 // In Rust, you need separate keywords (`struct`, `trait`, `impl Type`, `impl Trait for Type`).
 // In Razomy, ALL of these are unified under the single algebraic operator `&`!
 
-// --- A. The 7 Canonical Combinations of `A & B` ---
+// --- A. The 7 Canonical Binary Combinations of `A & B` (plus Tight Unary `&Target`) ---
 
 // 1. Form & Form -> Structural Merge / Inheritance / Trait Implementation:
 Printable {
@@ -542,6 +575,7 @@ secure_connect connect & { port 9090, tls true }
 trim_str  [ _ . trim ]
 upper_str [ _ . to_upper ]
 clean_str trim_str & upper_str   // Produces stream `[ _ . trim . to_upper ]`
+clean_inlined [ ..trim_str, ..upper_str ] // Equivalent using tight unary `..` stream spread inside `[]`!
 
 // 5. Value/Member & TagForm -> Metadata / Visibility / Compile-Time Attachment:
 Public  {}
@@ -583,6 +617,7 @@ MathOps(a Int, b Int) {
   div      (a / b)
   mod      (a % b)
   pow      (a ** b)
+  neg_a    (-a)                  // Tight unary `-` works on variables and expressions!
   lazy_div [ self.a / self.b ]
 
   bit_and  (a . bit_and(b))
@@ -1469,24 +1504,29 @@ inspect_entity(entity) [
 
 
 #
-21. IMPORTS, MODULE ENCAPSULATION (`/ Private`) & NATIVE WRAPPERS
-13.5. MODULES, FILESYSTEM MAPPING, SUBMODULES & DI INSTANTIATION
+21. IMPORTS, CONTEXT MIXINS (`&Mod`), FIELD UNPACKING (`{}`) & DI INSTANTIATION
 #
 // • File `my_mod.rl` == implicit static Form `MyMod { ... } / Private` (0-cost compile-time prototype, NOT a mutable singleton!).
 // • Directory `net/` == nested Form `Net { http Http, tcp Tcp }`. Root project dir == `root`, standard lib == `std`.
+// • Because a file is a Form `{}`, importing modules uses the exact same Three-Bracket & Unary `&` rules as everything else!
 
-// 1. Static Module Binding (`PascalCase` = 0-alloc compile-time prototype alias):
+// 1. Static Module Alias (`PascalCase` = 0-alloc compile-time prototype binding):
 Base   root.base                        // Binds `root/base.rl` Form to `Base`
 Http   std.net.http                     // Binds `std/net/http.rl` Form to `Http`
 Sqlite std.db.sqlite                    // Binds `std/db/sqlite.rl` Form to `Sqlite`
 ExtMod Path"../shared/ext_mod.rl"       // Direct relative file path binding (compile-time resolved)
 
-// 2. Destructuring & Wildcard Binding (Unpacking module members into current scope):
-(String, Int, Money) root.base          // Selective unpack (like `from root.base import String, Int, Money`)
-( get, post )        std.net.http       // Unpack functions/fields by name
-_                    root.prelude       // Wildcard unpack: merges all public members of `root.prelude` into scope
+// 2. Selective Field Unpacking via `{}` (Unpacks Form/Module members by key name into current scope):
+{ String, Int, Money } root.base        // Selective Form key unpack (like `from root.base import String, Int, Money`)
+{ get, post }          std.net.http     // Unpack specific functions/fields by key name
 
-// 3. In-File Submodules & `/ Private` Encapsulation:
+// 3. Full Context Mixin / Spread via Tight Unary `..` (Merges all public members into current file/Form scope):
+//    Note: Tight `..target` (no space after `..`) starts a new statement and NEVER collides with multiline `a \n & b`!
+..root.prelude                           // Spreads all public members of `root.prelude` into current scope
+..Path"../shared/ext_mod.rl"             // Spreads all public members of external file directly into current scope
+..(std.net.http / 'legacy_request')      // Spreads module while subtracting unwanted member via `/`!
+
+// 4. In-File Submodules & `/ Private` Encapsulation:
 AuthInternal {
   salt "x9f2a" & Private
   hash(raw String)         [ "{raw}_{self.salt}" . native_sha256 ] & Private
@@ -1926,3 +1966,230 @@ VerifyPublicUserSafety (Compile & [
     false [ true ]
   }
 ])
+
+#
+ОНТОЛОГИЯ И ЭВОЛЮЦИЯ ТИПОВ RAZOMY v5.7 (САМООПИСАНИЕ НА БАЗЕ ЯЗЫКА)
+Каждый слой наследует и развивает предыдущий через аксиомы `Name Base` и `&`.
+#
+
+// ============================================================================
+// СЛОЙ 0. ЯДРО КОМПИЛЯТОРА И ГОМОИКОНИЧНЫЙ AST (`Compiler`)
+// Откуда всё растёт: идентификаторы, 3 скобки, операторы и теги фаз.
+// ============================================================================
+Compiler {
+  // 1. Первичный корень AST
+  Node {}                               // Любой узел синтаксического дерева
+  Key  Node                             // Идентификатор в коде
+
+  // Разделение по Case Rule (Правило регистра №2):
+  ValueKey Key                          // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
+  TypeKey  Key                          // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
+
+  // 2. Три фундаментальные скобки (The Three Brackets — Правило №1)
+  Bracket       Node
+  Tuple         Bracket                 // `()` — Упорядоченный кортеж данных, слоты аргументов, жадная оценка
+  Form          Bracket                 // `{}` — Ключ-Значение: структуры, классы, модули, роутеры, карты
+  Stream        Bracket                 // `[]` — Поток выполнения: ленивые операции, предикаты, лямбды
+
+  // Каноническая триада `Name(Slots) {Form} [Stream]`
+  Callable      Tuple & Stream          // `(args) [Body]` — функция или метод
+  Class         TypeKey & Tuple & Form  // `Name(Slots) { ... }` — параметризованная форма
+
+  // 3. Контекстные переменные (Закон 1a и 1b)
+  ContextRef    Key
+  SelfVal       ContextRef              // `self` — текущий экземпляр Form `{}`
+  SelfType      ContextRef              // `Self` — текущий тип Form `{}` (для рекурсии)
+  Subject       ContextRef              // `_`, `_0`, `_1`, `_2` — активный вход потока `[]` по глубине
+
+  // 4. Иерархия операторов (Правило №2c и №3)
+  Operator       Key
+  Bind           Operator               // `key val` — пробельное связывание / O(1) Perceus ребиндинг (нет `=`)
+  UnaryOperator  Operator               // Плотный префикс без пробела (`!x`, `-x`, `.field`, `..x`)
+  BinaryOperator Operator               // Окружён пробелами (`a + b`, `a . b`, `a & b`)
+
+  // 4a. Унарные операторы (плотные)
+  Not            UnaryOperator          // `!x`     — логическое ИЛИ типовое отрицание
+  Neg            UnaryOperator          // `-x`     — арифметическое отрицание
+  RelGet         UnaryOperator          // `.field` — относительный геттер `[ _.field ]`
+  Spread         UnaryOperator          // `..x`    — миксин/развертка контекста в `{}`, `()`, `[]`
+
+  // 4b. Бинарные операторы: Потоки (Pipelines)
+  PipeOperator   BinaryOperator
+  TightDot       PipeOperator           // `a.b`    — плотный доступ к полю/предку/индексу (`a.0`, `a.-1`)
+  Pipe           PipeOperator           // `a . b`  — передача данных слева направо (`b(a)`)
+  TapPipe        PipeOperator           // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
+  EnrichPipe     PipeOperator           // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
+  FilterPipe     PipeOperator           // `a .? b` — пропускает `a`, если предикат/тип `b` совпал, иначе `None`
+  ParallelPipe   PipeOperator           // `a .| {}`— параллельный fan-out веток в `{}` со слиянием `&`
+
+  // 4c. Бинарные операторы: Алгебра типов и значений
+  AlgebraOp      BinaryOperator
+  And            AlgebraOp              // `&`  — универсальное пересечение / композиция (7 комбинаций)
+  Or             AlgebraOp              // `|`  — объединение (Union типов, паттернов или исходов)
+  Sub            AlgebraOp              // `/`  — относительное вычитание (полей, предков, ключей, негативный гард)
+  RangeOp        AlgebraOp              // `..` — генератор диапазона (`1..10`, `"a".."z"`)
+
+  // 4d. Бинарные операторы: Арифметика, биты, сравнение и логика
+  MathOp         BinaryOperator
+  Plus           MathOp                 // `+`
+  Minus          MathOp                 // `-`
+  Mult           MathOp                 // `*`
+  Div            MathOp                 // `/` (перегруженный метод на значениях)
+  Mod            MathOp                 // `%`
+  Pow            MathOp                 // `**`
+  ShiftL         MathOp                 // `<<`
+  ShiftR         MathOp                 // `>>`
+
+  CompareOp      BinaryOperator
+  Eq             CompareOp              // `==` (структурное равенство ИЛИ `.matches(Pattern)` для Range/Union!)
+  Neq            CompareOp              // `!=`
+  Gt             CompareOp              // `>`
+  Gte            CompareOp              // `>=`
+  Lt             CompareOp              // `<`
+  Lte            CompareOp              // `<=`
+
+  LogicOp        BinaryOperator
+  LogicAnd       LogicOp                // `&&`
+  LogicOr        LogicOp                // `||`
+
+  // 5. Директивы фаз, потока управления и видимости
+  Directive      TypeKey
+  Compile        Directive              // `Compile & [...]` — 100% выполнение на этапе компиляции
+  Bypass         Directive              // `& Bypass` — автоматический short-circuit в пайплайнах (Закон 3)
+  Break(T)       Directive & {          // Ранний выход из `fold` / `reduce`
+    value T
+    label 'default'
+  }
+
+  IAccess        Directive              // Модификаторы видимости членов Form/Модуля
+  Public         IAccess
+  Private        IAccess                // Отсекается через `Module / Private`
+}
+
+
+// ============================================================================
+// СЛОЙ 1. ФУНДАМЕНТАЛЬНЫЕ ПРИМИТИВЫ И ГРАНИЦЫ ТИПОВ (`Primitives`)
+// Базовые атомы памяти, от которых строятся все остальные данные.
+// ============================================================================
+Primitives {
+  ..Compiler
+
+  // Границы решетки типов (Type Lattice Bounds)
+  Any    TypeKey                        // `_` — Top Type (принимает всё, НЕ шорт-серкитит!)
+  None   TypeKey & Bypass               // Пустой исход (автоматически обходит функции по Закону 3)
+
+  // Встроенные машинные примитивы
+  IBuiltIn TypeKey
+  Bool     IBuiltIn                     // `true` | `false`
+  Byte     IBuiltIn                     // `0x00`
+  Int      IBuiltIn                     // `0` (64-битное целое)
+  Float    IBuiltIn                     // `0.0` (IEEE-754)
+  String   IBuiltIn                     // `"..."` (интерполяция) и `r"..."` (сырые строки)
+  Symbol   IBuiltIn                     // `'symbol'` (константный тег без интерполяции)
+
+  Primitive Bool | Byte | Int | Float | String | Symbol
+}
+
+
+// ============================================================================
+// СЛОЙ 2. ПРИКЛАДНЫЕ ДОМЕННЫЕ ЛИТЕРАЛЫ (`DomainTypes`)
+// Развитие `String` и `Int` через синтаксический сахар `Type"..."` == `Type("...")`
+// ============================================================================
+DomainTypes {
+  ..Primitives
+
+  // Все типы `Type"..."` — это параметризованные формы от `String`
+  TaggedString(raw String) Form & { value raw }
+
+  // Сеть и Файловая система (поддерживают протокол `Port.read` / `Port.write`)
+  IPort    TaggedString
+  Url      IPort                        // Url"https://razomy.org"
+  Path     IPort                        // Path"./data/users.json"
+  Ip       TaggedString                 // Ip"192.168.0.1:8080"
+
+  // Время и Даты
+  ITemporal TaggedString
+  Date      ITemporal                   // Date"2026-03-30"
+  Time      ITemporal                   // Time"14:30:00"
+  Datetime  ITemporal                   // Datetime"2026-03-30T14:30:00Z"
+  Duration  ITemporal                   // Duration"5m30s"
+
+  // Графика, Версии и Финансы
+  Hex      TaggedString                 // Hex"#2A9D8F"
+  Pair     TaggedString                 // Pair"1920x1080"
+  Version  TaggedString                 // Version"1.4.2-beta"
+
+  // Фиксированная десятичная точка (4 знака, хранится как Int64 микро-единиц)
+  Money(raw String) TaggedString(raw) & {
+    scaled Int
+  }
+}
+
+
+// ============================================================================
+// СЛОЙ 3. КОЛЛЕКЦИИ, АЛГЕБРАИЧЕСКИЕ КОНТЕЙНЕРЫ И ВЫСШИЕ РОДЫ (`Collections`)
+// Как типы комбинируются: кортежи, карты, рекурсивные структуры и HKT (1st..3rd Order).
+// ============================================================================
+Collections {
+  ..DomainTypes
+
+  // 1. Базовые структуры данных (1st-Order Generics: `* -> *`)
+  Option(T)     Some(T) | None
+  Some(T)       Form & { value T }
+
+  Map(K, V)     Form & { (K) V }        // Вычисляемый ключ в круглых скобках `(K)`
+  Set(T)        Map(T, Bool)
+
+  // 2. Рекурсивные типы данных (используют `Self` или взаимную рекурсию)
+  Cons(T)       Form & { head T, tail List(T) }
+  List(T)       None | Cons(T)
+
+  RoseTree(T)   Form & { value T, children Tuple(Self) }
+  Json          String | Int | Float | Bool | None | Tuple(Self) | Map(String, Self)
+
+  // 3. Контракты и Высшие Роды Типов (HKT: 2nd-Order `* -> *` и 3rd-Order `(* -> *) -> * -> *`)
+  Comparable(Other) Form & {
+    < (other Other) Bool
+  }
+
+  Functor(F(_)) Form & {
+    fmap(A, B, fa F(A), f (A) [B]) F(B)
+  }
+
+  Monad(M(_)) Functor(M) & {
+    pure(A, a A)                          M(A)
+    flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
+  }
+
+  MonadTrans(T(_(_), _)) Form & {
+    lift(M(_) Monad, A, ma M(A)) T(M, A)
+  }
+}
+
+
+// ============================================================================
+// СЛОЙ 4. РАНТАЙМ, СОСТОЯНИЕ, ОШИБКИ И МЕТАПРОГРАММИРОВАНИЕ (`Runtime`)
+// Конкурентность, реактивность, ввод-вывод, ошибки `Bypass` и рефлексия `Meta`.
+// ============================================================================
+Runtime {
+  ..Collections
+
+  // 1. Стандартные пропускные ошибки (Law 3 — все наследуют `Bypass`)
+  Error        Form & Bypass
+  NotFound     Error & { entity String, id String }
+  IoError      Error & { msg String }
+  NetworkError Error & { reason String }
+  Unauthorized Error & { reason String }
+  CompileError Error & { code Int, log String }
+
+  // 2. Управляемая мутабельность, Конкурентность и Реактивность
+  Atom(T)    Form & { value T }         // Транзакционная CAS-ячейка (`read`, `swap`)
+  Channel(T) Form                       // CSP-канал передачи сообщений (`send`, `recv`)
+  Signal(T)  Form & { value T }         // Реактивный сигнал (`get`, `set`)
+  Effect     Stream                     // Реактивный подписчик `Effect([...])`
+
+  // 3. Встроенные диалекты и Мета-программирование (`& Compile`)
+  Parse      Form                       // Потоковые PEG-грамматики (`match`, `copy`, `to`, `run`)
+  Ui         Form                       // Декларативный UI (`view`, `draw`)
+  Meta       Form & Compile             // Рефлексия и перезапись AST (`type_of`, `doc_of`, `fields_of`, `rewrite`)
+}

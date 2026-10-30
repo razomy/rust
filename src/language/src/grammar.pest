@@ -53,17 +53,24 @@ symbol_lit = @{ "'"  ~ ("\\" ~ ANY | !"'"  ~ ANY)* ~ "'" }
 
 // --- 5. ЧИСЛА ---
 hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
-number_lit   = @{
-    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)?
+number_lit = @{
+    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
   ~ !(ident | ("." ~ !(ident | ".")))
 }
 
 // --- 6. ОПЕРАТОРЫ ---
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
-callable_op = @{ overload_op ~ &(WHITESPACE* ~ "(") }
+
+callable_op = @{ overload_op ~ &(WHITESPACE+ ~ "(") }
+
+unary_op = _{
+    ("!" ~ !("=" | WS_NL))
+  | ("&" ~ !("&" | WS_NL))
+  | ("-" ~ !(ASCII_DIGIT | WS_NL))
+}
 
 operator = @{
-    ("!" ~ !"=")
+    unary_op
   | ".."
   | (
         (".>" | ".&" | ".?" | ".|" | "&&" | "||" | overload_op | "&" | "|" | ".")
