@@ -1466,31 +1466,56 @@ inspect_entity(entity) [
 
 #
 21. IMPORTS, MODULE ENCAPSULATION (`/ Private`) & NATIVE WRAPPERS
+13.5. MODULES, FILESYSTEM MAPPING, SUBMODULES & DI INSTANTIATION
 #
+// • File `my_mod.rl` == implicit static Form `MyMod { ... } / Private` (0-cost compile-time prototype, NOT a mutable singleton!).
+// • Directory `net/` == nested Form `Net { http Http, tcp Tcp }`. Root project dir == `root`, standard lib == `std`.
 
-// 1. Standard & Relative Imports (Native C/Rust/JS libraries are wrapped as normal `.rl` modules)
-Base          root.base                // Named module import (`PascalCase`)
-(String, Int) root.base                // Element destructuring import via Tuple `()`
-_             root.base                // Wildcard import (all)
-_             base                     // Relative module import
-_             Path"../../../base"      // Deep relative path import via `Path"..."`
-Http          std.net.http             // Standard library wrapper module
-Sqlite        std.db.sqlite            // Native wrapper module (no FFI pollution in user code)
+// 1. Static Module Binding (`PascalCase` = 0-alloc compile-time prototype alias):
+Base   root.base                        // Binds `root/base.rl` Form to `Base`
+Http   std.net.http                     // Binds `std/net/http.rl` Form to `Http`
+Sqlite std.db.sqlite                    // Binds `std/db/sqlite.rl` Form to `Sqlite`
+ExtMod Path"../shared/ext_mod.rl"       // Direct relative file path binding (compile-time resolved)
 
-// 2. Module Visibility & Encapsulation via Algebraic Tag Subtraction `/ Private`:
+// 2. Destructuring & Wildcard Binding (Unpacking module members into current scope):
+(String, Int, Money) root.base          // Selective unpack (like `from root.base import String, Int, Money`)
+( get, post )        std.net.http       // Unpack functions/fields by name
+_                    root.prelude       // Wildcard unpack: merges all public members of `root.prelude` into scope
+
+// 3. In-File Submodules & `/ Private` Encapsulation:
 AuthInternal {
-  salt                     "x9f2a" & Private
+  salt "x9f2a" & Private
   hash(raw String)         [ "{raw}_{self.salt}" . native_sha256 ] & Private
-  verify(u User, p String) [ (p . self.hash) == u.password_hash ] & Public
+  verify(u User, p String) [ (p . self.hash) == u.password_hash ]
+  SubToken {
+    secret_key "k123" & Private
+    issue(uid String) [ "jwt_{uid}_{self.secret_key}" ]
+  } / Private
+}
+AuthModule AuthInternal / Private       // Strips `salt` and `hash`; exposes `verify` and `AuthModule.SubToken.issue`
+
+// 4. Module Facades / Re-exports (combining multiple modules via `&`):
+BillingModule { charge(m Money) [ m ] }
+AppSdk        (AuthModule & BillingModule) / Private
+
+// 5. Parameterized Modules (DI) vs Stateful Runtime Instances (`snake_case`):
+// A module is just a Form! It can declare constructor slots or hold `Atom`/`Channel` state:
+DbDriver(conn_url String, max_pool Int 10) {
+  active_conns Atom(Int) { value 0 } & Private
+  query(sql String) [ "Running '{sql}' on {self.conn_url} (pool={self.max_pool})" . Shell.log ]
 }
 
-// Subtracting `Private` removes all members tagged with `& Private`, exposing only public API:
-AuthModule  AuthInternal / Private
-CleanModule AuthInternal / 'salt' / 'hash'
+// `DbDriver` (`PascalCase`) is the immutable module prototype.
+// Binding to `snake_case` instantiates independent runtime service instances (NO hidden global singletons!):
+primary_db   (DbDriver { conn_url "postgres://prod:5432/app", max_pool 32 })
+analytics_db (DbDriver { conn_url "postgres://olap:5432/bi",  max_pool 4  })
 
-// ❌ COMPILE ERROR: `salt` was subtracted on `AuthModule`:
-// forbidden_read AuthModule.salt
-
+run_module_demo(u User) [
+  u . AuthModule.verify("pass123")
+  "u_1" . AuthModule.SubToken.issue
+  "SELECT 1" . primary_db.query
+  "SELECT COUNT(*)" . analytics_db.query
+]
 
 #
 22. TESTING AND PROPERTY-BASED ASSERTIONS
