@@ -1008,6 +1008,88 @@ impl RazomyLanguageServer {
             }
         }
 
+
+        // --- РЕФАКТОРИНГ: ЭКСПОРТ ОБЪЕКТА ПОД КУРСОРОМ В ОТДЕЛЬНЫЙ ФАЙЛ `<Name>.rl` ---
+        if let Some(range_obj) = params.get("range").and_then(|r| r.get("start")) {
+            let line = range_obj.get("line").and_then(JsonValue::as_u64).unwrap_or(0) as usize;
+            let character = range_obj.get("character").and_then(JsonValue::as_u64).unwrap_or(0) as usize;
+            let cursor_pos = LspPosition { line, character };
+            let (word, _) = doc.word_at_position(cursor_pos);
+            let clean_ident = word.trim_matches('.').split('.').next().unwrap_or("");
+
+            if !clean_ident.is_empty() {
+                // Ищем sentence_index для формы, функции или глобального объекта с таким именем
+                let target_sent_idx = doc
+                    .report
+                    .hir
+                    .forms
+                    .get(clean_ident)
+                    .filter(|f| !f.is_prelude && f.origin.file_path.is_none())
+                    .map(|f| f.origin.sentence_index)
+                    .or_else(|| {
+                        doc.report
+                            .hir
+                            .functions
+                            .get(clean_ident)
+                            .filter(|f| !f.is_prelude && f.origin.file_path.is_none())
+                            .map(|f| f.origin.sentence_index)
+                    })
+                    .or_else(|| {
+                        doc.report
+                            .hir
+                            .globals
+                            .get(clean_ident)
+                            .filter(|g| g.origin.file_path.is_none())
+                            .map(|g| g.origin.sentence_index)
+                    });
+
+                if let Some(sent_idx) = target_sent_idx {
+                    if let Some(&(s_start, s_end)) = doc.sentence_spans.get(sent_idx) {
+                        if let Some(cur_path) = uri_to_path(&doc.uri) {
+                            if let Some(parent_dir) = cur_path.parent() {
+                                let new_file_path = parent_dir.join(format!("{clean_ident}.rl"));
+                                let new_file_uri = path_to_uri(&new_file_path);
+                                let object_code = doc.text[s_start..s_end.min(doc.text.len())].trim();
+                                let formatted_content = format_razomy_source(object_code);
+                                let sentence_range = doc.span_to_range(s_start, s_end);
+
+                                // Заменяем определение в текущем файле на директиву импорта `_ <Name>`
+                                let import_stmt = format!("_ {clean_ident}");
+
+                                actions.push(json!({
+                                    "title": format!("Экспортировать '{clean_ident}' в файл '{clean_ident}.rl'"),
+                                    "kind": "refactor.extract",
+                                    "edit": {
+                                        "documentChanges": [
+                                            {
+                                                "kind": "create",
+                                                "uri": new_file_uri,
+                                                "options": { "overwrite": true, "ignoreIfExists": false }
+                                            },
+                                            {
+                                                "textDocument": { "uri": new_file_uri, "version": null },
+                                                "edits": [{
+                                                    "range": LspRange::default().to_json(),
+                                                    "newText": formatted_content
+                                                }]
+                                            },
+                                            {
+                                                "textDocument": { "uri": doc.uri, "version": doc.version },
+                                                "edits": [{
+                                                    "range": sentence_range.to_json(),
+                                                    "newText": import_stmt
+                                                }]
+                                            }
+                                        ]
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         json!(actions)
     }
 
@@ -2869,49 +2951,92 @@ fn send_rpc_json<W: Write>(writer: &mut W, payload: &JsonValue) -> io::Result<()
     writer.flush()
 }
 
-/// Автоформаттер кода Razomy V5.7 (выравнивание блоков `{}`, `[]`, `()` и отступов)
+/// Автоформаттер кода Razomy V5.7:
+/// 1. Выравнивает блоки `{}`, `[]`, `()` по уровням отступов
+/// 2. Строки продолжения (`| Active`, `& Role`, `. map`) сдвигает на +1 отступ (4 пробела)
+///    и форматирует с одиночным пробелом после ведущего оператора (`    | Active`)
+/// 3. Выстраивает поля форм и привязки (Bindings) в ровные колонки!
+/// 4. Выравнивает хвостовые комментарии `// ...` в отдельную колонку
 pub fn format_razomy_source(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
+    #[derive(Clone)]
+    struct LineInfo {
+        indent: usize,
+        is_empty: bool,
+        is_comment_only: bool,
+        is_continuation: bool,
+        code: String,
+        comment: Option<String>,
+        tokens: Vec<String>,
+    }
+
+    let mut lines_info: Vec<LineInfo> = Vec::new();
     let mut indent_level: usize = 0;
+    let mut prev_ended_with_op = false;
 
     for raw_line in source.lines() {
         let trimmed = raw_line.trim();
         if trimmed.is_empty() {
-            out.push('\n');
+            prev_ended_with_op = false;
+            lines_info.push(LineInfo {
+                indent: indent_level,
+                is_empty: true,
+                is_comment_only: false,
+                is_continuation: false,
+                code: String::new(),
+                comment: None,
+                tokens: Vec::new(),
+            });
             continue;
         }
 
-        let starts_with_closing = trimmed.starts_with('}')
-            || trimmed.starts_with(']')
-            || trimmed.starts_with(')');
+        let starts_with_closing =
+            trimmed.starts_with('}') || trimmed.starts_with(']') || trimmed.starts_with(')');
         if starts_with_closing {
             indent_level = indent_level.saturating_sub(1);
+            prev_ended_with_op = false;
+        }
+        let line_indent = indent_level;
+
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            lines_info.push(LineInfo {
+                indent: line_indent,
+                is_empty: false,
+                is_comment_only: true,
+                is_continuation: false,
+                code: trimmed.to_string(),
+                comment: None,
+                tokens: Vec::new(),
+            });
+            continue;
         }
 
-        for _ in 0..indent_level {
-            out.push_str("    ");
-        }
-        out.push_str(trimmed);
-        out.push('\n');
+        let (code_part, comment_part) = split_code_and_comment(trimmed);
+        let tokens = tokenize_line_for_format(code_part.trim());
+
+        let starts_with_continuation_op = tokens
+            .first()
+            .map(|t| matches!(t.as_str(), "|" | "&" | "." | ".>" | ".&" | ".?" | ".|" | "->" | "/"))
+            .unwrap_or(false);
+
+        let is_continuation =
+            !starts_with_closing && (starts_with_continuation_op || prev_ended_with_op);
+        let effective_indent = if is_continuation {
+            line_indent + 1
+        } else {
+            line_indent
+        };
 
         let mut net_open: isize = 0;
-        let mut in_str = false;
-        let bytes = trimmed.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if !in_str && bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
-                break;
-            }
-            if bytes[i] == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
-                in_str = !in_str;
-            } else if !in_str {
-                match bytes[i] {
-                    b'{' | b'[' | b'(' => net_open += 1,
-                    b'}' | b']' | b')' => net_open -= 1,
-                    _ => {}
+        for tok in &tokens {
+            for ch in tok.chars() {
+                if !tok.starts_with('"') && !tok.starts_with('\'') && !tok.starts_with("r\"") {
+                    match ch {
+                        '{' | '[' | '(' => net_open += 1,
+                        '}' | ']' | ')' => net_open -= 1,
+                        _ => {}
+                    }
                 }
             }
-            i += 1;
         }
 
         if starts_with_closing {
@@ -2922,7 +3047,324 @@ pub fn format_razomy_source(source: &str) -> String {
         } else if net_open < 0 {
             indent_level = indent_level.saturating_sub((-net_open) as usize);
         }
+
+        // Если текущая строка заканчивается на `|` или `&` (и не открывает `{`/`[`),
+        // следующая строка также считается продолжением (continuation)
+        prev_ended_with_op = tokens
+            .last()
+            .map(|t| matches!(t.as_str(), "|" | "&" | "." | ".>" | ".&" | ".?" | ".|"))
+            .unwrap_or(false);
+
+        lines_info.push(LineInfo {
+            indent: effective_indent,
+            is_empty: false,
+            is_comment_only: false,
+            is_continuation,
+            code: tokens.join(" "),
+            comment: comment_part.map(|s| s.to_string()),
+            tokens,
+        });
+    }
+
+    // Проход 2: Группировка соседних строк одного уровня и выравнивание по колонкам
+    let mut out = String::with_capacity(source.len() + 256);
+    let mut i = 0;
+    while i < lines_info.len() {
+        if lines_info[i].is_empty || lines_info[i].is_comment_only {
+            let info = &lines_info[i];
+            if !info.is_empty {
+                out.push_str(&"    ".repeat(info.indent));
+                out.push_str(&info.code);
+            }
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+
+        let base_indent = lines_info[i].indent;
+        let base_cont = lines_info[i].is_continuation;
+        let mut group_end = i;
+        while group_end < lines_info.len() {
+            let cur = &lines_info[group_end];
+            if cur.is_empty
+                || cur.is_comment_only
+                || cur.indent != base_indent
+                || cur.is_continuation != base_cont
+                || is_structural_boundary(&cur.tokens)
+            {
+                break;
+            }
+            group_end += 1;
+        }
+
+        if group_end - i >= 2 {
+            let slice = &lines_info[i..group_end];
+            let aligned_codes = align_group_columns(
+                slice.iter().map(|l| l.tokens.clone()).collect(),
+                base_cont,
+            );
+            let max_code_width = aligned_codes
+                .iter()
+                .map(|s| s.chars().count())
+                .max()
+                .unwrap_or(0);
+
+            for (idx, line) in slice.iter().enumerate() {
+                out.push_str(&"    ".repeat(line.indent));
+                let code_str = &aligned_codes[idx];
+                out.push_str(code_str);
+                if let Some(ref comm) = line.comment {
+                    let pad = max_code_width.saturating_sub(code_str.chars().count()) + 2;
+                    out.push_str(&" ".repeat(pad));
+                    out.push_str(comm);
+                }
+                out.push('\n');
+            }
+            i = group_end;
+        } else {
+            let line = &lines_info[i];
+            out.push_str(&"    ".repeat(line.indent));
+            out.push_str(&line.code);
+            if let Some(ref comm) = line.comment {
+                if !line.code.is_empty() {
+                    out.push_str("  ");
+                }
+                out.push_str(comm);
+            }
+            out.push('\n');
+            i += 1;
+        }
     }
 
     out
+}
+
+/// Отделяет код от строкового комментария `// ...`, игнорируя `//` внутри кавычек
+fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
+    let bytes = line.as_bytes();
+    let mut in_quote: Option<u8> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+        } else if b == b'"' || b == b'\'' {
+            in_quote = Some(b);
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            return (&line[..i], Some(line[i..].trim()));
+        }
+        i += 1;
+    }
+    (line, None)
+}
+
+/// Разбивает строку кода на логические токены, сохраняя строковые литералы и плотные вызовы `fn(a, b)`
+fn tokenize_line_for_format(code: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    let mut paren_depth: usize = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        // Строковые литералы
+        if c == '"' || c == '\'' {
+            let quote = c;
+            cur.push(c);
+            i += 1;
+            while i < chars.len() {
+                let sc = chars[i];
+                cur.push(sc);
+                i += 1;
+                if sc == '\\' && i < chars.len() {
+                    cur.push(chars[i]);
+                    i += 1;
+                } else if sc == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if c == '(' {
+            paren_depth += 1;
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ')' && paren_depth > 0 {
+            paren_depth -= 1;
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+
+        // Внутри круглых скобок не бьем по пробелам, чтобы `Point(10, 20)` оставался единой ячейкой
+        if paren_depth > 0 {
+            cur.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c.is_whitespace() {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+            i += 1;
+            continue;
+        }
+
+        // Двухсимвольные пайп-операторы и сравнения
+        if i + 1 < chars.len() {
+            let two: String = [c, chars[i + 1]].iter().collect();
+            if matches!(
+                two.as_str(),
+                ".>" | ".&" | ".?" | ".|" | "==" | "!=" | ">=" | "<=" | "&&" | "||" | "->"
+            ) {
+                if !cur.is_empty() {
+                    tokens.push(std::mem::take(&mut cur));
+                }
+                tokens.push(two);
+                i += 2;
+                continue;
+            }
+        }
+
+        // Одиночные операторы и скобки блоков
+        if matches!(c, '{' | '}' | '[' | ']' | '|' | '&') {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+            tokens.push(c.to_string());
+            i += 1;
+            continue;
+        }
+
+        cur.push(c);
+        i += 1;
+    }
+
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+
+/// Строки, которые открывают или закрывают многострочный блок (`User {`, `}`, `[`, `]`),
+/// не должны сливаться в таблицу с обычными полями
+fn is_structural_boundary(tokens: &[String]) -> bool {
+    if tokens.is_empty() {
+        return true;
+    }
+    let first = tokens.first().map(String::as_str).unwrap_or("");
+    let last = tokens.last().map(String::as_str).unwrap_or("");
+    matches!(first, "}" | "]" | ")")
+        || (matches!(last, "{" | "[") && !tokens.iter().any(|t| t == "}" || t == "]"))
+}
+
+fn is_alignment_operator(tok: &str) -> bool {
+    matches!(
+        tok,
+        "." | ".>" | ".&" | ".?" | ".|" | "|" | "&" | "/" | "==" | "!=" | ">=" | "<=" | "+" | "-" | "*"
+    )
+}
+
+/// Выстраивает группу строк в ровные колонки:
+/// • Для строк продолжения (`| Active`, `| Suspended`) — выравнивает ведущий оператор с 1 пробелом (`| Active`).
+/// • Для полей форм (`id Int 1`) и привязок — выравнивает Имя | Тип | Значение.
+fn align_group_columns(rows: Vec<Vec<String>>, is_continuation_group: bool) -> Vec<String> {
+    // Если это группа строк-продолжений (например, `| Active` и `| Suspended`),
+    // где нет дополнительных инфиксных операторов внутри строки — держим ровно 1 пробел после `|`
+    if is_continuation_group {
+        let all_simple_continuations = rows
+            .iter()
+            .all(|r| r.len() <= 2 || !r.iter().skip(1).any(|t| is_alignment_operator(t)));
+        if all_simple_continuations {
+            return rows.into_iter().map(|r| r.join(" ")).collect();
+        }
+    }
+
+    let has_explicit_ops = rows
+        .iter()
+        .filter(|r| r.iter().any(|t| is_alignment_operator(t)))
+        .count()
+        >= 2;
+
+    let mut table: Vec<Vec<String>> = Vec::with_capacity(rows.len());
+
+    if has_explicit_ops {
+        for row in &rows {
+            let mut cells = Vec::new();
+            let mut current_cell = Vec::new();
+            for tok in row {
+                if is_alignment_operator(tok) {
+                    if !current_cell.is_empty() {
+                        cells.push(current_cell.join(" "));
+                        current_cell.clear();
+                    }
+                    cells.push(tok.clone());
+                } else {
+                    current_cell.push(tok.clone());
+                }
+            }
+            if !current_cell.is_empty() {
+                cells.push(current_cell.join(" "));
+            }
+            table.push(cells);
+        }
+    } else {
+        for row in &rows {
+            let cells = match row.len() {
+                0 => vec![],
+                1 => vec![row[0].clone()],
+                2 => vec![row[0].clone(), row[1].clone()],
+                _ => {
+                    let second_is_type =
+                        is_pascal_case(row[1].split('(').next().unwrap_or(&row[1]));
+                    if second_is_type {
+                        vec![row[0].clone(), row[1].clone(), row[2..].join(" ")]
+                    } else {
+                        vec![row[0].clone(), row[1..].join(" ")]
+                    }
+                }
+            };
+            table.push(cells);
+        }
+    }
+
+    let max_cols = table.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut col_widths = vec![0usize; max_cols];
+    for row in &table {
+        for (c_idx, cell) in row.iter().enumerate() {
+            let w = cell.chars().count();
+            if w > col_widths[c_idx] {
+                col_widths[c_idx] = w;
+            }
+        }
+    }
+
+    table
+        .into_iter()
+        .map(|row| {
+            let mut line = String::new();
+            let last_idx = row.len().saturating_sub(1);
+            for (c_idx, cell) in row.into_iter().enumerate() {
+                line.push_str(&cell);
+                if c_idx < last_idx {
+                    let pad = col_widths[c_idx].saturating_sub(cell.chars().count()) + 1;
+                    line.push_str(&" ".repeat(pad));
+                }
+            }
+            line
+        })
+        .collect()
 }
