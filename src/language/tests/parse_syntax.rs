@@ -50,9 +50,9 @@ fn micro_range_strings() {
 #[test]
 fn micro_block_comment_with_quoted_hash() {
     let code = r##"
-#
+#1
 Block comment containing '#' and "#" safely
-#
+1#
 key value
 "##;
     let ast = parse_code(code).unwrap();

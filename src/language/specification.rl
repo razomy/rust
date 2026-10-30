@@ -1,168 +1,172 @@
-// =============================================================================
-// RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (name `Rala`) (ext `.rl`)
-// =============================================================================
-// 1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
-// {} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
-//             Parens on a key position `{ (K) V }` define a parameterized/computed Map key
-//             or a compound AST/path pattern key (e.g. `{ (self.old_id) [ self.new_id ] }`).
-//             All Forms `{}` and Tuples `()` have structural equality `==` and hashing by default.
-// [] — Stream (Executable body: Lazy sequence of operations, Predicates, Lambdas, Dialects).
-//             Every `[...]` is a Stream with an active input context (`_`, or depth-indexed `_0`, `_1`, `_2`).
-// () — Tuple  (Ordered array of data, Tuples, Argument slots, Eager value evaluation in `{}`).
-//             • Canonical Triad `Name(Slots) {Form} [Stream]` & Universal Slot Resolution Rule:
-//               - `Name { ... }`                     -> Form / Struct / Module (`PascalCase`, immutable Prototype/Type!)
-//               - `Name(T, U) { ... }`               -> 1st-Order Generic Form (unbound `PascalCase` `T`, `U` are Type Params `*`;
-//                                                       MUST NOT shadow existing Types in scope!)
-//               - `Name(F(_)) { ... }`               -> 2nd-Order Generic Form / HKT (`F(_)` is Type Constructor `* -> *`)
-//               - `Name(T(_(_), _)) { ... }`         -> 3rd-Order Generic Form (`T` has Kind `(* -> *) -> * -> *`)
-//               - `Name(TC Category, cat TC) { ... }`-> Bounded Generic Form (`PascalCase` `TC Category` constrains Type `TC <: Category`;
-//                                                       `snake_case` `cat TC` binds runtime value parameter `cat` of type `TC`)
-//               - `Name(Age) { new_age age }`        -> Auto-Unpacked Class (single atomic known Type `Age` in scope auto-binds `age Age` via Law 1c!)
-//               - `Name(u1 User, u2 User) { ... }`   -> Duplicate or compound Type Slots (`A & B`) MUST use explicit `snake_case` names!
-//               - `Name(a Type, b Int) { ... }`      -> Explicit Class (`snake_case` value slots are also Form fields on `self`!)
-//               - `Name(T, a T) { ... }`             -> Generic Class (`PascalCase` Type Param `T` + `snake_case` Value Param `a`)
-//               - `name(Age) [ age == 18 ]`          -> Function with auto-bound `age` from single atomic known `Age` Type (Law 1c)
-//               - `name(A, B, x A) B [Body]`         -> Generic function: pure Type slots (`A`, `B`) are compile-time and auto-inferred;
-//                                                       runtime UFCS calls `val . name` bind directly to the 1st value slot (`x`)!
-//               - `name(args) ReturnType [Body]`     -> Named function with explicit return type (`snake_case`)
-//               - `name(args) [Body]`                -> Named function (with optional defaults `name(k 10)`)
-//               - `name() [Body]`                    -> Parameterless function (explicit `()` required!)
-//               - `(args) [Body]` or `[Body]`        -> Anonymous lambda `(args) [Body]` or pipe stream `[ _ + 1 ]`
-//               - `name(args) ReturnType`            -> Method contract signature inside a Form `{}`
-//               - `cb (InType) [OutType]`            -> Function Type signature in parameter or field slots
-//             • Tuple-Argument Duality & Auto-Lifting:
-//               An incoming argument list `(a, b, c)` IS a Tuple `()`. A function expecting `Tuple`
-//               accepts `fn(a, b, c)` without double parens `(())`, and a slot expecting `Tuple(T)`
-//               automatically lifts a single element `(x)` without requiring a trailing comma!
-//
-// 2. CASE RULE, COMPILE-TIME FIRST (`Compile &`), TAGGED STRINGS & SPACE-DELIMITED LEXER:
-// • PascalCase  — Types, Forms, Classes, Modules, Union Variants, Type Params (`User`, `Age`, `TC`).
-//                 RULE (Prototype-Type Duality): `PascalCase` bindings are IMMUTABLE Form Prototypes & Types
-//                 (`Product { id Int }`). Reading `ExistingForm.field` or `ExistingForm.0` inspects its static
-//                 compile-time default specification, whereas writing `ExistingForm { id 3 }` (or `ExistingForm {}`)
-//                 inside an expression instantiates a concrete runtime instance of `ExistingForm`.
-// • snake_case  — Variables, Field keys, Functions, Methods, Value Params (`user_id`, `find_user`).
-//                 RULE: Only `snake_case` bindings inside `[]` can be rebound/mutated in-place!
-// • Compile     — Compile-Time Evaluation Tag (`Compile & [ ... ]` or `fn(...) [...] & Compile`):
-//                 Razomy is a Compile-Time First language. Any expression, macro, AST rewrite (`Meta.rewrite`),
-//                 or static assertion intersected with `& Compile` is evaluated 100% at compile-time,
-//                 emitting flat, zero-overhead machine code!
-// • 'symbol'    — Paired Symbol Literal: exact constant tag without interpolation (`'draft'`, `'GET'`).
-// • "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}")
-//                 and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`, `\}`).
-// • r"..."      — Raw String (multiline by default, also numbered `r1"..."1`, `r2"..."2`):
-//                 zero `\` escapes and zero `{}` interpolation; never uses `#` so comments never collide!
-// • Type"..."   — Type-Prefixed String Sugar: ANY `Type"..."` (`Money"199.99"`, `Path"./a.json"`,
-//                 `Url"https://ex.com"`, `Date"2026-03-30"`, `Hex"#2A9D8F"`, `Pair"1920x1080"`) is
-//                 100% syntax sugar for the constructor call `Type("...")` (`Money("199.99")`, etc.)!
-// • ',' & '\n'  — Universal Element Separator: Inline separator (`,`) and Line separator (`\n`) are 100%
-//                 interchangeable across ALL three brackets: fields in `{}`, steps in `[]`, and items in `()`.
-// • '#' & '//'  — Comments & Homoiconic Documentation: `//` is a single-line comment; `# ... #` (when `#`
-//                 is followed by whitespace/newline) is a multiline block comment. Any comment placed
-//                 immediately before or inline after a declaration is preserved in the AST as `Meta.doc_of`!
-// • ' ' (Space) — Pair & Token Separator:
-//                 (a) Universal Binding Axiom (`key value`, deep in-place path/index update `a.b.0.c val`,
-//                     or Tuple destructuring `(a, b) source`): binds a field in `{}`, a module member at root,
-//                     or a local variable / Perceus O(1) in-place mutation inside `[]`.
-//                     (There is NO `=` assignment operator in Razomy!).
-//                 (b) Tight Call `fn(x)` vs Spaced Binding `x (expr)`:
-//                     • `name(args)` (NO space before `(`) is a function call or type constructor application.
-//                     • `name (expr)` (WITH space before `(`) binds or rebinds variable/field `name` to `(expr)`.
-//                     • COMPILER SAFETY: If `name` in `name (expr)` resolves to an existing Function in scope
-//                       rather than a variable/field, the compiler emits `E01_AMBIGUOUS_CALL_OR_BIND`!
-//                 (c) Space-Delimited Lexer Rule: In expressions, all binary operators (`+`, `-`, `*`, `/`,
-//                     `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`,
-//                     `.?`, `.|`, `&`, `|`) MUST be surrounded by spaces (`a - b`, `a / b`, `a . b`), while
-//                     unary `!` prefixes tightly (`!x`). Inside a Form `{}` declaration, operator method
-//                     definitions has space to their parameter tuple (`+ (other T) [...]`, `< (other T) [...]`)
-//                     exactly like named methods `fn(other T) [...]`.
-//
-// 3. COMPLETE OPERATOR & ALGEBRAIC OVERLOADING REFERENCE:
-// 'a.b'     (no spaces)   — Tight Path Access: field, module, ancestor `a.Parent.field`, or index `a.0`, `a.-1`
-// 'a . b'   (with spaces) — Dataflow Pipeline: passes `a` left-to-right (`a . b` is sugar for `b(a)`,
-//                           and `a . b(c, d)` is UFCS sugar for `b(a, c, d)`)
-// 'a .> b'                — Tap Pipeline: executes side-effect `b(a)` and passes original `a` further
-// 'a .& b'                — Enrich Pipeline: calls `b(a)` and merges `&` result with left context `a`
-//                           (distributes over `Bypass` Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
-// 'a .? b'                — Safe/Filter Pipe: passes `a` further only if predicate/type `b` matches, else `None`
-// 'a .| {}'               — Parallel Pipeline: concurrent fan-out execution of branches in `{}`, merged via `&`
-// 'a & b'                 — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
-//                           1. Form & Form       -> Inheritance, Trait `impl`, or Structural Merge with Lineage
-//                           2. Type & Stream     -> Refinement Type (type constrained by predicate `[...]`)
-//                           3. Function & Form   -> Partial application / Default & DI override (`fn & { db MockDb }`)
-//                           4. Stream & Stream   -> Sequential pipeline composition (`[ a . b ]`)
-//                           5. Value & TagForm   -> Metadata / visibility / compile-time attachment (`val & Private`, `Compile & [...]`)
-//                           6. TypeA & TypeB(A)  -> F-Bounded Trait constraint (`User & Comparable(User)`)
-//                           7. Type & Bypass     -> Marks a failure/empty Union outcome (`NotFound & Bypass`) for Law 3 short-circuiting!
-// 'a | b'                 — Union: algebraic sum of types, patterns, or outcomes
-// 'a / b'                 — Relative Subtraction (for Types/Forms/Maps) or Overloaded Method `/` (for Values):
-//                           • Form / FieldPath   -> Removes specific field (`User / User.password_hash`)
-//                           • Form / 'key'       -> Removes field key from all ancestors (`Combined / 'name'`)
-//                           • Form / Ancestor    -> If `Ancestor` is in `Form` lineage, removes its slice (`UserAndCloud / Cloud`)
-//                           • Form / TagOrState  -> If `TagOrState` is NOT in `Form` lineage, acts as a Closed-World Negative
-//                                                   Type Constraint / Typestate Guard `Form & ![ _ . is(TagOrState) ]` (`Order / Cancelled`)
-//                           • Map  / key_val     -> Removes entry key from a Map (`config_map / "host"`)
-//                           • Union / Type       -> Removes branch from Union (`Result / Error`)
-//                           • ValueA / ValueB    -> Invokes overloaded `/` method (`num1 / num2`, `shape1 / shape2`)
-// 'a..b'                  — Range: sequence generator (`1..10`, `"a".."z"`)
-// 'x == Pattern'          — Equality or Pattern Inclusion: when `Pattern` is a Range `a..b` or Union `A | B`
-//                           (`val == (1..100)`, `role == ('admin' | 'manager')`), `==` is infix sugar for `x . matches(Pattern)`!
-// '_' & '_0, _1, _2'      — Active Stream Subject & Depth-Indexed Subjects:
-//                           • Inside any `[...]`, `_` is ALWAYS the input of the innermost enclosing `[...]`.
-//                           • When streams are nested `fn(a) [ a . [ ... ] ]`, `_0` is the root function stream's
-//                             input tuple, `_1` is the 1st nested `[...]` input (so inside the 1st nested `[...]`,
-//                             `_1` and `_` are identical!), `_2` is the 2nd nested `[...]` input, etc.
-//                           • Note: Router branch bodies `x . { Pattern [Body] }` are themselves streams `[...]`,
-//                             so each nested `[...]` increments the depth index (`_1`, `_2`, etc.) predictably!
-//                           • In router keys `{ _ [...] }`, Type slots `F(_)`, or imports `_ mod`, `_` is wildcard/hole.
-// 'self'                  — Current Form Instance: references the enclosing Form `{}` inside its methods/formulas
-// 'Self'                  — Current Form Type: references the enclosing Form Type in contracts and recursive types
-// '{k (e)}' vs '{k [e]}'  — Eager vs Zero-Cost Lazy/Reactive Field:
-//                           • `k (e)` evaluates `(e)` once on creation and stores the value in the struct layout.
-//                           • `k [e]` compiles to a pure static inline getter `Form.get_k(self)` (or reactive computed
-//                             node when reading a `Signal`). Because `k [e]` does NOT store a heap closure capturing `self`,
-//                             the Form retains `RefCount == 1` and supports Perceus O(1) in-place mutation!
-// 'x . { K [V] }'         — Universal Router Axiom: every branch key `K` in a router `{ K [V] }` is unified sugar for
-//                           a predicate check `[ _ . matches(K) ]`. By Law 3, if `x` is a Union `A | B` and a partial
-//                           router only handles `{ A [Out] }`, unhandled `Bypass` branch `B` automatically bypasses into `Out | B`!
-//                           • Value key `0` or `(0, 0)`        -> sugar for `[ _ == (0, 0) ]`
-//                           • Type key `Circle`                -> sugar for `[ _ . is(Circle) ]` (binds `circle` via Law 1c)
-//                           • Tuple of Types `(Disconnected, ConnectCmd)` -> matches element types & binds `disconnected`, `connect_cmd`
-//                           • Structural pattern `{ path ("users", id) }` -> matches fields and extracts `id`
-//                           • Computed/Path key `(self.x)`     -> matches AST/computed key `self.x`
-//                           • Predicate stream `[ _ > 10 ]`    -> executes boolean stream directly
-//
-// 4. FOUR IRON LAWS OF RAZOMY & COMPILER GUARANTEES:
-// - LAW 1 (TRANSPARENT SCOPING & SAFE SLOT PROJECTION — NO IMPLICIT SHADOWING OR INDEXING):
-//   Variables enter `{ form }` or `[ stream ]` in 4 explicit, predictable ways:
-//   (a) `self.field` — inside Form definitions `{}`, methods and reactive formulas access sibling fields via `self`.
-//                      Value parameter slots in `Form(a Int, b Int) { ... }` are automatically fields on `self`!
-//   (b) `_` & `_0, _1` — inside any stream `[...]`, `_` is the input of the nearest `[...]`, while `_0`, `_1`, `_2`
-//                      index enclosing streams from the function root (`_0`) down to nested pipe/router streams (`_1`, `_2`).
-//   (c) `Name(KnownType)` — Safe Single-Slot Projection: when a single atomic `PascalCase` identifier in `()` refers to
-//                      an EXISTING Type in scope, it acts as shorthand for `(known_type KnownType)`:
-//                      • Single atomic occurrence `(Age)` -> binds `age` of type `Age`.
-//                      • NO IMPLICIT SPLITTING OR INDEXING: Multiple occurrences of the same Type `(User, User)` or
-//                        compound intersection expressions `(User & Cart)` without an explicit `snake_case` name are a
-//                        COMPILE ERROR (`E02_DUPLICATE_UNNAMED_TYPE`)! You must name them: `(u1 User, u2 User)` or `(ctx User & Cart)`.
-//                      • NO SILENT SHADOWING: An unbound `PascalCase` identifier `Box(T)` or bounded slot `Name(TC Category)`
-//                        declares a compile-time Type Parameter (`T` or `TC <: Category`). If an unbound Type Parameter name
-//                        collides with an existing Type in scope, the compiler emits `E03_TYPE_PARAM_SHADOWS_TYPE`!
-//   (d) `fn(u User)` or `fn({ name } User)` — explicit parameter naming (`u.name`) or explicit field destructuring
-//                      (`{ name }`) when custom variable names or direct fields are desired in scope.
-// - LAW 2 (LINEAGE NAMESPACING & DEAD LINEAGE ELIMINATION): Upon name collision during merge `A & B`, unique
-//   fields are accessed directly (`ctx.age`), while colliding fields require the ancestor path (`ctx.A.id`, `ctx.B.id`)
-//   until resolved via `/`. Unreferenced ancestor fields are eliminated at compile time (zero runtime RAM overhead).
-// - LAW 3 (SUBTYPING-DRIVEN `Bypass` OUTCOME SHORT-CIRCUITING): When a Union `A | B` is piped into `fn(Param)` or partial router `{ Param [...] }`:
-//   • If `(A | B) <: Param` (e.g. `Param` is `Any` or `A | B`), `fn` receives the entire `A | B` directly.
-//   • If `A <: Param` but `B` is NOT a subtype of `Param`:
-//     - If `B <: Bypass` (e.g. `None`, `NotFound`, `IoError`), branch `B` automatically bypasses `fn` without invocation,
-//       accumulating into the final Union return type `Out | B`!
-//     - If `B` is NOT marked with `& Bypass` (an unhandled domain type!), the compiler emits `E04_UNHANDLED_UNION_BRANCH`!
-// - LAW 4 (UFCS AUTOCOMPLETE, ZERO-COST GETTERS & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)`
-//   in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile
-//   into zero-allocation machine loops (Tail-Call Optimization).
-// =============================================================================
+#1
+=============================================================================
+RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (name `Rala`) (ext `.rl`)
+=============================================================================
+1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
+{} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
+            Parens on a key position `{ (K) V }` define a parameterized/computed Map key
+            or a compound AST/path pattern key (e.g. `{ (self.old_id) [ self.new_id ] }`).
+            All Forms `{}` and Tuples `()` have structural equality `==` and hashing by default.
+[] — Stream (Executable body: Lazy sequence of operations, Predicates, Lambdas, Dialects).
+            Every `[...]` is a Stream with an active input context (`_`, or depth-indexed `_0`, `_1`, `_2`).
+() — Tuple  (Ordered array of data, Tuples, Argument slots, Eager value evaluation in `{}`).
+            • Canonical Triad `Name(Slots) {Form} [Stream]` & Universal Slot Resolution Rule:
+              - `Name { ... }`                     -> Form / Struct / Module (`PascalCase`, immutable Prototype/Type!)
+              - `Name(T, U) { ... }`               -> 1st-Order Generic Form (unbound `PascalCase` `T`, `U` are Type Params `*`;
+                                                      MUST NOT shadow existing Types in scope!)
+              - `Name(F(_)) { ... }`               -> 2nd-Order Generic Form / HKT (`F(_)` is Type Constructor `* -> *`)
+              - `Name(T(_(_), _)) { ... }`         -> 3rd-Order Generic Form (`T` has Kind `(* -> *) -> * -> *`)
+              - `Name(TC Category, cat TC) { ... }`-> Bounded Generic Form (`PascalCase` `TC Category` constrains Type `TC <: Category`;
+                                                      `snake_case` `cat TC` binds runtime value parameter `cat` of type `TC`)
+              - `Name(Age) { new_age age }`        -> Auto-Unpacked Class (single atomic known Type `Age` in scope auto-binds `age Age` via Law 1c!)
+              - `Name(u1 User, u2 User) { ... }`   -> Duplicate or compound Type Slots (`A & B`) MUST use explicit `snake_case` names!
+              - `Name(a Type, b Int) { ... }`      -> Explicit Class (`snake_case` value slots are also Form fields on `self`!)
+              - `Name(T, a T) { ... }`             -> Generic Class (`PascalCase` Type Param `T` + `snake_case` Value Param `a`)
+              - `name(Age) [ age == 18 ]`          -> Function with auto-bound `age` from single atomic known `Age` Type (Law 1c)
+              - `name(A, B, x A) B [Body]`         -> Generic function: pure Type slots (`A`, `B`) are compile-time and auto-inferred;
+                                                      runtime UFCS calls `val . name` bind directly to the 1st value slot (`x`)!
+              - `name(args) ReturnType [Body]`     -> Named function with explicit return type (`snake_case`)
+              - `name(args) [Body]`                -> Named function (with optional defaults `name(k 10)`)
+              - `name() [Body]`                    -> Parameterless function (explicit `()` required!)
+              - `(args) [Body]` or `[Body]`        -> Anonymous lambda `(args) [Body]` or pipe stream `[ _ + 1 ]`
+              - `name(args) ReturnType`            -> Method contract signature inside a Form `{}`
+              - `cb (InType) [OutType]`            -> Function Type signature in parameter or field slots
+            • Tuple-Argument Duality & Auto-Lifting:
+              An incoming argument list `(a, b, c)` IS a Tuple `()`. A function expecting `Tuple`
+              accepts `fn(a, b, c)` without double parens `(())`, and a slot expecting `Tuple(T)`
+              automatically lifts a single element `(x)` without requiring a trailing comma!
+2. CASE RULE, COMPILE-TIME FIRST (`Compile &`), TAGGED STRINGS & SPACE-DELIMITED LEXER:
+• PascalCase  — Types, Forms, Classes, Modules, Union Variants, Type Params (`User`, `Age`, `TC`).
+                RULE (Prototype-Type Duality): `PascalCase` bindings are IMMUTABLE Form Prototypes & Types
+                (`Product { id Int }`). Reading `ExistingForm.field` or `ExistingForm.0` inspects its static
+                compile-time default specification, whereas writing `ExistingForm { id 3 }` (or `ExistingForm {}`)
+                inside an expression instantiates a concrete runtime instance of `ExistingForm`.
+• snake_case  — Variables, Field keys, Functions, Methods, Value Params (`user_id`, `find_user`).
+                RULE: Only `snake_case` bindings inside `[]` can be rebound/mutated in-place!
+• Compile     — Compile-Time Evaluation Tag (`Compile & [ ... ]` or `fn(...) [...] & Compile`):
+                Razomy is a Compile-Time First language. Any expression, macro, AST rewrite (`Meta.rewrite`),
+                or static assertion intersected with `& Compile` is evaluated 100% at compile-time,
+                emitting flat, zero-overhead machine code!
+• 'symbol'    — Paired Symbol Literal: exact constant tag without interpolation (`'draft'`, `'GET'`).
+• "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}")
+                and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`, `\}`).
+• r"..."      — Raw String (multiline by default, also numbered `r1"..."1`, `r2"..."2`):
+                zero `\` escapes and zero `{}` interpolation; never uses `#` so comments never collide!
+• Type"..."   — Type-Prefixed String Sugar: ANY `Type"..."` (`Money"199.99"`, `Path"./a.json"`,
+                `Url"https://ex.com"`, `Date"2026-03-30"`, `Hex"#2A9D8F"`, `Pair"1920x1080"`) is
+                100% syntax sugar for the constructor call `Type("...")` (`Money("199.99")`, etc.)!
+• ',' & '\n'  — Universal Element Separator: Inline separator (`,`) and Line separator (`\n`) are 100%
+                interchangeable across ALL three brackets: fields in `{}`, steps in `[]`, and items in `()`.
+• '#' & '//'  — Comments & Homoiconic Documentation: `//` is a single-line comment; `# ... #`, `#n ... n#` (when `#`
+                is followed by whitespace/newline) is a multiline block comment. Any comment placed
+                immediately before or inline after a declaration is preserved in the AST as `Meta.doc_of`!
+• ' ' (Space) — Pair & Token Separator:
+                (a) Universal Binding Axiom (`key value`, deep in-place path/index update `a.b.0.c val`,
+                    or Tuple destructuring `(a, b) source`): binds a field in `{}`, a module member at root,
+                    or a local variable / Perceus O(1) in-place mutation inside `[]`.
+                    (There is NO `=` assignment operator in Razomy!).
+                (b) Tight Call `fn(x)` vs Spaced Binding `x (expr)`:
+                    • `name(args)` (NO space before `(`) is a function call or type constructor application.
+                    • `name (expr)` (WITH space before `(`) binds or rebinds variable/field `name` to `(expr)`.
+                    • COMPILER SAFETY: If `name` in `name (expr)` resolves to an existing Function in scope
+                      rather than a variable/field, the compiler emits `E01_AMBIGUOUS_CALL_OR_BIND`!
+                (c) Space-Delimited Lexer Rule: In expressions, all binary operators (`+`, `-`, `*`, `/`,
+                    `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`,
+                    `.?`, `.|`, `&`, `|`) MUST be surrounded by spaces (`a - b`, `a / b`, `a . b`), while
+                    unary `!` prefixes tightly (`!x`). Inside a Form `{}` declaration, operator method
+                    definitions has space to their parameter tuple (`+ (other T) [...]`, `< (other T) [...]`)
+                    exactly like named methods `fn(other T) [...]`.
+3. COMPLETE OPERATOR & ALGEBRAIC OVERLOADING REFERENCE:
+'a.b'     (no spaces)   — Tight Path Access: field, module, ancestor `a.Parent.field`, or index `a.0`, `a.-1`
+'a . b'   (with spaces) — Dataflow Pipeline: passes `a` left-to-right (`a . b` is sugar for `b(a)`,
+                          and `a . b(c, d)` is UFCS sugar for `b(a, c, d)`)
+'a .> b'                — Tap Pipeline: executes side-effect `b(a)` and passes original `a` further
+'a .& b'                — Enrich Pipeline: calls `b(a)` and merges `&` result with left context `a`
+                          (distributes over `Bypass` Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
+'a .? b'                — Safe/Filter Pipe: passes `a` further only if predicate/type `b` matches, else `None`
+'a .| {}'               — Parallel Pipeline: concurrent fan-out execution of branches in `{}`, merged via `&`
+'a & b'                 — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
+                          1. Form & Form       -> Inheritance, Trait `impl`, or Structural Merge with Lineage
+                          2. Type & Stream     -> Refinement Type (type constrained by predicate `[...]`)
+                          3. Function & Form   -> Partial application / Default & DI override (`fn & { db MockDb }`)
+                          4. Stream & Stream   -> Sequential pipeline composition (`[ a . b ]`)
+                          5. Value & TagForm   -> Metadata / visibility / compile-time attachment (`val & Private`, `Compile & [...]`)
+                          6. TypeA & TypeB(A)  -> F-Bounded Trait constraint (`User & Comparable(User)`)
+                          7. Type & Bypass     -> Marks a failure/empty Union outcome (`NotFound & Bypass`) for Law 3 short-circuiting!
+'a | b'                 — Union: algebraic sum of types, patterns, or outcomes
+'a / b'                 — Relative Subtraction (for Types/Forms/Maps) or Overloaded Method `/` (for Values):
+                          • Form / FieldPath   -> Removes specific field (`User / User.password_hash`)
+                          • Form / 'key'       -> Removes field key from all ancestors (`Combined / 'name'`)
+                          • Form / Ancestor    -> If `Ancestor` is in `Form` lineage, removes its slice (`UserAndCloud / Cloud`)
+                          • Form / TagOrState  -> If `TagOrState` is NOT in `Form` lineage, acts as a Closed-World Negative
+                                                  Type Constraint / Typestate Guard `Form & ![ _ . is(TagOrState) ]` (`Order / Cancelled`)
+                          • Map  / key_val     -> Removes entry key from a Map (`config_map / "host"`)
+                          • Union / Type       -> Removes branch from Union (`Result / Error`)
+                          • ValueA / ValueB    -> Invokes overloaded `/` method (`num1 / num2`, `shape1 / shape2`)
+'a..b'                  — Range: sequence generator (`1..10`, `"a".."z"`)
+'x == Pattern'          — Equality or Pattern Inclusion: when `Pattern` is a Range `a..b` or Union `A | B`
+                          (`val == (1..100)`, `role == ('admin' | 'manager')`), `==` is infix sugar for `x . matches(Pattern)`!
+'_' & '_0, _1, _2'      — Active Stream Subject & Depth-Indexed Subjects:
+                          • Inside any `[...]`, `_` is ALWAYS the input of the innermost enclosing `[...]`.
+                          • When streams are nested `fn(a) [ a . [ ... ] ]`, `_0` is the root function stream's
+                            input tuple, `_1` is the 1st nested `[...]` input (so inside the 1st nested `[...]`,
+                            `_1` and `_` are identical!), `_2` is the 2nd nested `[...]` input, etc.
+                          • Note: Router branch bodies `x . { Pattern [Body] }` are themselves streams `[...]`,
+                            so each nested `[...]` increments the depth index (`_1`, `_2`, etc.) predictably!
+                          • In router keys `{ _ [...] }`, Type slots `F(_)`, or imports `_ mod`, `_` is wildcard/hole.
+'self'                  — Current Form Instance: references the enclosing Form `{}` inside its methods/formulas
+'Self'                  — Current Form Type: references the enclosing Form Type in contracts and recursive types
+'{k (e)}' vs '{k [e]}'  — Eager vs Zero-Cost Lazy/Reactive Field:
+                          • `k (e)` evaluates `(e)` once on creation and stores the value in the struct layout.
+                          • `k [e]` compiles to a pure static inline getter `Form.get_k(self)` (or reactive computed
+                            node when reading a `Signal`). Because `k [e]` does NOT store a heap closure capturing `self`,
+                            the Form retains `RefCount == 1` and supports Perceus O(1) in-place mutation!
+'x . { K [V] }'         — Universal Router Axiom: every branch key `K` in a router `{ K [V] }` is unified sugar for
+                          a predicate check `[ _ . matches(K) ]`. By Law 3, if `x` is a Union `A | B` and a partial
+                          router only handles `{ A [Out] }`, unhandled `Bypass` branch `B` automatically bypasses into `Out | B`!
+                          • Value key `0` or `(0, 0)`        -> sugar for `[ _ == (0, 0) ]`
+                          • Type key `Circle`                -> sugar for `[ _ . is(Circle) ]` (binds `circle` via Law 1c)
+                          • Tuple of Types `(Disconnected, ConnectCmd)` -> matches element types & binds `disconnected`, `connect_cmd`
+                          • Structural pattern `{ path ("users", id) }` -> matches fields and extracts `id`
+                          • Computed/Path key `(self.x)`     -> matches AST/computed key `self.x`
+                          • Predicate stream `[ _ > 10 ]`    -> executes boolean stream directly
+• Modules & Files — Every `.rl` file is an implicit immutable Form `FileName { ... } / Private`;
+                          every directory is a nested Form `{ child_file ChildForm }`. NO `import`/`module`/`export` keywords:
+                          - Static Alias (`PascalCase`): `Http std.net.http` binds compile-time Form prototype (0 runtime alloc, NOT a mutable singleton).
+                          - Service Instance (`snake_case`): `db ( std.db.Sqlite { path "./a.db" } )` instantiates runtime Form with state/DI slots.
+                          - Submodule: `SubMod { ... } / Private` inside any file. Facade re-export: `Facade (ModA & ModB) / Private`.
+4. FOUR IRON LAWS OF RAZOMY & COMPILER GUARANTEES:
+- LAW 1 (TRANSPARENT SCOPING & SAFE SLOT PROJECTION — NO IMPLICIT SHADOWING OR INDEXING):
+  Variables enter `{ form }` or `[ stream ]` in 4 explicit, predictable ways:
+  (a) `self.field` — inside Form definitions `{}`, methods and reactive formulas access sibling fields via `self`.
+                     Value parameter slots in `Form(a Int, b Int) { ... }` are automatically fields on `self`!
+  (b) `_` & `_0, _1` — inside any stream `[...]`, `_` is the input of the nearest `[...]`, while `_0`, `_1`, `_2`
+                     index enclosing streams from the function root (`_0`) down to nested pipe/router streams (`_1`, `_2`).
+  (c) `Name(KnownType)` — Safe Single-Slot Projection: when a single atomic `PascalCase` identifier in `()` refers to
+                     an EXISTING Type in scope, it acts as shorthand for `(known_type KnownType)`:
+                     • Single atomic occurrence `(Age)` -> binds `age` of type `Age`.
+                     • NO IMPLICIT SPLITTING OR INDEXING: Multiple occurrences of the same Type `(User, User)` or
+                       compound intersection expressions `(User & Cart)` without an explicit `snake_case` name are a
+                       COMPILE ERROR (`E02_DUPLICATE_UNNAMED_TYPE`)! You must name them: `(u1 User, u2 User)` or `(ctx User & Cart)`.
+                     • NO SILENT SHADOWING: An unbound `PascalCase` identifier `Box(T)` or bounded slot `Name(TC Category)`
+                       declares a compile-time Type Parameter (`T` or `TC <: Category`). If an unbound Type Parameter name
+                       collides with an existing Type in scope, the compiler emits `E03_TYPE_PARAM_SHADOWS_TYPE`!
+  (d) `fn(u User)` or `fn({ name } User)` — explicit parameter naming (`u.name`) or explicit field destructuring
+                     (`{ name }`) when custom variable names or direct fields are desired in scope.
+- LAW 2 (LINEAGE NAMESPACING & DEAD LINEAGE ELIMINATION): Upon name collision during merge `A & B`, unique
+  fields are accessed directly (`ctx.age`), while colliding fields require the ancestor path (`ctx.A.id`, `ctx.B.id`)
+  until resolved via `/`. Unreferenced ancestor fields are eliminated at compile time (zero runtime RAM overhead).
+- LAW 3 (SUBTYPING-DRIVEN `Bypass` OUTCOME SHORT-CIRCUITING): When a Union `A | B` is piped into `fn(Param)` or partial router `{ Param [...] }`:
+  • If `(A | B) <: Param` (e.g. `Param` is `Any` or `A | B`), `fn` receives the entire `A | B` directly.
+  • If `A <: Param` but `B` is NOT a subtype of `Param`:
+    - If `B <: Bypass` (e.g. `None`, `NotFound`, `IoError`), branch `B` automatically bypasses `fn` without invocation,
+      accumulating into the final Union return type `Out | B`!
+    - If `B` is NOT marked with `& Bypass` (an unhandled domain type!), the compiler emits `E04_UNHANDLED_UNION_BRANCH`!
+- LAW 4 (UFCS AUTOCOMPLETE, ZERO-COST GETTERS & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)`
+  in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile
+  into zero-allocation machine loops (Tail-Call Optimization).
+=============================================================================
+1#
 
 
 #

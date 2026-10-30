@@ -6,9 +6,9 @@ use std::fs;
 fn test_step_01_comments_and_compile_bypass_contracts() {
     let code = r#"
 // Однострочный комментарий
-#
+#1
 Многострочный блочный комментарий (when '#' is followed by whitespace or newline)
-#
+1#
 
 Compile {}
 Bypass  {}

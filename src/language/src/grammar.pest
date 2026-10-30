@@ -6,8 +6,11 @@ WS_NL      = _{ WHITESPACE | NEWLINE }
 COMMENT    = _{ line_comment | block_comment }
 
 line_comment  = @{ "//" ~ (!NEWLINE ~ ANY)* }
-block_comment = @{ "#" ~ &WS_NL ~ ("'#'" | "\"#\"" | (!"#" ~ ANY))* ~ "#" }
-
+block_comment = @{
+    "#" ~ PUSH(ASCII_DIGIT*) ~ &WS_NL
+  ~ (!(PEEK ~ "#") ~ ANY)*
+  ~ POP ~ "#"
+}
 // --- 2. СТРУКТУРА И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
 PIPE_OP_AHEAD = @{ ".>" | ".&" | ".?" | ".|" | (("." | "&") ~ WS_NL) }
 
@@ -37,10 +40,9 @@ paren_group   = { "(" ~ statements ~ ")" }
 
 // --- 4. СТРОКИ И СИМВОЛЫ ---
 raw_string_lit = @{
-    ("r3\"" ~ (!"\"3" ~ ANY)* ~ "\"3")
-  | ("r2\"" ~ (!"\"2" ~ ANY)* ~ "\"2")
-  | ("r1\"" ~ (!"\"1" ~ ANY)* ~ "\"1")
-  | ("r\""  ~ (!"\""  ~ ANY)* ~ "\"")
+    "r" ~ PUSH(ASCII_DIGIT*) ~ "\""
+  ~ (!("\"" ~ PEEK) ~ ANY)*
+  ~ "\"" ~ POP
 }
 
 type_ident        = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
