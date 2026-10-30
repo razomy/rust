@@ -361,6 +361,17 @@ impl AnalysisReport {
                     continue;
                 }
                 if let Some(hf) = self.resolve_type_to_form(&current_type) {
+                    if hf.ancestors.contains(&"Tuple".to_string()) && !hf.type_args.is_empty() {
+                        let i = if idx < 0 {
+                            (hf.type_args.len() as i32 + idx) as usize
+                        } else {
+                            idx as usize
+                        };
+                        if let Some(targ) = hf.type_args.get(i).or_else(|| hf.type_args.first()) {
+                            current_type = targ.clone();
+                            continue;
+                        }
+                    }
                     let i = if idx < 0 {
                         (hf.field_order.len() as i32 + idx) as usize
                     } else {
@@ -615,10 +626,12 @@ impl AnalysisReport {
             };
             let mut md = header;
             if !hf.ancestors.is_empty() {
-                md.push_str(&format!(
-                    "**Lineage (Предки):** `{}`\n\n",
+                let lineage_str = if !hf.type_args.is_empty() && hf.ancestors.len() == 1 {
+                    format!("{}({})", hf.ancestors[0], hf.type_args.join(", "))
+                } else {
                     hf.ancestors.join(" & ")
-                ));
+                };
+                md.push_str(&format!("**Lineage (Предки):** `{lineage_str}`\n\n"));
             }
             if !hf.union_variants.is_empty() {
                 md.push_str(&format!(
@@ -777,8 +790,18 @@ impl AnalysisReport {
                         .forms
                         .get(base_ty)
                         .map_or(false, |f| f.ancestors.contains(&"String".to_string()));
-                let is_col = matches!(base_ty, "Tuple" | "List" | "Range" | "Cons");
-                let is_num = matches!(base_ty, "Int" | "Float");
+                let is_col = matches!(base_ty, "Tuple" | "List" | "Range" | "Cons")
+                    || self.hir.forms.get(base_ty).map_or(false, |f| {
+                        f.ancestors
+                            .iter()
+                            .any(|a| matches!(a.as_str(), "Tuple" | "List" | "Range" | "Cons"))
+                    });
+                let is_num = matches!(base_ty, "Int" | "Float")
+                    || self.hir.forms.get(base_ty).map_or(false, |f| {
+                        f.ancestors
+                            .iter()
+                            .any(|a| matches!(a.as_str(), "Int" | "Float"))
+                    });
 
                 if is_str {
                     for s_fn in ["trim", "to_upper", "split", "length"] {
@@ -967,7 +990,22 @@ fn is_ufcs_compatible(param_constraint: &str, target_type: &str, hf: &HirForm) -
 
 pub fn extract_collection_element_type(col_ty: &str, tuple_idx: i32) -> Option<String> {
     let trimmed = col_ty.trim();
-    for prefix in ["Tuple(", "List(", "Option(", "Some(", "Cons(", "Set("] {
+    if let Some(inner) = trimmed.strip_prefix("Tuple(").and_then(|s| s.strip_suffix(')')) {
+        let elems: Vec<&str> = inner.split(',').map(str::trim).collect();
+        if elems.len() == 1 {
+            return Some(elems[0].to_string());
+        }
+        let i = if tuple_idx < 0 {
+            (elems.len() as i32 + tuple_idx) as usize
+        } else {
+            tuple_idx as usize
+        };
+        return elems
+            .get(i)
+            .or_else(|| elems.first())
+            .map(|s| (*s).to_string());
+    }
+    for prefix in ["List(", "Option(", "Some(", "Cons(", "Set("] {
         if let Some(inner) = trimmed.strip_prefix(prefix).and_then(|s| s.strip_suffix(')')) {
             return Some(inner.trim().to_string());
         }

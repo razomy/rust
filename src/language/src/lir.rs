@@ -206,7 +206,11 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
             if g_name == "_"
                 || (is_pascal_case(g_name)
                     && hir.forms.contains_key(g_name)
-                    && matches!(g.value_expr.as_slice(), [Token::Path(_)]))
+                    && (matches!(g.value_expr.as_slice(), [Token::Path(_)])
+                        || matches!(
+                            g.value_expr.as_slice(),
+                            [Token::Path(p), Token::Group(')', _)] if p == "Tuple"
+                        )))
             {
                 continue;
             }

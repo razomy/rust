@@ -473,9 +473,34 @@ fn lower_located_sentence_into_hir(
                     register_form(hir, key.clone(), form);
                 }
                 [Token::Path(generic_base), Token::Group(')', _)]
-                    if is_pascal_case(&key) && hir.forms.contains_key(generic_base) =>
+                    if is_pascal_case(&key) && is_pascal_case(generic_base) =>
                 {
                     let form = lower_form_expr(&key, vec![], vec![], &value, origin.clone(), hir);
+                    register_form(hir, key.clone(), form);
+                }
+                [Token::Group('(', inner)]
+                    if is_pascal_case(&key)
+                        && !inner.is_empty()
+                        && inner.iter().all(|s| {
+                            matches!(
+                                s.first(),
+                                Some(Token::Path(p)) if is_pascal_case(p) && p != "Compile"
+                            ) && !has_algebra_op(s)
+                                && !has_pipe_op(s)
+                        }) =>
+                {
+                    let tuple_expr = vec![
+                        Token::Path("Tuple".into()),
+                        Token::Group(')', inner.clone()),
+                    ];
+                    let form =
+                        lower_form_expr(&key, vec![], vec![], &tuple_expr, origin.clone(), hir);
+                    register_form(hir, key.clone(), form);
+                }
+                [Token::Group('(', _), Token::Group('[', _)] if is_pascal_case(&key) => {
+                    let stream_expr = vec![Token::Path("Stream".into())];
+                    let form =
+                        lower_form_expr(&key, vec![], vec![], &stream_expr, origin.clone(), hir);
                     register_form(hir, key.clone(), form);
                 }
                 [Token::Group('(', inner)] if inner.len() == 1 => {
@@ -774,7 +799,7 @@ fn extract_type_params(params: &[Sentence]) -> Vec<String> {
     params
         .iter()
         .filter_map(|s| match s.as_slice() {
-            [Token::Path(p), ..] => Some(p.clone()),
+            [Token::Path(_), ..] => Some(format_tokens_as_type(s)),
             _ => None,
         })
         .collect()
@@ -1088,7 +1113,12 @@ fn lower_form_expr(
                     if is_pascal_case(first_type) && first_type != name {
                         ancestors.push(first_type.clone());
                     }
-                    union_variants.push(first_type.clone());
+                    if expr_slice[start_idx..]
+                        .iter()
+                        .any(|t| matches!(t, Token::Op(op) if op == "|"))
+                    {
+                        union_variants.push(first_type.clone());
+                    }
                 }
             }
             Token::Lit(Literal::Symbol(sym)) => {
@@ -2281,6 +2311,35 @@ fn resolve_path_type_in_context(
             let type_arg = current_ty
                 .split_once('(')
                 .and_then(|(_, r)| r.strip_suffix(')'));
+            if let Ok(idx) = seg_name.parse::<i32>() {
+                if base_form == "Tuple" {
+                    if let Some(args_str) = type_arg {
+                        let elems: Vec<&str> = args_str.split(',').map(str::trim).collect();
+                        let i = if idx < 0 {
+                            (elems.len() as i32 + idx) as usize
+                        } else {
+                            idx as usize
+                        };
+                        if let Some(el) = elems.get(i).or_else(|| elems.first()) {
+                            current_ty = (*el).to_string();
+                            continue;
+                        }
+                    }
+                }
+                if let Some(hf) = hir.forms.get(base_form) {
+                    if hf.ancestors.contains(&"Tuple".to_string()) && !hf.type_args.is_empty() {
+                        let i = if idx < 0 {
+                            (hf.type_args.len() as i32 + idx) as usize
+                        } else {
+                            idx as usize
+                        };
+                        if let Some(el) = hf.type_args.get(i).or_else(|| hf.type_args.first()) {
+                            current_ty = el.clone();
+                            continue;
+                        }
+                    }
+                }
+            }
             if let Some(hf) = hir.forms.get(base_form) {
                 if is_call {
                     if let Some(m) = hf.methods.get(seg_name) {

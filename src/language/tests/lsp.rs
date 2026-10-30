@@ -677,3 +677,72 @@ fn test_cross_file_live_in_memory_edit_updates_dependent_file_diagnostics() {
         main_doc.report.diagnostics
     );
 }
+
+#[test]
+fn test_tuple_type_aliases_vec2_vec3_rgba_in_function_params() {
+    let mut server = RazomyLanguageServer::new();
+    let uri = "file:///workspace/grid_colors.rl";
+    let code = r#"Compile {}
+Bypass  {}
+None    {} & Bypass
+
+Url(href String)       { value href }
+Path(fs_path String)   { value fs_path }
+Hex(code String)       { value code }
+Duration(spec String)  { value spec }
+Version(semver String) { value semver }
+
+Vec2 Tuple(Float, Float)
+Vec3 Tuple(Float, Float, Float)
+Rgba Tuple(Float, Float, Float, Float)
+Point2D (Float, Float)
+
+get_grid_cell_color(base_color Rgba) [
+    r base_color.0
+    r
+]
+
+get_point_x(pt Point2D) [
+    pt.0
+]
+"#;
+
+    let diags = open_doc(&mut server, uri, code);
+    assert!(
+        diags.is_empty(),
+        "Expected 0 diagnostics for Vec2/Vec3/Rgba/Point2D tuple aliases, got: {diags:?}"
+    );
+
+    // Hover на типе `Rgba` в параметре `get_grid_cell_color(base_color Rgba)` (строка 15, символ 33)
+    let hover_rgba = server.on_hover(&json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 15, "character": 33 }
+    }));
+    let hover_text = hover_rgba["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        hover_text.contains("Form Rgba"),
+        "Expected Form Rgba in hover, got: {hover_text}"
+    );
+    assert!(
+        hover_text.contains("Tuple(Float, Float, Float, Float)"),
+        "Expected Tuple(Float, Float, Float, Float) lineage in hover, got: {hover_text}"
+    );
+
+    // Go to Definition на `Rgba` в параметре функции прыгает на строку 12 (`Rgba Tuple(...)`)
+    let def_rgba = server.on_definition(&json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 15, "character": 33 }
+    }));
+    assert_eq!(def_rgba["range"]["start"]["line"].as_u64(), Some(12));
+
+    // Hover на `r` внутри `get_grid_cell_color` (строка 16, символ 5) -> выведен тип `Float` из `base_color.0`
+    let hover_r = server.on_hover(&json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 16, "character": 5 }
+    }));
+    let r_text = hover_r["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        r_text.contains("r : Float"),
+        "Expected r : Float in hover, got: {r_text}"
+    );
+}
