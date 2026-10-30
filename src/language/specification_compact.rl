@@ -1,5 +1,5 @@
 // =============================================================================
-// RAZOMY V5.7 (`Rala`, `.rl`) — HOMOICONIC AXIOMATICS OF THREE BRACKETS
+// RAZOMY V5.7 (`.rl`) — HOMOICONIC AXIOMATICS OF THREE BRACKETS
 // =============================================================================
 // 1. THREE BRACKETS (STRICT SEPARATION, STRUCTURAL `==` & HASHING BY DEFAULT):
 // {} — Form   (Key-Value: Structs, Classes, Trait impls, Routers, Modules, Maps).

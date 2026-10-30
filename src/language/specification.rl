@@ -1,6 +1,6 @@
 #1
 =============================================================================
-RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (name `Rala`) (ext `.rl`)
+RAZOMY LANGUAGE V5.7: HOMOICONIC AXIOMATICS OF THREE BRACKETS (ext `.rl`)
 =============================================================================
 1. STRICT SEPARATION OF THREE BRACKETS (NO ROLE OVERLAP):
 {} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
