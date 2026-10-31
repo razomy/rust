@@ -1976,94 +1976,132 @@ VerifyPublicUserSafety (Compile & [
 // СЛОЙ 0. ЯДРО КОМПИЛЯТОРА И ГОМОИКОНИЧНЫЙ AST (`Compiler`)
 // Откуда всё растёт: идентификаторы, 3 скобки, операторы и теги фаз.
 // ============================================================================
-Compiler {
+Grammar {
   // 1. Первичный корень AST
-  Node {}                               // Любой узел синтаксического дерева
-  Key  Node                             // Идентификатор в коде
+  Princip       {}                              // Любой узел синтаксического дерева
+  Literal       Princip                         // Идентификатор или токен в коде
 
   // Разделение по Case Rule (Правило регистра №2):
-  ValueKey Key                          // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
-  TypeKey  Key                          // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
+  Identifier    Literal
 
   // 2. Три фундаментальные скобки (The Three Brackets — Правило №1)
-  Bracket       Node
-  Tuple         Bracket                 // `()` — Упорядоченный кортеж данных, слоты аргументов, жадная оценка
-  Form          Bracket                 // `{}` — Ключ-Значение: структуры, классы, модули, роутеры, карты
-  Stream        Bracket                 // `[]` — Поток выполнения: ленивые операции, предикаты, лямбды
+  Bracket       Princip
+  TupleBracket  Bracket                           // `()` — Упорядоченный кортеж данных, слоты аргументов, жадная оценка
+  FormBracket   Bracket                           // `{}` — Ключ-Значение: структуры, классы, модули, роутеры, карты
+  StreamBracket Bracket                           // `[]` — Поток выполнения: ленивые операции, предикаты, лямбды
+
+  Sep           Princip                           // `,` или `\n` — Разделитель выражений
+
+  Repeat(T _)     Princip
+
+  // Composition
+  Statement     Literal | Tuple | Form | Stream     // Дно рекурсии (`Key`) + 3 скобки
+  Statements    Repeat(Statement & Sep)
+
+  Property      Statement & Statement     // Дно рекурсии (`Key`) + 3 скобки
+  Propertys     Repeat(Property & Sep)
+
+  Tuple         TupleBracket & Statements  // a, b, c
+  Form          FormBracket &  Propertys  // {a 1, b {}} | enum{} | set{}
+  Stream        StreamBracket & Statements // [(a,b,c),{a}, []]
+
+
+  TextBracket Bracket // key"" | key""key
+  CommentBracket Bracket // key## | key##key
+}
+
+Compiler {
+  Key           Grammar.Identifier                      // Сырые литералы в коде (`0`, `0.0`, `'sym'`, `"..."`)
+  Value         Grammar.Identifier                      // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
+  Type          Grammar.Identifier                      // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
+
+  Stream        Grammar.Stream                  // `[Body]`
+  Record        Grammar.Record                  // `{Body}`
+  Tuple         Grammar.Tuple                   // `{Body}`
+
+  Property              Key & Statement
+
 
   // Каноническая триада `Name(Slots) {Form} [Stream]`
-  Callable      Tuple & Stream          // `(args) [Body]` — функция или метод
-  Class         TypeKey & Tuple & Form  // `Name(Slots) { ... }` — параметризованная форма
+  Callable              Tuple & Stream                  // `(args) [Body]` — функция или метод
+  Function              Key & Callable                   // `name(args) [Body]` — именованная функция или метод
+  Record                Type & Tuple & Form  // `Name(Slots) { ... }` — параметризованная форма
+
+  // Sugar
+  Type                  Type & Tuple                     // `Name(T)` — параметризованный тип
+  Record                Type & Repeat(Property)          // `Name { ... }` — форма / структура / модуль
+  Thunk                 Tuple & Stream          // `() [Body]`
 
   // 3. Контекстные переменные (Закон 1a и 1b)
-  ContextRef    Key
-  SelfVal       ContextRef              // `self` — текущий экземпляр Form `{}`
-  SelfType      ContextRef              // `Self` — текущий тип Form `{}` (для рекурсии)
-  Subject       ContextRef              // `_`, `_0`, `_1`, `_2` — активный вход потока `[]` по глубине
+  ScopeRef      Bracket
+  SelfVal       ScopeRef                        // `self` — текущий экземпляр Form `{}`
+  SelfType      ScopeRef                        // `Self` — текущий тип Form `{}` (для рекурсии)
+  Subject       ScopeRef                        // `_`, `_0`, `_1`, `_2` — активный вход потока `[]` по глубине
 
   // 4. Иерархия операторов (Правило №2c и №3)
   Operator       Key
-  Bind           Operator               // `key val` — пробельное связывание / O(1) Perceus ребиндинг (нет `=`)
-  UnaryOperator  Operator               // Плотный префикс без пробела (`!x`, `-x`, `.field`, `..x`)
-  BinaryOperator Operator               // Окружён пробелами (`a + b`, `a . b`, `a & b`)
+  Bind           Operator                       // `key val` — пробельное связывание / O(1) Perceus ребиндинг (нет `=`)
+  UnaryOperator  Operator                       // Плотный префикс без пробела (`!x`, `-x`, `.field`, `..x`)
+  BinaryOperator Operator                       // Окружён пробелами (`a + b`, `a . b`, `a & b`)
 
   // 4a. Унарные операторы (плотные)
-  Not            UnaryOperator          // `!x`     — логическое ИЛИ типовое отрицание
-  Neg            UnaryOperator          // `-x`     — арифметическое отрицание
-  RelGet         UnaryOperator          // `.field` — относительный геттер `[ _.field ]`
-  Spread         UnaryOperator          // `..x`    — миксин/развертка контекста в `{}`, `()`, `[]`
+  Not            UnaryOperator                  // `!x`     — логическое ИЛИ типовое отрицание
+  Neg            UnaryOperator                  // `-x`     — арифметическое отрицание
+  RelGet         UnaryOperator                  // `.field` — относительный геттер `[ _.field ]`
+  Spread         UnaryOperator                  // `..x`    — миксин/развертка контекста в `{}`, `()`, `[]`
 
   // 4b. Бинарные операторы: Потоки (Pipelines)
   PipeOperator   BinaryOperator
-  TightDot       PipeOperator           // `a.b`    — плотный доступ к полю/предку/индексу (`a.0`, `a.-1`)
-  Pipe           PipeOperator           // `a . b`  — передача данных слева направо (`b(a)`)
-  TapPipe        PipeOperator           // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
-  EnrichPipe     PipeOperator           // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
-  FilterPipe     PipeOperator           // `a .? b` — пропускает `a`, если предикат/тип `b` совпал, иначе `None`
-  ParallelPipe   PipeOperator           // `a .| {}`— параллельный fan-out веток в `{}` со слиянием `&`
+  TightDot       PipeOperator                   // `a.b`    — плотный доступ к полю/предку/индексу (`a.0`, `a.-1`)
+  Pipe           PipeOperator                   // `a . b`  — передача данных слева направо (`b(a)`)
+  TapPipe        PipeOperator                   // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
+  EnrichPipe     PipeOperator                   // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
+  FilterPipe     PipeOperator                   // `a .? b` — пропускает `a`, если предикат/тип `b` совпал, иначе `None`
+  ParallelPipe   PipeOperator                   // `a .| {}`— параллельный fan-out веток в `{}` со слиянием `&`
 
   // 4c. Бинарные операторы: Алгебра типов и значений
   AlgebraOp      BinaryOperator
-  And            AlgebraOp              // `&`  — универсальное пересечение / композиция (7 комбинаций)
-  Or             AlgebraOp              // `|`  — объединение (Union типов, паттернов или исходов)
-  Sub            AlgebraOp              // `/`  — относительное вычитание (полей, предков, ключей, негативный гард)
-  RangeOp        AlgebraOp              // `..` — генератор диапазона (`1..10`, `"a".."z"`)
+  And            AlgebraOp                      // `&`  — универсальное пересечение / композиция (7 комбинаций)
+  Or             AlgebraOp                      // `|`  — объединение (Union типов, паттернов или исходов)
+  Sub            AlgebraOp                      // `/`  — относительное вычитание (полей, предков, ключей, негативный гард)
+  RangeOp        AlgebraOp                      // `..` — генератор диапазона (`1..10`, `"a".."z"`)
 
   // 4d. Бинарные операторы: Арифметика, биты, сравнение и логика
   MathOp         BinaryOperator
-  Plus           MathOp                 // `+`
-  Minus          MathOp                 // `-`
-  Mult           MathOp                 // `*`
-  Div            MathOp                 // `/` (перегруженный метод на значениях)
-  Mod            MathOp                 // `%`
-  Pow            MathOp                 // `**`
-  ShiftL         MathOp                 // `<<`
-  ShiftR         MathOp                 // `>>`
+  Plus           MathOp                         // `+`
+  Minus          MathOp                         // `-`
+  Mult           MathOp                         // `*`
+  Div            MathOp                         // `/` (перегруженный метод на значениях)
+  Mod            MathOp                         // `%`
+  Pow            MathOp                         // `**`
+  ShiftL         MathOp                         // `<<`
+  ShiftR         MathOp                         // `>>`
 
   CompareOp      BinaryOperator
-  Eq             CompareOp              // `==` (структурное равенство ИЛИ `.matches(Pattern)` для Range/Union!)
-  Neq            CompareOp              // `!=`
-  Gt             CompareOp              // `>`
-  Gte            CompareOp              // `>=`
-  Lt             CompareOp              // `<`
-  Lte            CompareOp              // `<=`
+  Eq             CompareOp                      // `==` (структурное равенство ИЛИ `.matches(Pattern)` для Range/Union!)
+  Neq            CompareOp                      // `!=`
+  Gt             CompareOp                      // `>`
+  Gte            CompareOp                      // `>=`
+  Lt             CompareOp                      // `<`
+  Lte            CompareOp                      // `<=`
 
   LogicOp        BinaryOperator
-  LogicAnd       LogicOp                // `&&`
-  LogicOr        LogicOp                // `||`
+  LogicAnd       LogicOp                        // `&&`
+  LogicOr        LogicOp                        // `||`
 
   // 5. Директивы фаз, потока управления и видимости
   Directive      TypeKey
-  Compile        Directive              // `Compile & [...]` — 100% выполнение на этапе компиляции
-  Bypass         Directive              // `& Bypass` — автоматический short-circuit в пайплайнах (Закон 3)
-  Break(T)       Directive & {          // Ранний выход из `fold` / `reduce`
+  Compile        Directive                      // `Compile & [...]` — 100% выполнение на этапе компиляции
+  Bypass         Directive                      // `& Bypass` — автоматический short-circuit в пайплайнах (Закон 3)
+
+  Break(T)       Directive & {                  // Ранний выход из `fold` / `reduce`
     value T
-    label 'default'
+    label Identifier
   }
 
-  IAccess        Directive              // Модификаторы видимости членов Form/Модуля
+  IAccess        Directive                      // Модификаторы видимости членов Form/Модуля
   Public         IAccess
-  Private        IAccess                // Отсекается через `Module / Private`
+  Private        IAccess                        // Отсекается через `Module / Private`
 }
 
 
@@ -2075,19 +2113,38 @@ Primitives {
   ..Compiler
 
   // Границы решетки типов (Type Lattice Bounds)
-  Any    TypeKey                        // `_` — Top Type (принимает всё, НЕ шорт-серкитит!)
-  None   TypeKey & Bypass               // Пустой исход (автоматически обходит функции по Закону 3)
+  Any        TypeKey                            // `_` — Top Type (принимает всё, НЕ шорт-серкитит!)
+  None       TypeKey & Bypass                   // Пустой исход (автоматически обходит функции по Закону 3)
+  Never      !Any                               // Bottom Type (пустое множество `T & !T`, невозможный исход)
 
-  // Встроенные машинные примитивы
-  IBuiltIn TypeKey
-  Bool     IBuiltIn                     // `true` | `false`
-  Byte     IBuiltIn                     // `0x00`
-  Int      IBuiltIn                     // `0` (64-битное целое)
-  Float    IBuiltIn                     // `0.0` (IEEE-754)
-  String   IBuiltIn                     // `"..."` (интерполяция) и `r"..."` (сырые строки)
-  Symbol   IBuiltIn                     // `'symbol'` (константный тег без интерполяции)
+  // === 1. АППАРАТНАЯ БАЗА (Для генератора кода) ===
+  IBuiltIn   TypeKey
+  // Определяем, в какой регистр процессора класть значение и сколько байт выделять
+  GPR(B)     { bytes B, reg 'general' } & IBuiltIn // Регистры RAX, RBX... (Целые, адреса)
+  XMM(B)     { bytes B, reg 'vector'  } & IBuiltIn // Регистры XMM0... (Для Float)
+  Mem(B)     { bytes B, align 8       } & IBuiltIn // Составная структура на стеке/в регистрах
 
-  Primitive Bool | Byte | Int | Float | String | Symbol
+  // === 2. РЕГИСТРОВЫЕ ПРИМИТИВЫ (Помещаются в 1 регистр) ===
+  // В ассемблере Bool всегда занимает целый байт (команды SETE, TEST AL, AL)
+  Bool       GPR(1)                             // 1 байт: `0` (false) или `1` (true)
+  // Байты и Целые числа
+  Byte       GPR(1)                             // 1 байт: `0x00` (unsigned)
+  Int        GPR(8)                             // 8 байт (QWORD): `0` (знаковое, доп. код)
+  // Float ОБЯЗАН отличаться от Int на уровне железа, т.к. у него свои регистры и инструкции (ADDSD вместо ADD)
+  Float      XMM(8)                             // 8 байт (QWORD): `0.0` (IEEE-754 в регистре XMM)
+  // Указатель на память (нужен для создания строк и массивов)
+  Ptr(T)     GPR(8) & T                         // 8 байт: 64-битный адрес в памяти
+  // Symbol в ассемблере — это просто уникальный ID (число) или адрес строки в секции .rodata
+  Symbol     GPR(8)                             // 8 байт: `'symbol'` (сравнивается за 1 такт инструкцией CMP)
+
+  // === 3. СОСТАВНЫЕ ПРИМИТИВЫ (Fat Pointers / Срезы) ===
+  // Строка в ассемблере — это "толстый указатель" (16 байт: адрес + длина).
+  // При вызове функции передается сразу в двух регистрах (например, RDI и RSI).
+  String     Mem(16) & { ptr Ptr(Byte), len Int } // `"..."` и `r"..."`
+
+  // === ИТОГОВОЕ ОБЪЕДИНЕНИЕ ===
+  Scalar     Bool | Byte | Int | Float | Ptr | Symbol
+  Primitive  Scalar | String
 }
 
 
@@ -2102,27 +2159,25 @@ DomainTypes {
   TaggedString(raw String) Form & { value raw }
 
   // Сеть и Файловая система (поддерживают протокол `Port.read` / `Port.write`)
-  IPort    TaggedString
-  Url      IPort                        // Url"https://razomy.org"
-  Path     IPort                        // Path"./data/users.json"
-  Ip       TaggedString                 // Ip"192.168.0.1:8080"
+  IPort      TaggedString
+  Url        IPort                              // Url"https://razomy.org"
+  Path       IPort                              // Path"./data/users.json"
+  Ip         TaggedString                       // Ip"192.168.0.1:8080"
 
   // Время и Даты
-  ITemporal TaggedString
-  Date      ITemporal                   // Date"2026-03-30"
-  Time      ITemporal                   // Time"14:30:00"
-  Datetime  ITemporal                   // Datetime"2026-03-30T14:30:00Z"
-  Duration  ITemporal                   // Duration"5m30s"
+  ITemporal  TaggedString
+  Date       ITemporal                          // Date"2026-03-30"
+  Time       ITemporal                          // Time"14:30:00"
+  Datetime   ITemporal                          // Datetime"2026-03-30T14:30:00Z"
+  Duration   ITemporal                          // Duration"5m30s"
 
   // Графика, Версии и Финансы
-  Hex      TaggedString                 // Hex"#2A9D8F"
-  Pair     TaggedString                 // Pair"1920x1080"
-  Version  TaggedString                 // Version"1.4.2-beta"
+  Hex        TaggedString                       // Hex"#2A9D8F"
+  Pair       TaggedString                       // Pair"1920x1080"
+  Version    TaggedString                       // Version"1.4.2-beta"
 
   // Фиксированная десятичная точка (4 знака, хранится как Int64 микро-единиц)
-  Money(raw String) TaggedString(raw) & {
-    scaled Int
-  }
+  Money(raw String) TaggedString(raw) & { scaled Int }
 }
 
 
@@ -2137,7 +2192,7 @@ Collections {
   Option(T)     Some(T) | None
   Some(T)       Form & { value T }
 
-  Map(K, V)     Form & { (K) V }        // Вычисляемый ключ в круглых скобках `(K)`
+  Map(K, V)     Form & { (K) V }                // Вычисляемый ключ в круглых скобках `(K)`
   Set(T)        Map(T, Bool)
 
   // 2. Рекурсивные типы данных (используют `Self` или взаимную рекурсию)
@@ -2175,21 +2230,70 @@ Runtime {
   ..Collections
 
   // 1. Стандартные пропускные ошибки (Law 3 — все наследуют `Bypass`)
-  Error        Form & Bypass
-  NotFound     Error & { entity String, id String }
-  IoError      Error & { msg String }
-  NetworkError Error & { reason String }
-  Unauthorized Error & { reason String }
-  CompileError Error & { code Int, log String }
+  Error         Form & Bypass
+  Result(T _, E _)  T | (Error & E)
 
-  // 2. Управляемая мутабельность, Конкурентность и Реактивность
-  Atom(T)    Form & { value T }         // Транзакционная CAS-ячейка (`read`, `swap`)
-  Channel(T) Form                       // CSP-канал передачи сообщений (`send`, `recv`)
-  Signal(T)  Form & { value T }         // Реактивный сигнал (`get`, `set`)
-  Effect     Stream                     // Реактивный подписчик `Effect([...])`
+  NotFound      Error & { entity String, id String }
+  IoError       Error & { msg String }
+  NetworkError  Error & { reason String }
+  Unauthorized  Error & { reason String }
+  CompileError  Error & { code Int, log String }
+
+  // 2. Память Perceus, Управляемая мутабельность, Конкурентность и Реактивность
+  Unique(T)     Form & { value T }              // Perceus RC == 1 (O(1) ребиндинг на месте)
+  Shared(T)     Form & { value T }              // Perceus RC > 1 (Copy-on-Write)
+  Atom(T)       Form & { value T }              // Транзакционная CAS-ячейка (`read`, `swap`)
+  Channel(T)    Form                            // CSP-канал передачи сообщений (`send`, `recv`)
+  Signal(T)     Form & { value T }              // Реактивный сигнал (`get`, `set`)
+  Effect        Stream                          // Реактивный подписчик `Effect([...])`
 
   // 3. Встроенные диалекты и Мета-программирование (`& Compile`)
-  Parse      Form                       // Потоковые PEG-грамматики (`match`, `copy`, `to`, `run`)
-  Ui         Form                       // Декларативный UI (`view`, `draw`)
-  Meta       Form & Compile             // Рефлексия и перезапись AST (`type_of`, `doc_of`, `fields_of`, `rewrite`)
+  Parse         Form                            // Потоковые PEG-грамматики (`match`, `copy`, `to`, `run`)
+  Ui            Form                            // Декларативный UI (`view`, `draw`)
+  Meta          Form & Compile                  // Рефлексия и перезапись AST (`type_of`, `doc_of`, `fields_of`, `rewrite`)
 }
+
+// 1. Встраивание предков без & и .. (сохраняет Lineage и удаление через `/`):
+ElectricCar {
+  Vehicle                        // Встраивает Vehicle в Lineage (можно делать ElectricCar / Vehicle)
+  HasBattery                     // Встраивает HasBattery
+  charging_port "Type2"
+}
+
+// 2. Постфиксный `..` ("всё внутри / всё дальше") и навигация по AST (`_`, `_._`, `_..`):
+ast_and_spread_demo(node) [
+  current  _                     // Текущий контекст
+  parent   _._                   // Родительский контекст на 1 уровень выше
+  children _..                   // Все внутренние узлы текущего контекста
+
+  nums     (1, 2, 3, 4)
+  (first, rest_nums..) nums      // Сборка хвоста: first = 1, rest_nums = (2, 3, 4)
+  expanded (0, rest_nums.., 5)   // Развертка внутри: (0, 2, 3, 4, 5)
+]
+
+// 3. Аргументы и Классы как единая Форма `{}` (динамические `[]` и дефолты игнорируются сами!):
+User(T) {
+  id       String                // Открытый слот 0
+  name     String                // Открытый слот 1
+  meta     T                     // Открытый слот 2 (T выводится автоматически!)
+  role     'user'                // Дефолтное поле (пропускается при позиционном вызове)
+  is_admin [ self.role == 'admin' ] // Динамическое поле (всегда игнорируется при вводе!)
+}
+
+u_named User { id "1", name "Alice", meta 99 } // Вызов по ключам {}
+u_pos   User("1", "Alice", 99)                 // Позиционный вызов () только по открытым полям!
+
+// Функция со словарём аргументов `{}` (можно вызывать и через `{}`, и через `()`!):
+connect { host String "localhost", port Int 8080 } [
+  "Connecting to {host}:{port}"
+]
+c1 connect { port 9000 }                       // Именованный вызов!
+c2 connect("10.0.0.1", 9000)                   // Позиционный вызов!
+
+// 4. Плоские гарды в `[]` БЕЗ двух функций `[...] .? [...]`:
+MinorError { name String } & Bypass
+
+checkout(user User) [
+  (user.age >= 18) .? MinorError { name user.name } // Если false -> MinorError сразу выходит из checkout!
+  "Order confirmed for {user.name}"
+]
