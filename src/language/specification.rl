@@ -2297,3 +2297,271 @@ checkout(user User) [
   (user.age >= 18) .? MinorError { name user.name } // Если false -> MinorError сразу выходит из checkout!
   "Order confirmed for {user.name}"
 ]
+
+#
+ОНТОЛОГИЯ, ГРАММАТИКА И ЭВОЛЮЦИЯ ТИПОВ RAZOMY v6.0
+Единая аксиоматика:
+1. Каноническая триада: `Name {Поля/Слоты} [Поток]` (где `()` — позиционная проекция `{}`).
+2. Прямое встраивание Lineage внутри `{}` просто по имени Типа/Модуля (`Vehicle`).
+3. Навигация `_` (текущий), `_._` (родитель), `_..` (дети) и постфикс `x..` (сборка/развертка).
+4. Плоский императивный поток (`cond .? BypassVal`, `x (+ 1)`, `Loop [...]`) и мета-перезапись `Bind`.
+#
+
+// ============================================================================
+// СЛОЙ 0. ЯДРО КОМПИЛЯТОРА, ГРАММАТИКА И СВЯЗЫВАНИЯ (`Compiler`)
+// ============================================================================
+Compiler {
+  // 1. Первичный корень AST и Токены
+  Node          {}                              // Любой узел синтаксического дерева
+  Token         Node                            // Неделимая лексема
+  Sep           Token                           // `,` или `\n` — универсальный разделитель
+  Literal       Token                           // Константы (`0`, `0.0`, `'sym'`)
+  Identifier    Token                           // Именованный токен
+
+  // Разделение по Case Rule (Правило регистра):
+  ValueKey      Identifier                      // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
+  TypeKey       Identifier                      // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
+
+  // 2. Контекстная и AST-навигация (`_`, `_._`, `_..`, `self`, `Self`)
+  ScopeRef      Identifier
+  SelfVal       ScopeRef                        // `self` — текущий экземпляр Form `{}`
+  SelfType      ScopeRef                        // `Self` — текущий тип Form `{}` (для рекурсии)
+  Subject       ScopeRef                        // `_`    — активный вход текущего потока `[]`
+  ParentSubject ScopeRef                        // `_._`  — вход родительского потока на уровень выше (`_._._` и т.д.)
+  ChildrenRef   ScopeRef                        // `_..`  — все дочерние узлы текущего контекста/AST
+
+  // 3. Три Фундаментальные Скобки (The Three Brackets)
+  Bracket       Node
+  TextQuote     Bracket                         // `"..."`, `r"..."`, `Type"..."`
+  CommentBlock  Bracket                         // `//...` или `# ... #` (доступны через `Meta.doc_of`)
+
+  TupleBracket  Bracket                         // `()` — Позиционный кортеж значений, жадная группировка `(a + b)`
+  FormBracket   Bracket                         // `{}` — Именованная форма: классы, аргументы функций, модули, роутеры
+  StreamBracket Bracket                         // `[]` — Поток выполнения: ленивые вычисления, циклы, лямбды
+
+  // 4. Грамматическая композиция
+  Repeat(T)     Node                            // Повторение через `,` или `\n`
+  Expr          Literal | Identifier | Tuple | Form | Stream
+  Pair          (Identifier | Tuple) & Expr     // Пара `key val` или `{ (computed_key) val }`
+  LineageEmbed  TypeKey                         // Встраивание предка `Vehicle` напрямую внутри `{}`!
+
+  Tuple         TupleBracket  & Repeat(Expr)
+  Form          FormBracket   & Repeat(Pair | LineageEmbed)
+  Stream        StreamBracket & Repeat(Expr)
+
+  // 5. Дуальность Формы и Кортежа в Функциях и Классах:
+  //    Входные слоты могут задаваться как Форма `{ a Int, b Int 0 }` ИЛИ позиционно `(a Int, b Int)`.
+  //    При вызове `Name(...)` или `Name { ... }` динамические поля `[]` и дженерики `T` игнорируются автоматически!
+  Slots         Form | Tuple
+  Class         TypeKey  & Slots                // `User(T) { id String, ... }`
+  Callable      Slots    & Stream               // `{ a Int } [ a + 1 ]` или `(a Int) [ a + 1 ]`
+  Function      ValueKey & Slots & Stream       // `connect { host "localhost", port 8080 } [ ... ]`
+
+  // 6. ПОЛНАЯ МАТРИЦА СВЯЗЫВАНИЙ (Пробел `' '` — перегружаемый узел `Bind(Target, Source)`)
+  Bind(Target, Source) Node                     // Базовый AST-узел связывания (переопределяем в `Meta.rewrite`!)
+  TypeAliasBind Bind(TypeKey, TypeKey)          // 1. Алиас типа:          `BrandName String`
+  ProtoFormBind Bind(TypeKey, Form)             // 2. Прототип формы:      `Vehicle { max_speed Int 180 }`
+  FieldSpecBind Bind(ValueKey, TypeKey & Expr)  // 3. Открытое/деф. поле:  `id String` или `role String 'user'`
+  LazyFieldBind Bind(ValueKey, Stream)          // 4. Динамическое поле:   `total [ self.price * self.qty ]` (игнор при вводе!)
+  VarBind       Bind(ValueKey, Expr)            // 5. Переменная:          `a (b + c)`
+  CompoundBind  Bind(ValueKey, Tuple)           // 6. Мутация на месте:    `count (+ 1)`, `price (* 1.2)`
+  LensPathBind  Bind(Identifier, Expr)          // 7. Глубокий ребинд O(1):`corp.depts.0.budget 2500`
+  RestUnpack    Bind(Tuple | Form, Expr)        // 8. Распаковка с `x..`:  `(head, tail..) list`, `{ id, rest.. } user`
+
+  // 7. Операторы (Унарные, Постфиксные и Бинарные)
+  Operator       Token
+  UnaryOperator  Operator                       // Плотный префикс: `!x`, `-x`, `.field`
+  PostfixOp      Operator                       // Плотный постфикс: `x..` (внутренности / хвост / развертка)
+  BinaryOperator Operator                       // С пробелами вокруг: `a + b`, `a . b`, `a & b`
+
+  Not            UnaryOperator                  // `!x`     — логическое или типовое отрицание (`!Any` -> `Never`)
+  Neg            UnaryOperator                  // `-x`     — арифметическое отрицание (`-5`)
+  RelGet         UnaryOperator                  // `.field` — относительный геттер `[ _.field ]`
+  ExpandRest     PostfixOp                      // `x..`    — слева собирает остаток `(a, rest..)`, справа разворачивает `(0, x..)`!
+
+  // 7b. Потоковые операторы (Pipelines)
+  PipeOperator   BinaryOperator
+  TightDot       PipeOperator                   // `a.b`    — плотный доступ к полю, предку `a.Vehicle.id`, индексу `a.0`
+  Pipe           PipeOperator                   // `a . b`  — передача данных `b(a)`
+  TapPipe        PipeOperator                   // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
+  EnrichPipe     PipeOperator                   // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
+  GuardPipe      PipeOperator                   // `cond .? err` — плоский шлюз: если `cond` false/Error, выходит с `err` (`Bypass`)!
+  ParallelPipe   PipeOperator                   // `a .| {}`— параллельный fan-out веток в `{}`
+
+  // 7c. Алгебра, Математика и Логика
+  AlgebraOp      BinaryOperator
+  And            AlgebraOp                      // `a & b`  — пересечение / слияние с сохранением Lineage
+  Or             AlgebraOp                      // `a | b`  — объединение (Union)
+  Sub            AlgebraOp                      // `a / b`  — вычитание поля `'key'`, пути `A.id` или целого предка `Vehicle`!
+  RangeOp        AlgebraOp                      // `a..b`   — генератор диапазона (`1..10`)
+
+  MathOp         BinaryOperator
+  Plus           MathOp                         // `a + b`
+  Minus          MathOp                         // `a - b`
+  Mult           MathOp                         // `a * b`
+  Div            MathOp                         // `a / b` (на значениях вызывает метод `/`)
+  Mod            MathOp                         // `a % b`
+  Pow            MathOp                         // `a ** b`
+
+  CompareOp      BinaryOperator
+  Eq             CompareOp                      // `a == b`
+  Neq            CompareOp                      // `a != b`
+  Gt             CompareOp                      // `a > b`
+  Gte            CompareOp                      // `a >= b`
+  Lt             CompareOp                      // `a < b`
+  Lte            CompareOp                      // `a <= b`
+
+  // 8. Директивы управления и компиляции
+  Directive      TypeKey
+  Compile        Directive                      // `Compile & [...]` — 100% выполнение на этапе компиляции
+  Bypass         Directive                      // `& Bypass` — автоматический short-circuit (Закон 3)
+  Loop(body Stream) Directive                   // Императивный цикл `Loop [ ... ]`
+  Break(T)       Directive & Bypass & { value T }
+  Return(T)      Directive & Bypass & { value T }
+  Public         Directive
+  Private        Directive
+}
+
+
+// ============================================================================
+// СЛОЙ 1. АППАРАТНЫЕ РЕГИСТРЫ И ПРИМИТИВЫ (`Primitives`)
+// ============================================================================
+Primitives {
+  Compiler                                      // Прямое встраивание предка `Compiler` (без `..` и `&`!)
+
+  Any        TypeKey
+  None       TypeKey & Bypass
+  Never      !Any
+
+  IBuiltIn   TypeKey
+  GPR(B)     IBuiltIn & { bytes B, reg 'general' }
+  XMM(B)     IBuiltIn & { bytes B, reg 'vector'  }
+  Mem(B)     IBuiltIn & { bytes B, align 8       }
+
+  Bool       GPR(1)
+  Byte       GPR(1)
+  Int        GPR(8)
+  Float      XMM(8)
+  Ptr(T)     GPR(8) & { target T }
+  Symbol     GPR(8)
+  String     Mem(16) & { ptr Ptr(Byte), len Int }
+
+  Scalar     Bool | Byte | Int | Float | Ptr(Any) | Symbol
+  Primitive  Scalar | String
+}
+
+
+// ============================================================================
+// ПРАКТИЧЕСКАЯ ДЕМОНСТРАЦИЯ НОВЫХ КОНЦЕПТОВ RAZOMY v6.0
+// ============================================================================
+
+// --- КОНЦЕПТ 1: Единое встраивание предков внутри `{}` и удаление через `/` ---
+Vehicle    { brand String "Generic", max_speed Int 180 }
+HasBattery { battery_kwh Int 75 }
+
+// Внутри `{}` (или файла) просто пишем имена предков `Vehicle` и `HasBattery`:
+ElectricCar {
+  Vehicle                                       // Встраивает Vehicle с сохранением Lineage!
+  HasBattery                                    // Встраивает HasBattery!
+  brand         "Tesla"                         // Переопределяет дефолт brand
+  charging_port String "Type2"
+}
+
+// Проверяем Lineage и вычитание `/`:
+orig_brand      ElectricCar.Vehicle.brand       // -> "Generic" (история предка сохранена!)
+CarWithoutBat   ElectricCar / HasBattery        // -> Удаляет весь срез HasBattery из ElectricCar!
+
+
+// --- КОНЦЕПТ 2: Форма `{}` как аргументы + Авто-игнор дженериков, дефолтов и динамики `[]` ---
+User(T) {
+  id       String                               // Открытое поле 0 (требуется при вводе)
+  name     String                               // Открытое поле 1 (требуется при вводе)
+  meta     T                                    // Открытое поле 2 (тип `T` выводится сам из значения!)
+  role     String 'user'                        // Дефолтное поле (необязательно при вводе)
+  is_admin [ self.role == 'admin' ]             // Динамическое поле `[]` (ВСЕГДА игнорируется при вводе!)
+}
+
+// Вызываем хоть через объект `{}`, хоть позиционно через `()` — `T`, `role` и `is_admin` не мешают!
+u_by_form  User { id "u1", name "Alice", meta 42 }
+u_by_tuple User("u1", "Alice", 42)              // Позиционно заполняет только открытые поля (id, name, meta)!
+
+// Функция с аргументами-формой `{}`:
+connect { host String "localhost", port Int 8080, tls Bool false } [
+  "Connecting to {host}:{port} (tls={tls})"
+]
+conn_1 connect { port 9000, tls true }          // Передали только нужные ключи как объект `{}`!
+conn_2 connect("192.168.1.1", 9000, true)       // Или позиционно через `()`!
+
+
+// --- КОНЦЕПТ 3: Постфикс `x..` (Сборка и Развертка) + Навигация `_`, `_._`, `_..` ---
+spread_and_ast_demo(tree_node) [
+  // Навигация по контексту и AST:
+  current_val  _                                // Текущий вход
+  parent_val   _._                              // Вход родительского блока на 1 уровень выше
+  all_children _..                              // Все внутренние дочерние элементы `tree_node`
+
+  // Постфикс `..` для СБОРКИ (слева) и РАЗВЕРТКИ (справа):
+  nums (1, 2, 3, 4, 5)
+  (first, second, tail_nums..) nums             // Сборка хвоста: first=1, second=2, tail_nums=(3, 4, 5)
+  expanded_nums (0, tail_nums.., 6)             // Развертка внутри: (0, 3, 4, 5, 6)
+
+  { id, other_fields.. } u_by_form              // Сборка остальных полей формы User кроме `id`!
+]
+
+
+// --- КОНЦЕПТ 4: Плоский императивный код БЕЗ лишних скобок `()` и `[]` ---
+MinorError { name String } & Bypass
+EmptyError {} & Bypass
+
+process_checkout { user User(Int), items Tuple(Int) } [
+  // Плоские гарды через `.?` — НИКАКИХ круглых `()` или двойных квадратных `[]` скобок!
+  user.age >= 18      .? MinorError { name user.name }
+  items.length > 0    .? EmptyError {}
+
+  // Императивный цикл и короткая мутация `(+ x)`:
+  total 0
+  i     0
+  Loop [
+    i >= items.length .? Break(total)           // Выход из Loop со значением `total`
+    total (+ items.get(i))                      // In-place сложение: total = total + items[i]
+    i     (+ 1)                                 // In-place инкремент: i = i + 1
+  ]
+]
+
+
+// --- КОНЦЕПТ 5: Метапрограммирование `a (b + c)` -> `Cat (Factory + Resource)` ---
+// Переопределяем переменные `a, b, c`, оператор `+` и само связывание `Bind` (пробел)!
+
+Resource { kind String "Milk" }
+Cat      { status String }
+Factory  {
+  // Переопределяем `+` для `Factory + Resource`:
+  + (res Resource) [ Cat { status "Fed with {res.kind}" } ]
+}
+
+// 1. Исходный абстрактный закон `a (b + c)`:
+abstract_law [
+  a (b + c)
+]
+
+// 2. Мета-функция, которая заменяет `a, b, c`, перегружает `+` и перехватывает связывание `Bind`:
+specialize_law(code_stream) [
+  code_stream . Meta.rewrite({
+    // а) Подменяем идентификаторы a, b, c на доменные сущности:
+    a [ cat_instance ]
+    b [ Factory {} ]
+    c [ Resource { kind "Fish" } ]
+
+    // б) Можем переписать сам оператор `(x + y)` в любой другой вызов:
+    (x + y) [ x + y ]
+
+    // в) Можем перехватить и переопределить само СВЯЗЫВАНИЕ `Bind(target, val)` (т.е. `a = ...`)!
+    Bind(target, val) [
+      target val
+      .> [ "Bound {Meta.name_of(target)} to {target}" . Shell.log ]
+    ]
+  })
+] & Compile
+
+// Получаем готовую скомпилированную функцию без накладных расходов в рантайме:
+run_cat_factory (Compile & [ abstract_law . specialize_law ])
