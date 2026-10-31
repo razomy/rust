@@ -1,12 +1,7 @@
-use pest::Parser;
 use serde_json::{json, Value as JsonValue};
-use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io;
 
-use razomy_language::analyzer::{analyze_source, AnalysisReport, Severity};
-use razomy_language::hir::is_pascal_case;
 use razomy_language::lsp::RazomyLanguageServer;
-use razomy_language::parser::{RazomyParser, Rule};
 #[test]
 fn test_lsp_lifecycle_and_features() {
     let mut server = RazomyLanguageServer::new();

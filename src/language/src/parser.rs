@@ -404,6 +404,35 @@ fn desugar_sentence_tokens(tokens: Vec<Token>) -> Vec<Token> {
 
         let tok = tokens[i].clone();
         match tok {
+            Token::Op(ref op) if op == "." => {
+                let prev_is_empty_or_op =
+                    out.is_empty() || matches!(out.last(), Some(Token::Op(_)));
+                let next_tok = tokens.get(i + 1);
+                let next_is_non_pipe_op = matches!(
+                    next_tok,
+                    Some(Token::Op(nop)) if !is_pipe_op(nop) && nop != ".."
+                );
+                let next_is_pipe_op = matches!(
+                    next_tok,
+                    Some(Token::Op(nop)) if is_pipe_op(nop)
+                );
+                let next_is_dots = matches!(next_tok, Some(Token::Op(nop)) if nop == "..");
+
+                if prev_is_empty_or_op {
+                    if next_tok.is_none() || next_is_non_pipe_op || next_is_pipe_op {
+                        out.push(Token::Path("_".into()));
+                    } else if next_is_dots || out.is_empty() {
+                        out.push(Token::Path("_".into()));
+                        out.push(Token::Op(".".into()));
+                    } else {
+                        out.push(tok);
+                    }
+                } else if next_tok.is_none() || next_is_non_pipe_op {
+                    out.push(Token::Path("_".into()));
+                } else {
+                    out.push(tok);
+                }
+            }
             Token::Path(ref p) if p == "." => {
                 out.push(Token::Path("_".into()));
             }

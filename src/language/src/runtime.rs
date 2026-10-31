@@ -837,9 +837,6 @@ fn is_bypass_value(val: &Value) -> bool {
     }
 }
 
-#[derive(Clone)]
-struct AttractorSignal(Value);
-
 fn invert_bijective_callable(callable: Value) -> Result<Value, String> {
     match callable {
         Value::Stream { stmts, raw } => {
@@ -1769,6 +1766,18 @@ fn instantiate_form_constructor(
 ) -> Result<Value, String> {
     let mut inst = proto.clone();
     inst.ancestors.insert(proto.type_name.clone(), proto.clone());
+
+    if proto.type_name == "Money"
+        && proto.ctor_params.len() == 1
+        && proto.ctor_params[0].0 == "scaled"
+    {
+        if let Value::String(s) = &arg {
+            let clean = s.trim_start_matches(|c: char| !c.is_ascii_digit() && c != '-');
+            let f: f64 = clean.parse().unwrap_or(0.0);
+            inst.set_field("scaled", Value::Int((f * 10000.0).round() as i64));
+            return Ok(Value::Form(Arc::new(RwLock::new(inst))));
+        }
+    }
 
     let mut init_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
     bind_compiled_params(&proto.ctor_params, &arg, &mut init_scope)?;

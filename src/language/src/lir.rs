@@ -345,11 +345,9 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
             })
             .collect()
     } else {
-        hf.field_order
+        fields
             .iter()
-            .filter_map(|fname| hf.fields.get(fname))
-            .filter(|f| is_open_field_for_positional_ctor(f, hf, hir))
-            .map(|f| (f.name.clone(), f.inferred_type.clone(), None))
+            .map(|f| (f.name.clone(), f.ty.clone(), f.default_val.clone()))
             .collect()
     };
 
@@ -976,9 +974,9 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
                                 || hir.forms.contains_key(&name)
                                 || hir.functions.contains_key(&name)
                         }
-                        SemanticKind::FunctionDef { body, tail, .. } => {
-                            tail.is_empty() && !body.is_empty()
-                        }
+                        SemanticKind::FunctionDef {
+                            name, body, tail, ..
+                        } => is_pascal_case(&name) && tail.is_empty() && !body.is_empty(),
                         _ => false,
                     }
                 });

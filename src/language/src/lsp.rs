@@ -45,19 +45,6 @@ impl LspRange {
         })
     }
 }
-fn snap_to_char_boundary(text: &str, index: usize, round_up: bool) -> usize {
-    let mut idx = index.min(text.len());
-    if round_up {
-        while idx < text.len() && !text.is_char_boundary(idx) {
-            idx += 1;
-        }
-    } else {
-        while idx > 0 && !text.is_char_boundary(idx) {
-            idx -= 1;
-        }
-    }
-    idx
-}
 #[derive(Debug, Clone)]
 pub struct DocumentState {
     pub uri: String,

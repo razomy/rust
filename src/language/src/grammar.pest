@@ -3,7 +3,7 @@ Program = { SOI ~ statements ~ EOI }
 // --- 1. ПРОБЕЛЫ И КОММЕНТАРИИ ---
 WHITESPACE = _{ " " | "\t" | "\r" }
 WS_NL      = _{ WHITESPACE | NEWLINE }
-COMMENT    = _{ line_comment | block_comment }
+COMMENT    = _{ block_comment | line_comment }
 
 line_comment  = @{ ("//" | ("#" ~ !("\r"? ~ "\n"))) ~ (!NEWLINE ~ ANY)* }
 block_comment = @{

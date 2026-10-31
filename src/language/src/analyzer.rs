@@ -1747,7 +1747,7 @@ fn infer_local_binding_type(
         }
         _ => {
             let ty = infer_hir_type_with_locals(inner, var_types, &report.hir);
-            if matches!(ty.as_str(), "" | "Any") {
+            if matches!(ty.as_str(), "" | "Any" | "_") || ty.starts_with("_.") {
                 None
             } else {
                 Some(ty)
@@ -2009,6 +2009,10 @@ fn verify_struct_init_fields(
         .get(fn_name)
         .map_or(false, |f| f.is_compile_time);
 
+    if form_name.contains('.') {
+        return;
+    }
+
     let Some(hf) = report.hir.forms.get(form_name).cloned() else {
         if !is_compile_macro {
             let hint = closest_member_hint(form_name, &report.hir.form_order);
@@ -2110,7 +2114,7 @@ fn check_tokens(
                     if let Some(ret) = fn_hir.effective_return_type() {
                         if step.op == PipeOp::Enrich {
                             if let Some(cur) = &current_type {
-                                current_type = Some(format!("{cur} & {ret}"));
+                                current_type = Some(enrich_type_expression(cur, ret, report));
                             }
                         } else if step.op != PipeOp::Tap {
                             current_type = Some(ret.to_string());
@@ -2126,7 +2130,7 @@ fn check_tokens(
                             if let Some(ret) = m.effective_return_type() {
                                 if step.op == PipeOp::Enrich {
                                     if let Some(cur) = &current_type {
-                                        current_type = Some(format!("{cur} & {ret}"));
+                                        current_type = Some(enrich_type_expression(cur, ret, report));
                                     }
                                 } else if step.op != PipeOp::Tap {
                                     current_type = Some(ret.to_string());
@@ -2332,13 +2336,12 @@ fn check_tokens(
                 }
             }
             Token::Group('{', sents) => {
-                // Law 1a: Внутри `{ ... }` (включая обогащение `ctx & { discount [...], final_price [ amount - discount ] }`)
-                // все поля этой формы напрямую видны в лексическом скоупе сиблингов!
+                // Law 1a: Внутри `{ ... }` ленивые потоки (`[...]`) и методы видны всем сиблингам,
+                // а обычные поля `key value` добавляются в скоуп после проверки их `value`.
                 let mut inner_locals = local_vars.clone();
                 for s in sents {
                     match classify_sentence(s) {
-                        SemanticKind::Binding { key, .. }
-                        | SemanticKind::StreamOrBranch { name: key, .. }
+                        SemanticKind::StreamOrBranch { name: key, .. }
                         | SemanticKind::FunctionDef { name: key, .. } => {
                             inner_locals.insert(key);
                         }
@@ -2347,8 +2350,20 @@ fn check_tokens(
                 }
                 for s in sents {
                     match classify_sentence(s) {
-                        SemanticKind::Binding { value, .. }
-                        | SemanticKind::TupleBinding { value, .. }
+                        SemanticKind::Binding { key, value } => {
+                            check_tokens(
+                                fn_name,
+                                &value,
+                                &inner_locals,
+                                var_types,
+                                shadowed,
+                                ambiguous,
+                                sentence_idx,
+                                report,
+                            );
+                            inner_locals.insert(key);
+                        }
+                        SemanticKind::TupleBinding { value, .. }
                         | SemanticKind::AlgebraicDef { expr: value, .. } => {
                             check_tokens(
                                 fn_name,
@@ -2571,12 +2586,25 @@ fn verify_typestate_and_union_bypass(
     // 1. Закон 3: Проверка Union-входа `User | Company | NotFound` -> `send_welcome_email(User)`
     if input_type.contains('|') && !constraint.contains('|') {
         let expected_base = constraint.split_whitespace().next().unwrap_or("");
+        let expected_form = report.resolve_type_to_form(expected_base);
         for branch in input_type.split('|').map(str::trim) {
-            if branch == expected_base {
+            if branch == expected_base || branch == constraint {
                 continue;
             }
             if let Some(branch_form) = report.resolve_type_to_form(branch) {
-                let is_subtype = branch_form.ancestors.contains(&expected_base.to_string());
+                let mut is_subtype = branch_form.ancestors.contains(&expected_base.to_string());
+                if !is_subtype {
+                    if let Some(exp_f) = &expected_form {
+                        if exp_f.is_algebraic_alias
+                            && !exp_f.ancestors.is_empty()
+                            && exp_f.union_variants.is_empty()
+                        {
+                            is_subtype = exp_f.ancestors.iter().all(|anc| {
+                                branch_form.name == *anc || branch_form.ancestors.contains(anc)
+                            });
+                        }
+                    }
+                }
                 if !is_subtype && !branch_form.is_bypass {
                     report.push_diag_with_token(
                         Severity::Error,
@@ -2641,4 +2669,24 @@ fn verify_typestate_and_union_bypass(
             i += 1;
         }
     }
+}
+
+fn enrich_type_expression(cur: &str, ret: &str, report: &AnalysisReport) -> String {
+    if !cur.contains('|') {
+        return format!("{cur} & {ret}");
+    }
+    cur.split('|')
+        .map(str::trim)
+        .map(|branch| {
+            let is_bypass = report
+                .resolve_type_to_form(branch)
+                .map_or(branch == "None", |f| f.is_bypass || f.name == "None");
+            if is_bypass {
+                branch.to_string()
+            } else {
+                format!("{branch} & {ret}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
