@@ -1,17 +1,36 @@
 name "Razomy language"
-version "5.7"
+version "6.2"
 extension ".rl"
-tags ("HOMOICONIC", "AXIOMATICS")
+tags (
+  "HOMOICONIC"
+  "AXIOMATIC"
+  "FRACTAL"
+  "SYMMETRIC"
+  "ALGEBRAIC-LINEAGE"
+  "CONCATENATIVE"
+  "ONTOLOGICAL"
+  "STAGE-POLYMORPHIC"
+)
 description r2"
-1. STRICT SEPARATION OF THREE BRACKETS:
-{} — Form   (Key-Value: Data structures, Classes, Trait impls, Routers, Modules, Maps).
+1. FRACTAL & SYMMETRIC ARCHITECTURE OF THREE BRACKETS:
+   Razomy is scale-invariant (Fractal): Project Directory == File == Module == Class == Router == Function Slots == AST Node == `{}`.
+   Every construct has a symmetric dual: Form `{}` <-> Tuple `()`, Merge `&` <-> Subtract `/`, Positive `.?` <-> Negative `.!`,
+   Type (`PascalCase`) <-> Instance (`snake_case`), Compile-Time (`Compile &`) <-> Runtime.
+
+{} — Form   (Key-Value: Data structures, Classes, Argument slots, Trait impls, Routers, Modules, Maps).
             Parens on a key position `{ (K) V }` define a parameterized/computed Map key
-            or a compound AST/path pattern key (e.g. `{ (self.old_id) [ self.new_id ] }`).
+            or a compound AST/path pattern key (e.g. `{ (old_id) [ new_id ] }`).
+            Prefix spread `..Ancestor` inside `{}` (`ElectricCar { ..Vehicle, ..HasBattery }` or `Monad(M(_)) { ..Functor(M) }`)
+            embeds ancestors directly into the Form with full Lineage history (100% equivalent to `Vehicle & HasBattery & { ... }`)!
+            A bare `PascalCase { ... }` inside `{}` (`SubToken { ... }`) declares a nested submodule/field without polluting outer keys.
             All Forms `{}` and Tuples `()` have structural equality `==` and hashing by default.
-[] — Stream (Executable body: Lazy sequence of operations, Predicates, Lambdas, Dialects).
-            Every `[...]` is a Stream with an active input context (`_`, or depth-indexed `_0`, `_1`, `_2`).
-() — Tuple  (Ordered array of data, Tuples, Argument slots, Eager value evaluation in `{}`).
-            • Canonical Triad `Name(Slots) {Form} [Stream]` & Universal Slot Resolution Rule:
+[] — Stream (Executable body: Lazy sequence of operations, Predicates, Loops, Lambdas, Dialects).
+            Every `[...]` is a Stream.
+            • Leading-dot relative operators (`.field`, `.0`, `.method`, `.+ 1`) ALWAYS bind strictly to the innermost enclosing `[...]`!
+            • Outer stream inputs and enclosing Forms are accessed unambiguously via Law 1c `PascalCase` -> `snake_case`
+              auto-projected names (`User` -> `user`, `Order` -> `order`, `Shop` -> `shop`) or explicit lexical parameter names!
+() — Tuple  (Ordered array of data, Tuples, Positional argument projection of `{}`, Eager value evaluation).
+            • Canonical Triad `Name(Slots) {Form} [Stream]` & Form-Tuple Slot Duality:
               - `Name { ... }`                     -> Form / Struct / Module (`PascalCase`, immutable Prototype/Type!)
               - `Name(T, U) { ... }`               -> 1st-Order Generic Form (unbound `PascalCase` `T`, `U` are Type Params `*`;
                                                       MUST NOT shadow existing Types in scope!)
@@ -19,176 +38,180 @@ description r2"
               - `Name(T(_(_), _)) { ... }`         -> 3rd-Order Generic Form (`T` has Kind `(* -> *) -> * -> *`)
               - `Name(TC Category, cat TC) { ... }`-> Bounded Generic Form (`PascalCase` `TC Category` constrains Type `TC <: Category`;
                                                       `snake_case` `cat TC` binds runtime value parameter `cat` of type `TC`)
-              - `Name(Age) { new_age age }`        -> Auto-Unpacked Class (single atomic known Type `Age` in scope auto-binds `age Age` via Law 1c!)
+              - `Name(Age) { new_age age }`        -> Auto-Projected Class (single atomic known Type `Age` in scope auto-binds `age Age` via Law 1!)
               - `Name(u1 User, u2 User) { ... }`   -> Duplicate or compound Type Slots (`A & B`) MUST use explicit `snake_case` names!
-              - `Name(a Type, b Int) { ... }`      -> Explicit Class (`snake_case` value slots are also Form fields on `self`!)
-              - `Name(T, a T) { ... }`             -> Generic Class (`PascalCase` Type Param `T` + `snake_case` Value Param `a`)
-              - `name(Age) [ age == 18 ]`          -> Function with auto-bound `age` from single atomic known `Age` Type (Law 1c)
-              - `name(A, B, x A) B [Body]`         -> Generic function: pure Type slots (`A`, `B`) are compile-time and auto-inferred;
-                                                      runtime UFCS calls `val . name` bind directly to the 1st value slot (`x`)!
+              - `Name(a Type, b Int) { ... }`      -> Explicit Class (`snake_case` value slots are also Form fields in lexical scope!)
+              - `Name(T) { id String, meta T }`    -> Form-Tuple Constructor Duality: can be instantiated by keys `Name { id "1", meta 99 }`
+                                                      OR positionally `Name("1", 99)`! Default fields and lazy `[...]` fields are auto-skipped!
+              - `name { a Int, b Int 0 } [Body]`   -> Named function with Form slots `{}` (callable via `name { a 1 }` OR `name(1, 2)`!)
               - `name(args) ReturnType [Body]`     -> Named function with explicit return type (`snake_case`)
               - `name(args) [Body]`                -> Named function (with optional defaults `name(k 10)`)
               - `name() [Body]`                    -> Parameterless function (explicit `()` required!)
-              - `(args) [Body]` or `[Body]`        -> Anonymous lambda `(args) [Body]` or pipe stream `[ _ + 1 ]`
+              - `(args) [Body]` or `[Body]`        -> Anonymous lambda `(args) [Body]` or relative pipe stream `[ .+ 1 ]` / `[ .trim ]`
               - `name(args) ReturnType`            -> Method contract signature inside a Form `{}`
               - `cb (InType) [OutType]`            -> Function Type signature in parameter or field slots
             • Tuple-Argument Duality & Auto-Lifting:
               An incoming argument list `(a, b, c)` IS a Tuple `()`. A function expecting `Tuple`
               accepts `fn(a, b, c)` without double parens `(())`, and a slot expecting `Tuple(T)`
               automatically lifts a single element `(x)` without requiring a trailing comma!
-2. CASE RULE, COMPILE-TIME FIRST (`Compile &`), TAGGED STRINGS & SPACE-DELIMITED LEXER:
+
+2. CASE RULE, ZERO SPECIAL KEYWORDS (`No self/Self`), COMPILE-TIME FIRST (`Compile &`), TAGGED STRINGS & LEXER:
 • PascalCase  — Types, Forms, Classes, Modules, Union Variants, Type Params (`User`, `Age`, `TC`).
                 RULE (Prototype-Type Duality): `PascalCase` bindings are IMMUTABLE Form Prototypes & Types
                 (`Product { id Int }`). Reading `ExistingForm.field` or `ExistingForm.0` inspects its static
-                compile-time default specification, whereas writing `ExistingForm { id 3 }` (or `ExistingForm {}`)
+                compile-time default specification, whereas writing `ExistingForm { id 3 }` (or `ExistingForm("1")`)
                 inside an expression instantiates a concrete runtime instance of `ExistingForm`.
+                Acronyms in `PascalCase` use standard title case (`Http`, `Ui`, `Ai`, `Json`) so `PascalCase` <-> `snake_case` is 1-to-1!
 • snake_case  — Variables, Field keys, Functions, Methods, Value Params (`user_id`, `find_user`).
-                RULE: Only `snake_case` bindings inside `[]` can be rebound/mutated in-place!
+                RULE: `snake_case` bindings are immutable by default when bound via space `a (expr)`,
+                and can only be updated in-place inside `[]` via explicit relative update `a (.= val)`, `a (.+ 1)`, `a (.& { ... })`!
+• '_'         — Pure Wildcard / Hole (`Any`): `_` is NEVER a variable! It is used strictly as a wildcard/hole
+                in default router branches `{ _ [...] }`, tuple patterns `(0, _)`, and Higher-Kinded Type slots `F(_)`.
 • Compile     — Compile-Time Evaluation Tag (`Compile & [ ... ]` or `fn(...) [...] & Compile`):
-                Razomy is a Compile-Time First language. Any expression, macro, AST rewrite (`Meta.rewrite`),
-                or static assertion intersected with `& Compile` is evaluated 100% at compile-time,
-                emitting flat, zero-overhead machine code!
+                Razomy is a Stage-Polymorphic, Compile-Time First language. Any expression, macro, AST rewrite (`Meta.rewrite`),
+                or static assertion intersected with `& Compile` is evaluated 100% at compile-time!
 • 'symbol'    — Paired Symbol Literal: exact constant tag without interpolation (`'draft'`, `'GET'`).
-• "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}")
+• "..."       — Standard String (multiline by default): evaluates `{expr}` inside ("Hello, {name}" or "{.name}")
                 and supports `\` escapes (`\n`, `\t`, `\\`, `\"`, `\{`, `\}`).
 • r"..."      — Raw String (multiline by default, also numbered `r0"..."0`, `r1"..."1`):
                 zero `\` escapes and zero `{}` interpolation; never uses `#` so comments never collide!
 • Type"..."   — Type-Prefixed String Sugar: ANY `Type"..."` (`Money"199.99"`, `Path"./a.json"`,
                 `Url"https://ex.com"`, `Date"2026-03-30"`, `Hex"#2A9D8F"`, `Pair"1920x1080"`) is
                 100% syntax sugar for the constructor call `Type("...")` (`Money("199.99")`, etc.)!
-• ',' & '\n'  — Universal Element Separator: Inline separator (`,`) and Line separator (`\n`) are 100%
-                interchangeable across ALL three brackets: fields in `{}`, steps in `[]`, and items in `()`.
+• ',' & '\n'  — Universal Element Separator & Continuation Rule: Inline separator (`,`) and Line separator (`\n`)
+                are 100% interchangeable across ALL three brackets (`{}`, `[]`, `()`), EXCEPT when the next line
+                starts with a binary/pipeline operator (`.`, `.>`, `.&`, `.?`, `.!`, `.|`, `./`, `&`, `|`, `+`, `-`, etc.),
+                which continues the multiline expression!
 • '#' & '//'  — Comments & Homoiconic Documentation: `//` is a single-line comment; `# ... #`, `#n ... n#` (when `#`
                 is followed by whitespace/newline) is a multiline block comment. Any comment placed
                 immediately before or inline after a declaration is preserved in the AST as `Meta.doc_of`!
-• ' ' (Space) — Pair & Token Separator:
-                (a) Universal Binding & Three-Bracket Unpacking Axiom:
-                    • `key value` or deep path/index update `a.b.0.c val`: binds a field in `{}`, a module
-                      member at root, or a local variable / Perceus O(1) in-place mutation inside `[]`.
-                    • `(a, b) tuple_src`: positional unpacking of a Tuple `()` into `a` (`.0`) and `b` (`.1`).
-                    • `{ k1, k2 } form_src`: named key unpacking of a Form/Module `{}` into `k1` and `k2`.
-                    • `..target` (tight prefix `..` without space): spreads/mixins ALL public members of `target`
+• ' ' (Space) — Pair & Token Separator (Overloadable AST node `Bind(Target, Source)`):
+                (a) Pure Declaration Binding vs Explicit Relative Update `(.op val)`:
+                    • `key value` or `key Type value`: declares a field in `{}`, a module member at root, or a new
+                      local binding inside `[]`. If a local binding in `[]` specifies an expected Type `val ExpectedType (expr)`
+                      and `(expr)` returns a Union `ExpectedType | Err` where `Err <: Bypass`, Law 3 automatically short-circuits `Err`!
+                    • `x (.= new_val)`, `x (.+ 1)`, `x (.* 2)`, `x (.& { ... })`, or `a.b.0.c (.= val)`:
+                      explicit in-place update of an existing `snake_case` variable or deep path inside `[]` (Perceus O(1) mutation!).
+                      Because mutation ALWAYS requires `(.= ...)` or `(.op ...)`, a plain space `a b` NEVER silently mutates outer state!
+                    • `(a, b, ..rest) tuple_src`: positional unpacking of a Tuple `()` with prefix `..` rest capture.
+                    • `{ k1, k2, ..rest } form_src`: named key unpacking of a Form/Module `{}` with prefix `..` rest capture.
+                    • `..target` (tight prefix `..`): spreads/mixins ALL public members & lineage of `target`
                       into the enclosing Form `{}`, Tuple `()`, or Stream `[]`!
-                    (There is NO `=` assignment operator in Razomy!).
+                    (There is NO bare `=` assignment statement in Razomy!).
                 (b) Tight Call `fn(x)` vs Spaced Binding `x (expr)`:
-                    • `name(args)` (NO space before `(`) is a function call or type constructor application.
-                    • `name (expr)` (WITH space before `(`) binds or rebinds variable/field `name` to `(expr)`.
+                    • `name(args)` (NO space before `(`) is a function call, reactive cell read/write, or constructor call.
+                    • `name (expr)` (WITH space before `(`) binds `name` to `(expr)` (or updates `name` if `(expr)` is `(.op val)`).
                     • COMPILER SAFETY: If `name` in `name (expr)` resolves to an existing Function in scope
                       rather than a variable/field, the compiler emits `E01_AMBIGUOUS_CALL_OR_BIND`!
-                (c) Space-Delimited Binary Operators vs Tight Unary Prefixes:
-                    • Binary operators (`+`, `-`, `*`, `/`, `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`,
-                      `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`, `.?`, `.|`, `&`, `|`) MUST be surrounded by
+                (c) Space-Delimited Binary Operators vs Symmetric Tight Prefix Unary Operators:
+                    • ALL Binary operators (`+`, `-`, `*`, `/`, `%`, `**`, `<<`, `>>`, `==`, `!=`, `>`, `<`,
+                      `>=`, `<=`, `&&`, `||`, `.`, `.>`, `.&`, `.?`, `.!`, `.|`, `./`, `&`, `|`) MUST be surrounded by
                       spaces (`a - b`, `a / b`, `a . b`, `a & b`). Inside a Form `{}` declaration, operator
                       method definitions have a space before their parameter tuple (`+ (other T) [...]`).
-                    • Unary prefix operators attach TIGHTLY (NO space after operator) to their operand:
-                      - `!x`     — logical negation or negative type/pattern guard
-                      - `-x`     — arithmetic negation (`-offset`, `-(a + b)`, `-42`)
-                      - `.field` — relative path getter (sugar for `[ _.field ]` inside streams)
-                      - `..x`     — context spread / mixin (merges `x` into enclosing `{}`, `()`, or `[]`;
-                                   because `..x` has no trailing space, it NEVER collides with multiline `\n & b`!)
+                    • ALL Unary operators are PREFIX and attach TIGHTLY (NO space) to their operand:
+                      - `!x`      — logical negation (`!flag`) or negative type/typestate guard (`Order & !Cancelled`, `!Any` == `Never`)
+                      - `-x`      — arithmetic negation (`-offset`, `-(a + b)`, `-42`)
+                      - `.field`  — relative getter/method on innermost stream input (`.name`, `.0`, `.trim`)
+                      - `.+ x`    — relative operator step on innermost stream input (`.+ 1`, `.>= 18`, `.== 0`, `.= new_val`)
+                      - `..x`     — prefix rest capture `(head, ..tail)` on left of bind, or lineage/context spread
+                                    `{ ..Vehicle }`, `(0, ..tail, 5)`, `[ ..validation_stream, save ]`, `..root.prelude`!
+
 3. COMPLETE OPERATOR & ALGEBRAIC OVERLOADING REFERENCE:
 'a.b'     (no spaces)   — Tight Path Access: field, module, ancestor `a.Parent.field`, or index `a.0`, `a.-1`
-'.field'  (tight unary) — Relative Getter: sugar for `[ _.field ]` (e.g. `users . map(.name)`)
-'!x'      (tight unary) — Logical / Pattern Negation: boolean `!flag` or negative type guard `!Cancelled`
-'-x'      (tight unary) — Arithmetic Negation: negates number, variable, or group (`-5`, `-vel`, `-(a + b)`)
-'..x'      (tight unary) — Context Spread / Mixin: injects all elements of `x` into the enclosing bracket:
-                          • In `{}` / File: `..root.prelude`, `..Path"../ext.rl"`, `..ParentForm` merges fields into `{}`
-                          • In `()`       : `(1, ..other_tuple, 4)` or `fn(..args_tuple)` spreads tuple items into `()`
-                          • In `[]`       : `[ ..validation_stream, save ]` inlines stream steps into `[]`
+'.field'  (tight prefix)— Relative Getter / Method: accesses field, index `.0`, or method `.trim` of innermost `[...]` input
+'.+ b'    (tight prefix)— Relative Operator / Update: applies operator (`+`, `-`, `*`, `/`, `==`, `>=`, `=`, `&`) to target or stream input
+'!x'      (tight prefix)— Logical / Type Negation: boolean `!flag` or Closed-World Negative Type Guard `Order & !Cancelled`
+'-x'      (tight prefix)— Arithmetic Negation: negates number, variable, or group (`-5`, `-vel`, `-(a + b)`)
+'..x'     (tight prefix)— Prefix Rest Capture & Lineage/Context Spread:
+                          • On left of bind : `(first, ..rest) nums` or `{ id, ..rest } user` captures remaining elements/fields
+                          • In `{}` / File  : `..Vehicle`, `..root.prelude`, `..Path"../ext.rl"` embeds public members & lineage into `{}`
+                          • In `()`         : `(1, ..other_tuple, 4)` or `fn(..args_tuple)` spreads tuple items into `()`
+                          • In `[]`         : `[ ..validation_stream, save ]` inlines stream steps into `[]`
 'a . b'   (with spaces) — Dataflow Pipeline: passes `a` left-to-right (`a . b` is sugar for `b(a)`,
                           and `a . b(c, d)` is UFCS sugar for `b(a, c, d)`)
 'a .> b'                — Tap Pipeline: executes side-effect `b(a)` and passes original `a` further
 'a .& b'                — Enrich Pipeline: calls `b(a)` and merges `&` result with left context `a`
                           (distributes over `Bypass` Unions: `A .& (B | Err)` produces `(A & B) | Err` via Law 3!)
-'a .? b'                — Safe/Filter Pipe: passes `a` further only if predicate/type `b` matches, else `None`
+'a ./ b'                — Subtract/Strip Pipeline: removes field path, key symbol, or ancestor `b` from `a` in pipeline (`a / b`)
+'a .? b'                — Positive Filter & Conditional Exit Pipe (Triggers when TRUE):
+                          • In pipeline `val .? Pred` : passes `val` (narrowed to `Pred`!) if `Pred(val)` is `true`, else `None` (`& Bypass`).
+                          • Flat conditional `cond .? BypassVal` : if `cond` is `true`, immediately exits enclosing loop/stream
+                            with `BypassVal` (e.g. `i >= items.length .? Break(total)`, `limit <= 0 .? Return(0)`)!
+'a .! b'                — Negative Guard / Assert Pipe (Triggers when FALSE or `None`):
+                          • Flat guard `cond .! ErrVal` : asserts that `cond` is `true`; if `false`, immediately short-circuits
+                            enclosing stream/loop with `Bypass` outcome `ErrVal` (e.g. `user.age >= 18 .! MinorError`)!
+                          • In pipeline `val .? Pred .! ErrVal` : if `val .? Pred` yields `None`, replaces `None` with `ErrVal`!
 'a .| {}'               — Parallel Pipeline: concurrent fan-out execution of branches in `{}`, merged via `&`
 'a & b'   (with spaces) — Universal Algebraic Composition / Intersection (7 Canonical Combinations):
                           1. Form & Form       -> Inheritance, Trait `impl`, or Structural Merge with Lineage
-                          2. Type & Stream     -> Refinement Type (type constrained by predicate `[...]`)
+                          2. Type & Stream/!T  -> Refinement Type (`Int & [ .> 0 ]`) or Negative Type Guard (`Order & !Cancelled`)
                           3. Function & Form   -> Partial application / Default & DI override (`fn & { db MockDb }`)
                           4. Stream & Stream   -> Sequential pipeline composition (`[ a . b ]`)
                           5. Value & TagForm   -> Metadata / visibility / compile-time attachment (`val & Private`, `Compile & [...]`)
                           6. TypeA & TypeB(A)  -> F-Bounded Trait constraint (`User & Comparable(User)`)
-                          7. Type & Bypass     -> Marks a failure/empty Union outcome (`NotFound & Bypass`) for Law 3 short-circuiting!
+                          7. Type & Bypass     -> Marks a failure/empty/control Union outcome (`NotFound & Bypass`) for Law 3 short-circuiting!
 'a | b'                 — Union: algebraic sum of types, patterns, or outcomes
-'a / b'                 — Relative Subtraction (for Types/Forms/Maps) or Overloaded Method `/` (for Values):
+'a / b'                 — Structural Subtraction (for `PascalCase` Types/Forms or Maps) vs Overloaded `/` (for `snake_case` Values):
                           • Form / FieldPath   -> Removes specific field (`User / User.password_hash`)
                           • Form / 'key'       -> Removes field key from all ancestors (`Combined / 'name'`)
-                          • Form / Ancestor    -> If `Ancestor` is in `Form` lineage, removes its slice (`UserAndCloud / Cloud`)
-                          • Form / TagOrState  -> If `TagOrState` is NOT in `Form` lineage, acts as a Closed-World Negative
-                                                  Type Constraint / Typestate Guard `Form & ![ _ . is(TagOrState) ]` (`Order / Cancelled`)
+                          • Form / Ancestor    -> Removes `Ancestor` slice from `Form` lineage (`ElectricCar / Vehicle`);
+                                                  emits compile error if `Ancestor` or `'key'` is not present in `Form`!
                           • Map  / key_val     -> Removes entry key from a Map (`config_map / "host"`)
                           • Union / Type       -> Removes branch from Union (`Result / Error`)
-                          • ValueA / ValueB    -> Invokes overloaded `/` method (`num1 / num2`, `shape1 / shape2`)
-'a..b'                  — Range: sequence generator (`1..10`, `"a".."z"`)
-'x == Pattern'          — Equality or Pattern Inclusion: when `Pattern` is a Range `a..b` or Union `A | B`
-                          (`val == (1..100)`, `role == ('admin' | 'manager')`), `==` is infix sugar for `x . matches(Pattern)`!
-'_' & '_0, _1, _2'      — Active Stream Subject & Depth-Indexed Subjects:
-                          • Inside any `[...]`, `_` is ALWAYS the input of the innermost enclosing `[...]`.
-                          • When streams are nested `fn(a) [ a . [ ... ] ]`, `_0` is the root function stream's
-                            input tuple, `_1` is the 1st nested `[...]` input (so inside the 1st nested `[...]`,
-                            `_1` and `_` are identical!), `_2` is the 2nd nested `[...]` input, etc.
-                          • Note: Router branch bodies `x . { Pattern [Body] }` are themselves streams `[...]`,
-                            so each nested `[...]` increments the depth index (`_1`, `_2`, etc.) predictably!
-                          • In router keys `{ _ [...] }`, Type slots `F(_)`, or patterns, `_` is wildcard/hole.
-'self'                  — Current Form Instance: references the enclosing Form `{}` inside its methods/formulas
-'Self'                  — Current Form Type: references the enclosing Form Type in contracts and recursive types
+                          • val_a / val_b      -> On runtime value instances (`snake_case` or `(expr)`), invokes overloaded `/` method!
+'Range(a, b)'           — Range Constructor: sequence/pattern generator (`Range(1, 10)`, `Range("a", "z")`)
+'x == Pattern'          — Equality or Pattern Inclusion: when `Pattern` is a `Range(a, b)` or Union `A | B`
+                          (`val == Range(1, 100)`, `role == ('admin' | 'manager')`), `==` is infix sugar for `x . matches(Pattern)`!
 '{k (e)}' vs '{k [e]}'  — Eager vs Zero-Cost Lazy/Reactive Field:
                           • `k (e)` evaluates `(e)` once on creation and stores the value in the struct layout.
-                          • `k [e]` compiles to a pure static inline getter `Form.get_k(self)` (or reactive computed
-                            node when reading a `Signal`). Because `k [e]` does NOT store a heap closure capturing `self`,
-                            the Form retains `RefCount == 1` and supports Perceus O(1) in-place mutation!
+                          • `k [e]` compiles to a pure static inline getter `Form.get_k(instance)` (and is automatically
+                            skipped during positional `Form(...)` construction!).
 'x . { K [V] }'         — Universal Router Axiom: every branch key `K` in a router `{ K [V] }` is unified sugar for
-                          a predicate check `[ _ . matches(K) ]`. By Law 3, if `x` is a Union `A | B` and a partial
+                          a predicate check `[ .matches(K) ]`. By Law 3, if `x` is a Union `A | B` and a partial
                           router only handles `{ A [Out] }`, unhandled `Bypass` branch `B` automatically bypasses into `Out | B`!
-                          • Value key `0` or `(0, 0)`        -> sugar for `[ _ == (0, 0) ]`
-                          • Type key `Circle`                -> sugar for `[ _ . is(Circle) ]` (binds `circle` via Law 1c)
-                          • Tuple of Types `(Disconnected, ConnectCmd)` -> matches element types & binds `disconnected`, `connect_cmd`
-                          • Structural pattern `{ path ("users", id) }` -> matches fields and extracts `id`
-                          • Computed/Path key `(self.x)`     -> matches AST/computed key `self.x`
-                          • Predicate stream `[ _ > 10 ]`    -> executes boolean stream directly
-• Modules & Files — Every `.rl` file is an implicit immutable Form `FileName { ... } / Private`;
-                          every directory is a nested Form `{ child_file ChildForm }`. NO `import`/`module`/`export` keywords:
-                          - Static Alias (`PascalCase`): `Http std.net.http` or `ExtMod Path"../shared/ext_mod.rl"`
-                          - Named Field Unpack (`{}`): `{ get, post } std.net.http` unpacks specific keys into scope.
-                          - Context Mixin (`..` tight prefix): `..root.prelude` or `..Path"../shared/ext_mod.rl"` merges all public members into current file/Form!
-                          - Service Instance (`snake_case`): `db ( std.db.Sqlite { path "./a.db" } )` instantiates runtime Form with state/DI slots.
-                          - Submodule: `SubMod { ... } / Private` inside any file. Facade re-export: `Facade (ModA & ModB) / Private`.
+
 4. FOUR IRON LAWS OF RAZOMY & COMPILER GUARANTEES:
-- LAW 1 (TRANSPARENT SCOPING & SAFE SLOT PROJECTION — NO IMPLICIT SHADOWING OR INDEXING):
-  Variables enter `{ form }` or `[ stream ]` in 4 explicit, predictable ways:
-  (a) `self.field` — inside Form definitions `{}`, methods and reactive formulas access sibling fields via `self`.
-                     Value parameter slots in `Form(a Int, b Int) { ... }` are automatically fields on `self`!
-  (b) `_` & `_0, _1` — inside any stream `[...]`, `_` is the input of the nearest `[...]`, while `_0`, `_1`, `_2`
-                     index enclosing streams from the function root (`_0`) down to nested pipe/router streams (`_1`, `_2`).
-  (c) `Name(KnownType)` — Safe Single-Slot Projection: when a single atomic `PascalCase` identifier in `()` refers to
-                     an EXISTING Type in scope, it acts as shorthand for `(known_type KnownType)`:
-                     • Single atomic occurrence `(Age)` -> binds `age` of type `Age`.
-                     • NO IMPLICIT SPLITTING OR INDEXING: Multiple occurrences of the same Type `(User, User)` or
-                       compound intersection expressions `(User & Cart)` without an explicit `snake_case` name are a
-                       COMPILE ERROR (`E02_DUPLICATE_UNNAMED_TYPE`)! You must name them: `(u1 User, u2 User)` or `(ctx User & Cart)`.
-                     • NO SILENT SHADOWING: An unbound `PascalCase` identifier `Box(T)` or bounded slot `Name(TC Category)`
-                       declares a compile-time Type Parameter (`T` or `TC <: Category`). If an unbound Type Parameter name
-                       collides with an existing Type in scope, the compiler emits `E03_TYPE_PARAM_SHADOWS_TYPE`!
-  (d) `fn(u User)` or `fn({ name } User)` — explicit parameter naming (`u.name`) or explicit field destructuring
-                     (`{ name }`) when custom variable names or direct fields are desired in scope.
-- LAW 2 (LINEAGE NAMESPACING & DEAD LINEAGE ELIMINATION): Upon name collision during merge `A & B`, unique
-  fields are accessed directly (`ctx.age`), while colliding fields require the ancestor path (`ctx.A.id`, `ctx.B.id`)
-  until resolved via `/`. Unreferenced ancestor fields are eliminated at compile time (zero runtime RAM overhead).
-- LAW 3 (SUBTYPING-DRIVEN `Bypass` OUTCOME SHORT-CIRCUITING): When a Union `A | B` is piped into `fn(Param)` or partial router `{ Param [...] }`:
-  • If `(A | B) <: Param` (e.g. `Param` is `Any` or `A | B`), `fn` receives the entire `A | B` directly.
+- LAW 1 (UNIFIED LEXICAL SCOPING, INNERMOST RELATIVE `.` & UNIVERSAL `PascalCase` -> `snake_case` TYPE PROJECTION):
+  Razomy has ZERO special context keywords (`no self`, `no Self`, `no _0`, `no _._`). Values enter `{ form }` or `[ stream ]` in 4 ways:
+  (a) Direct Lexical Scope — inside any Form `FormName { ... }`, its fields (`price`, `quantity`) and slot parameters (`a`, `b`)
+                     are directly visible by name in all sibling fields and methods! Inside any function `fn(state) [ ... ]`,
+                     `state` is directly visible at all nested depths via standard lexical scoping!
+                     If a local variable shadows an outer Form field, the outer Form field is always accessible via its
+                     Law 1c auto-projected Form name (`form_name.field`).
+  (b) Innermost Leading-Dot Relative Access (`.field`, `.0`, `.method`, `.+ x`) — inside any stream `[...]`, a leading dot
+                     ALWAYS targets the input of the INNERMOST enclosing `[...]` (`[ .age >= 18 ]`, `[ .+ 10 ]`).
+                     It NEVER crosses `[...]` boundaries!
+  (c) Universal Single-Type Projection (`KnownType` -> `known_type`) — whenever a single atomic `PascalCase` Type is the subject
+                     of a Form definition `FormName { ... }`, a function/class slot `Name(KnownType)`, a router branch `{ KnownType [...] }`,
+                     or a typed stream `[...]`, it automatically binds its `snake_case` instance variable `known_type`:
+                     • Inside `Channel(T) { ... }` or `LedgerNode { ... }` -> binds `channel` or `ledger_node` (the current Form instance!).
+                     • In nested streams `[ ... [ ... ] ]`, outer stream subjects are accessed by their projected type names
+                       (`order`, `item`, `shop`), while `.` accesses the innermost stream subject!
+                     • NO IMPLICIT SPLITTING OR SHADOWING: Multiple occurrences of the same Type `(User, User)` — including
+                       a method parameter `(User)` inside Form `User` — or compound intersections `(User & Cart)` without an
+                       explicit `snake_case` name are a COMPILE ERROR (`E02_DUPLICATE_UNNAMED_TYPE`)! Name them: `(other User)`.
+                     • An unbound `PascalCase` identifier `Box(T)` or bounded slot `Name(TC Category)` declares a Type Parameter.
+                       If an unbound Type Parameter collides with an existing Type in scope, the compiler emits `E03_TYPE_PARAM_SHADOWS_TYPE`!
+  (d) `fn(u User)` or `fn { name } [ ... ]` — explicit parameter naming (`u.name`) or Form/Tuple slot destructuring
+                     (`{ name }`, `Some(val)`) when custom variable names or direct fields are desired in scope.
+- LAW 2 (LINEAGE NAMESPACING & DEAD LINEAGE ELIMINATION): Upon name collision during merge `A & B` or `..A` embedding,
+  unique fields are accessed directly (`ctx.age`) OR via ancestor path (`ctx.A.age`), while colliding fields require the
+  explicit ancestor path (`ctx.A.id`, `ctx.B.id`) until resolved via `/`. Unreferenced ancestor fields are eliminated at compile time.
+- LAW 3 (SUBTYPING-DRIVEN `Bypass` OUTCOME SHORT-CIRCUITING): When a Union `A | B` flows via a pipeline operator
+  (`.`, `.>`, `.&`, `.?`, `.!`, `./`, `.|`) into `fn(Param)` / partial router `{ Param [...] }`, OR into a typed local binding `val Param (expr)`:
+  • If `(A | B) <: Param` (e.g. `Param` is `Any` or `A | B`), `fn` or `val` receives the entire `A | B` directly.
   • If `A <: Param` but `B` is NOT a subtype of `Param`:
-    - If `B <: Bypass` (e.g. `None`, `NotFound`, `IoError`), branch `B` automatically bypasses `fn` without invocation,
-      accumulating into the final Union return type `Out | B`!
-    - If `B` is NOT marked with `& Bypass` (an unhandled domain type!), the compiler emits `E04_UNHANDLED_UNION_BRANCH`!
+    - If `B <: Bypass` (e.g. `None`, `NotFound`, `IoError`, `Break`, `Return`), branch `B` automatically short-circuits without invocation,
+      accumulating into the enclosing stream's Union return type `Out | B`!
+    - If `B` is NOT marked with `& Bypass`, the compiler emits `E04_UNHANDLED_UNION_BRANCH`!
 - LAW 4 (UFCS AUTOCOMPLETE, ZERO-COST GETTERS & GUARANTEED TCO): Because `x . fn` == `fn(x)`, any function `fn(x Type)`
-  in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls are guaranteed to compile
-  into zero-allocation machine loops (Tail-Call Optimization).
+  in scope is suggested by IDE autocomplete when typing `val .`. Tail-recursive stream calls and `Loop [...]` blocks are
+  guaranteed to compile into zero-allocation machine loops.
 "2
 
 
 #
-0. CORE AXIOMS, SAFE SLOTS (LAW 1c), DEPTH-INDEXED `_1` & LINEAGE HISTORY
+0. CORE AXIOMS, UNIVERSAL TYPE PROJECTION (LAW 1) & LINEAGE HISTORY
 #
 
 // Single line comments (`//`) and multiline block comments (`# ... #`)
@@ -196,7 +219,7 @@ description r2"
 
 // Built-in Compile-Time & Control Contracts:
 Compile {} // Forces compile-time evaluation (`Compile & [...]` or `fn(...) [...] & Compile`)
-Bypass  {} // Marks Union failure/empty branches (`None`, `NotFound`) that automatically short-circuit via Law 3!
+Bypass  {} // Marks Union failure/empty/control branches (`None`, `NotFound`, `Break`, `Return`) that short-circuit via Law 3!
 
 // --- A. The 4 Core Axioms of Forms & Lineage (Clear Vehicle Hierarchy) ---
 
@@ -206,24 +229,27 @@ default_user_name "Alice"
 
 // Axiom 2: [FormName] { [key] [Type_or_Default] } (Declares a new immutable Form Prototype/Type)
 Vehicle {
-  brand     BrandName            // Required field of type `BrandName` (`String`)
+  brand     BrandName            // Required open field of type `BrandName` (`String`)
   max_speed Int 180              // Explicit type `Int` with default value `180`
   tag       "standard"           // Inferred type `String` with default `"standard"`
 }
 
-// Axiom 3: Form Composition via Binary `Parent1 & Parent2` OR Unary Mixin `&Parent` inside `{}`!
+// Axiom 3: Form Composition via Prefix Lineage Spread `..Ancestor` inside `{}` OR Binary `&`!
 HasBattery {
   battery_kwh Int 75
 }
 
-// Binary `&` outside `{}` and unary `&Parent` inside `{}` are 100% equivalent:
-ElectricVehicle Vehicle & HasBattery & {
+// Both styles below are 100% equivalent and preserve full Lineage history (`ElectricVehicle / Vehicle`):
+// • Unique fields (`brand`, `battery_kwh`) are accessible BOTH directly (`ElectricVehicle.brand`)
+//   AND via ancestor lineage (`ElectricVehicle.Vehicle.brand`)!
+// • Using explicit `..Vehicle` inside `{}` clearly distinguishes ancestor inheritance from nested submodules!
+ElectricVehicle {
+  ..Vehicle                      // Tight prefix `..` embeds `Vehicle` fields & lineage into this Form!
+  ..HasBattery                   // Tight prefix `..` embeds `HasBattery` fields & lineage into this Form!
   charging_port String "Type2"
 }
 
-ElectricVehicleMixinStyle {
-  ..Vehicle                       // Tight unary `..` spreads `Vehicle` fields & lineage into this Form
-  ..HasBattery                    // Tight unary `..` spreads `HasBattery` fields & lineage into this Form
+ElectricVehicleIntersectStyle Vehicle & HasBattery & {
   charging_port String "Type2"
 }
 
@@ -243,7 +269,6 @@ MyCar SportsCar {
 }
 
 // 1. Tight dot '.' access on Form Prototypes: Active Defaults vs Ancestor Specification (Lineage History)
-//    Note: Compiler resolves static prototype & ancestor accesses at compile-time with 0 runtime memory cost!
 MyCar.brand                              // "CustomPorsche" (active overridden default on MyCar prototype)
 MyCar.SportsCar.brand                    // "Porsche" (value specified at SportsCar ancestor level)
 MyCar.SportsCar.Car.brand                // "GenericMotor" (value from Car ancestor)
@@ -256,29 +281,29 @@ MyGarageCar.MyCar.SportsCar              // Access to entire ancestor slice
 MyGarageCar.0                            // Access default by field index 0 (brand -> "CustomPorsche")
 MyGarageCar.-1                           // Access default by field index -1 from end (garage_slot -> 1)
 
-// 2. Instantiating a Form Prototype & Updating Data by Deep Field Path, Positional Index (`.0`, `.-1`), or `&` Merge:
+// 2. Instantiating a Form Prototype & Updating Data Explicitly via `(.= val)`, `(.& {...})`, or `&`:
 mutate_car_demo() [
-  // Instantiating `MyGarageCar` prototype into a mutable local `snake_case` instance `my_car`:
+  // Instantiating `MyGarageCar` prototype into a local `snake_case` instance `my_car`:
   my_car (MyGarageCar {})
 
   // (a) Create new updated Form instance via `&` while preserving Lineage history:
   upgraded_car (my_car & { max_speed 350, garage_slot 2 })
 
-  // (b) In-place rebinding of `snake_case` variable by field name (Perceus O(1) zero-copy mutation):
-  my_car.brand "Tesla"
+  // (b) Explicit in-place update of `snake_case` variable via `(.& { ... })` or `(.= val)` (Perceus O(1) mutation):
+  my_car (.& { max_speed 320 })
+  my_car.brand (.= "Tesla")
 
-  // (c) In-place rebinding by positional field index (`.0` is `brand`, `.-1` is `garage_slot`):
-  my_car.0  "Rivian"
-  my_car.-1 42
+  // (c) Explicit in-place update by positional field index (`.0` is `brand`, `.-1` is `garage_slot`):
+  my_car.0  (.= "Rivian")
+  my_car.-1 (.= 42)
 ]
 
-// --- B. Universal Slot Rule: Generics, Bounded Generics & Safe Law 1c Parameters ---
+// --- B. Universal Slot Rule: Generics, Bounded Generics, Form-Tuple Duality & Safe Law 1 Parameters ---
 
 Category { title String }
 Age      Int
 
 // 1. Unbound 1st-Order Generic Form (`T` is unbound `PascalCase` -> Type Parameter `*`):
-//    Note: If `T` already existed as a Type in scope, compiler would emit `E03_TYPE_PARAM_SHADOWS_TYPE`!
 Box(T) {
   item T
 }
@@ -291,7 +316,7 @@ CategorizedUser(TC Category, active_cat TC) {
   current    active_cat          // Uses `active_cat` (`snake_case`) value instance
 }
 
-// 3. Single Auto-Named Type Parameter (`Age` is a single atomic known Type in scope -> auto-binds `age` via Law 1c):
+// 3. Single Auto-Projected Type Parameter (`Age` is a single atomic known Type in scope -> auto-binds `age` via Law 1c):
 UserWithAge(Age) {
   new_age age
 }
@@ -301,7 +326,6 @@ is_user_18(Age) [
 ]
 
 // 4. Multiple Identical Type Parameters MUST use explicit `snake_case` names (Law 1c/1d):
-//    (Writing `compare_ages(Age, Age)` without names is a compile error `E02_DUPLICATE_UNNAMED_TYPE`!)
 compare_ages(candidate_age Age, minimum_age Age) [
   candidate_age >= minimum_age
 ]
@@ -311,54 +335,61 @@ GreetingCard(recipient String) {
   message "Hello, {recipient}!"
 }
 
-// 6. Combined Generic + Explicit Value Parameter (`T` is Type Param, `capacity` is Value Param):
-BoundedQueue(T, capacity Int) {
-  items Tuple(T) ()
-  limit capacity
+// 6. Form-Tuple Constructor Duality (Open fields vs Default fields vs Dynamic `[]` fields):
+ProfileCard(T) {
+  id       String                // Open slot 0
+  name     String                // Open slot 1
+  meta     T                     // Open slot 2 (Type `T` inferred from value!)
+  role     String 'user'         // Has default -> skipped in positional `()` call unless overridden
+  is_admin [ role == 'admin' ]   // Lazy getter `[]` -> accesses sibling `role` directly (Law 1a)!
 }
 
-// --- C. Law 1 Scoping, Three-Bracket Unpacking & Depth-Indexed Stream Subjects (`_`, `_0`, `_1`) ---
+card_by_form  ProfileCard { id "u1", name "Alice", meta 99 }
+card_by_tuple ProfileCard("u1", "Alice", 99)
+
+// --- C. Law 1 Scoping: Direct Lexical Fields, Type Projection (`type_name`), Innermost `.` & Prefix `..` ---
 WithName { name String }
 
-ReadViaSelf {
+ReadViaLexicalScope {
   name "Razomy"
-  get_name() [ self.name ]                             // Law 1a: `self` references enclosing Form `{}`
+  get_name()           [ name ]                         // Law 1a: Direct lexical access to sibling field `name`!
+  get_via_projection() [ read_via_lexical_scope.name ]  // Law 1c: Form `ReadViaLexicalScope` auto-projects `read_via_lexical_scope`!
 }
 
-// Named functions ALWAYS have `()` parameter slots:
-read_via_type(WithName)                  [ with_name.name ]         // Law 1c: Single known `WithName` auto-binds `with_name`
-join_two(first WithName, second WithName)[ "{first.name} & {second.name}" ] // Law 1d: Explicit names required for 2+ same types!
-read_via_var(w WithName)                 [ w.name ]                 // Law 1d: Explicit parameter variable `w`
-read_unpacked({ name } WithName)         [ name ]                   // Law 1d: Explicit Form field destructuring `{ name }`
+read_via_type(WithName)                   [ with_name.name ]         // Law 1c: Single known `WithName` auto-binds `with_name`
+join_two(first WithName, second WithName) [ "{first.name} & {second.name}" ] // Law 1d: Explicit names required for 2+ same types!
+read_via_var(w WithName)                  [ w.name ]                 // Law 1d: Explicit parameter variable `w`
+read_unpacked({ name } WithName)          [ name ]                   // Law 1d: Explicit Form field destructuring `{ name }`
 
-// Three-Bracket Unpacking inside a Stream `[]`:
-unpacking_demo(pair (Int, Int), user_form WithName) [
-  (first_num, second_num) pair                         // `()` unpacks Tuple by position (`.0`, `.1`)
-  { name }                user_form                    // `{}` unpacks Form by field key (`.name`)
-  "{name}: {first_num + second_num}"
+// Three-Bracket Unpacking with Symmetric Prefix `..` Rest Capture inside a Stream `[]`:
+unpacking_demo(nums (Int, Int, Int, Int), user_form WithName) [
+  (first_num, second_num, ..rest_nums) nums            // `()` unpacks Tuple; `..rest_nums` captures tail `(nums.2, nums.3)`
+  { name, ..other_fields }             user_form       // `{}` unpacks Form key `name`; `..other_fields` captures remaining fields
+  expanded (0, ..rest_nums, 99)                        // Prefix `..` on right spreads `rest_nums` inside `()`
+  "{name}: {first_num + second_num}, count={expanded.length}"
 ]
 
-// Law 1b: `_` is the input of the nearest enclosing `[...]`, while `_0`, `_1`, `_2` index stream depth!
-extract_name_demo(w WithName) [                        // Root stream `_0`
-  w . [ _1.name ]                                      // 1st nested stream: `_1` (or `_`) is the piped `w`!
+// Law 1a + 1b + 1c: Inside nested streams, `.name` accesses the innermost stream input via leading dot,
+// `with_name` accesses the projected `WithName` instance, and outer parameters are directly in lexical scope!
+extract_name_demo(prefix String, WithName) [
+  with_name . [
+    "{prefix}: {.name} (via type projection: {with_name.name})"
+  ]
 ]
 
-// Accessing tuple elements inside a nested pipe stream via `_1.0` and `_1.1` (or `_.0` and `_.1`):
-sum_pair_pipe(pair (Int, Int)) [                       // Root stream `_0` (where `_0.0` is `pair`)
-  pair . [ _1.0 + _1.1 ]                               // Nested stream `_1` (or `_`): `_1.0` + `_1.1` sums `pair`!
+// Accessing tuple elements inside a pipe stream via leading-dot `.0` and `.1`:
+sum_pair_pipe(pair (Int, Int)) [
+  pair . [ .0 + .1 ]
 ]
 
 // Top-level parameterless function uses explicit `()`:
-do_init() [ "Razomy v5.7 initialized" . Shell.log ]
+do_init() [ "Razomy v6.2 initialized" . Shell.log ]
 do_init()
 
 
 #
-1. PRIMITIVES, EXACT DECIMAL `Money`, TAGGED STRINGS (`Type"..."`) & RAW STRINGS
+1. PRIMITIVES, EXACT DECIMAL `Money`, `Range(a, b)`, TAGGED STRINGS (`Type"..."`) & RAW STRINGS
 #
-// Razomy eliminates cryptic lexer symbols (`$199`, `%./`) in favor of explicit constructors
-// `Money("199.99")` and uniform Type-Prefixed String sugar `Type"..."` == `Type("...")`!
-// Raw strings use `r"..."`, `r1"..."1`, `r2"..."2` (no `#`, so `#` is strictly for comments!).
 
 String ""
 Symbol 'symbol'
@@ -368,18 +399,20 @@ Bool   false
 Byte   0x00
 Any    _
 
+// Symmetric Range Constructor (replaces special-case `a..b` lexer token):
+Range(T) { start T, end T }
+
 // Exact Fixed-Point `Money` (4 decimal places stored as integer micro-units: 1.0000 == 10000):
-// Eliminates IEEE-754 floating-point rounding errors in financial calculations!
 Money(raw String "0.00") {
-  scaled (raw . Decimal.parse_scale4) // e.g., "100.00" -> 1000000 (Int64)
+  scaled (raw . Decimal.parse_scale4)
 
   from_scaled(val Int) [ Money { scaled val } ]
 
-  +   (other Money)   [ Money.from_scaled(self.scaled + other.scaled) ]
-  -   (other Money)   [ Money.from_scaled(self.scaled - other.scaled) ]
-  *   (factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
-  /   (divisor Float) [ Money.from_scaled((self.scaled.to_float / divisor).round_to_int) ]
-  ==  (other Money)   [ self.scaled == other.scaled ]
+  +   (other Money)   [ Money.from_scaled(scaled + other.scaled) ]
+  -   (other Money)   [ Money.from_scaled(scaled - other.scaled) ]
+  *   (factor Float)  [ Money.from_scaled((scaled.to_float * factor).round_to_int) ]
+  /   (divisor Float) [ Money.from_scaled((scaled.to_float / divisor).round_to_int) ]
+  ==  (other Money)   [ scaled == other.scaled ]
 }
 
 Usd(raw String)        { money Money(raw), currency 'USD' }
@@ -395,13 +428,10 @@ Path(fs_path String)   { value fs_path }
 
 // 1. Standard, Numbered Raw & Type-Prefixed Strings:
 StringExamples {
-  // (A) Standard String `"..."`: multiline, evaluates `{expr}` and `\` escapes:
   interpolated "Hello, {default_user_name}!
 This string spans multiple lines natively
 and escapes \"quotes\" and \{braces\}."
 
-  // (B) Raw Prefixed String `r"..."`, `r1"..."1`, `r2"..."2`:
-  //     Multiline, zero escapes, zero interpolation, and zero `#` collision with comments!
   regex_pat    r"^[^@]+@[^@]+\.[^@]+$"
   nested_json  r1"{"query": "SELECT * FROM \"users\"", "interpolated": "{ignored}"}"1
   nested_code  r2"Can freely embed both " and "1 and # without any lexer conflict!"2
@@ -409,21 +439,20 @@ and escapes \"quotes\" and \{braces\}."
 
 // 2. Explicit Constructor `Type("...")` vs Concise Tagged Sugar `Type"..."` (100% Equivalent!):
 HumanLiterals {
-  // Explicit Constructor Form              // Equivalent Tagged Sugar Form (used throughout code)
-  money_explicit    Money(199.99),        money_val    Money(199.99)
-  currency_explicit Usd(500.00),          currency_val Usd(500.00)
+  money_explicit    Money("199.99"),        money_val    Money"199.99"
+  currency_explicit Usd("500.00"),          currency_val Usd"500.00"
   date_explicit     Date("2026-03-30"),     date_val     Date"2026-03-30"
   time_explicit     Time("14:30:00"),       time_val     Time"14:30:00"
   duration_explicit Duration("5m30s"),      duration_val Duration"5m30s"
-  coord_explicit    Pair(1920,1080),      coord_pair   Pair(1920,1080)
+  coord_explicit    Pair("1920x1080"),      coord_pair   Pair"1920x1080"
   color_explicit    Hex("#2A9D8F"),         color_val    Hex"#2A9D8F"
-  ip_explicit       Ip(192,168,0,1,8080), ip_addr      Ip"192.168.0.1:8080"
+  ip_explicit       Ip("192.168.0.1:8080"), ip_addr      Ip"192.168.0.1:8080"
   version_explicit  Version("1.4.2-beta"),  version_val  Version"1.4.2-beta"
   url_explicit      Url("https://razomy.org"), web_url   Url"https://razomy.org"
   path_explicit     Path("./data/users.json"), local_file Path"./data/users.json"
 
-  tax_rate          0.155                   // Percentages/ratios are plain `Float` numbers (15.5% = 0.155)
-  email_addr        "admin@razomy.org"      // Standard string
+  tax_rate          0.155
+  email_addr        "admin@razomy.org"
 }
 
 
@@ -431,17 +460,17 @@ HumanLiterals {
 2. TUPLES `()`, FORMS `{}`, MAPS & TYPE ALGEBRA (`&`, `|`, `/`)
 #
 
-// 1. Tuples are expressed via parens `()` (items separated by `,` or `\n`, and spread via tight `&tuple`)
+// 1. Tuples are expressed via parens `()` (and spread via tight prefix `..tuple`)
 Point2D    (Float, Float)
 origin     (0.0, 0.0)
 extra_dims (1.0, 2.0)
-point_4d   (..origin, ..extra_dims)           // Spreads both tuples into `(0.0, 0.0, 1.0, 2.0)`!
+point_4d   (..origin, ..extra_dims)            // Spreads both tuples into `(0.0, 0.0, 1.0, 2.0)`!
 
 // 2. Type Unions (Sum Types) with paired symbols `'...'`
 Status    'draft' | 'published' | 'archived'
 Primitive String | Int | Float | Bool | Byte | Money
 
-// 3. Forms `{}` (Structures) & Lineage Inheritance (structural `==` equality works out of the box)
+// 3. Forms `{}` (Structures) & Lineage Inheritance
 Identifiable { id String }
 Auditable    { created_at Int, updated_at Int }
 
@@ -459,8 +488,8 @@ Cloud Identifiable {
   region String
 }
 
-// 4. Advanced Type Subtraction (`/`) & Lineage Disambiguation:
-//    All `/` operations on Forms/Types are resolved 100% at compile-time!
+// 4. Structural Type Subtraction (`/`) & Lineage Disambiguation:
+//    All `/` operations on `PascalCase` Types/Forms are resolved 100% at compile-time!
 // Case A: Remove field by path or symbol key
 PublicUser   User / User.password_hash
 AnonymousUsr PublicUser / 'name'
@@ -497,107 +526,95 @@ updated_config config_map & { "port" "9090", "tls" "true" } / "host"
 
 
 #
-3. UPDATING DATA: DEEP IN-PLACE REBINDING (LENSES) vs `&` MERGE
+3. UPDATING DATA: PURE BINDING `a b` vs EXPLICIT RELATIVE UPDATE `a (.op val)`
 #
-// How does Razomy update fields or local variables without `=` and without cloning?
-// 1. `PascalCase` Types/Forms are IMMUTABLE (`Order { id String, amount Int }` cannot be rebound).
-//    Writing `Order { id "o1", amount 100 }` inside an expression instantiates `Order`.
-// 2. `snake_case` variables inside `[]` can be rebound by name (`counter (counter + 1)` — note the space
-//    before `(` which distinguishes binding from function call `counter(1)`!) or by deep path
-//    (`corp.departments.0.budget 2500`), which is sugar for nested `&` updates.
-// 3. Perceus / Uniqueness Optimization: because lazy fields `k [e]` compile to static inline getters
-//    rather than closures capturing `self`, `raw_order` is uniquely owned (refcount == 1), and
-//    the compiler mutates the target offset IN-PLACE in O(1) with ZERO heap allocation!
+// How does Razomy guarantee 100% readability when binding vs updating variables?
+// 1. Plain space `name val` is ALWAYS a new declaration binding in the current scope.
+// 2. Updating an existing `snake_case` variable or deep path inside `[]` ALWAYS uses an explicit
+//    relative operator in parens: `counter (.+ 1)`, `raw_order.amount (.= 14)`, `raw_order (.& { amount 25 })`!
+//    This visual contract makes accidental mutation or shadowing bugs impossible!
 
 Order      { id String, amount Int }
 Department { title String, budget Int }
 Company    { name String, departments Tuple(Department) }
 
 update_order_demo() [
-  // Instantiating `Order` and binding to `snake_case` local variable `raw_order`:
-  raw_order Order { id "o1", amount 100 }
+  // Pure declaration binding of `raw_order`:
+  raw_order (Order { id "o1", amount 100 })
 
-  // ❌ COMPILE ERROR: Razomy has no `=` assignment operator, and `Order` Type cannot be rebound!
-  // raw_order.amount = 14
-
-  // ✅ WAY 1 (Direct Variable Rebinding via spaced parens — e.g. for counters or accumulators):
+  // ✅ WAY 1 (Explicit Relative Operator Update `(.+ 1)`, `(.- 1)`, `(.= val)`):
   counter 0
-  counter (counter + 1)
+  counter (.+ 1)
+  counter (.- 1)
+  counter (.= 10)
 
-  // ✅ WAY 2 (Path & Deep Lens Rebinding via space — mutates in-place in O(1) when uniquely owned!):
-  raw_order.amount 14
+  // ✅ WAY 2 (Explicit Deep Path Update via `(.= val)` — mutates in-place in O(1) when uniquely owned!):
+  raw_order.amount (.= 14)
 
-  // Single element inside `(Department { ... })` auto-lifts to `Tuple(Department)` without trailing comma:
-  corp Company { name "Acme", departments (Department { title "R&D", budget 1000 }) }
-  corp.departments.0.budget 2500
+  corp (Company { name "Acme", departments (Department { title "R&D", budget 1000 }) })
+  corp.departments.0.budget (.= 2500)
 
-  // ✅ WAY 3 (Positional Index Rebinding via space — updates 2nd field `amount` in-place!):
-  raw_order.1 20
+  // ✅ WAY 3 (Positional Index Update via `(.= val)` — updates 2nd field `amount` in-place!):
+  raw_order.1 (.= 20)
 
-  // ✅ WAY 4 (Explicit `&` Merge — creates updated view while keeping Lineage history):
-  next_order (raw_order & { amount 25 })
+  // ✅ WAY 4 (Explicit In-Place Enrich Update `(.& { ... })`):
+  raw_order (.& { amount 25 })
 
-  // ✅ WAY 5 (Enrich Pipe `.&` Rebinding):
-  next_order (next_order .& { amount 50 })
+  // ✅ WAY 5 (Creating a New Immutable Updated Instance via `&` or `.&`):
+  next_order (raw_order & { amount 50 })
 ]
 
 
 #
 4. COMPLETE MATRIX OF `&` COMBINATIONS & HOW RAZOMY REPLACES RUST'S `impl`
 #
-// In Rust, you need separate keywords (`struct`, `trait`, `impl Type`, `impl Trait for Type`).
-// In Razomy, ALL of these are unified under the single algebraic operator `&`!
-
-// --- A. The 7 Canonical Binary Combinations of `A & B` (plus Tight Unary `&Target`) ---
 
 // 1. Form & Form -> Structural Merge / Inheritance / Trait Implementation:
 Printable {
   format() String                // Contract signature (no body `[]`)
 }
 
-// Replacing Rust's `impl Printable for User` — simply intersect `User & Printable { ... }`:
 PrintableUser User & Printable {
-  format() [ "User({self.name}, id={self.id})" ]
+  format() [ "User({name}, id={id})" ]
 }
 
-// 2. Type & Stream `[...]` -> Refinement Type (Value-constrained Type):
-PositiveInt Int & [ _ > 0 ]
-AdultUser   User & [ _.age >= 18 ]
+// 2. Type & Stream `[...]` or `!Type` -> Refinement Type & Closed-World Negative Type Guard:
+PositiveInt Int  & [ .> 0 ]
+AdultUser   User & [ .age >= 18 ]
 
 // 3. Function & Form `{...}` -> Partial Application / Default Override / Dependency Injection:
-connect(host String "localhost", port Int 8080, tls Bool false) [
+connect { host String "localhost", port Int 8080, tls Bool false } [
   "Connecting to {host}:{port} (TLS: {tls})"
 ]
-// `connect` is a Function, `{ port 9090, tls true }` is a Form overriding its parameter slots:
 secure_connect connect & { port 9090, tls true }
 
 // 4. Stream `[...]` & Stream `[...]` -> Sequential Function Composition:
-trim_str  [ _ . trim ]
-upper_str [ _ . to_upper ]
-clean_str trim_str & upper_str   // Produces stream `[ _ . trim . to_upper ]`
-clean_inlined [ ..trim_str, ..upper_str ] // Equivalent using tight unary `..` stream spread inside `[]`!
+trim_str      [ .trim ]
+upper_str     [ .to_upper ]
+clean_str     trim_str & upper_str         // Produces stream `[ .trim . to_upper ]`
+clean_inlined [ ..trim_str, ..upper_str ]  // Equivalent using tight prefix `..` stream spread inside `[]`!
 
 // 5. Value/Member & TagForm -> Metadata / Visibility / Compile-Time Attachment:
 Public  {}
 Private {}
 secret_key "xyz987" & Private
 
-// 6. Type & Parameterized Trait `Trait(Self)` -> F-Bounded Polymorphism:
+// 6. Type & Parameterized Trait `Trait(Other)` -> F-Bounded Polymorphism:
 Comparable(Other) {
   < (other Other) Bool
 }
 
+// Note: Inside `SortableUser`, the outer Form is `SortableUser` (`sortable_user`),
+// and the method parameter is explicitly named `(other User)`!
 SortableUser User & Comparable(User) {
-  < (other User) [ self.age < other.age ]
+  < (other User) [ age < other.age ]
 }
 
-// 7. Type & `Bypass` -> Marks an Empty/Error Outcome for Law 3 Pipeline Short-Circuiting:
+// 7. Type & `Bypass` -> Marks an Empty/Error/Control Outcome for Law 3 Pipeline Short-Circuiting:
 None     {} & Bypass
 NotFound { entity String, id String } & Bypass
 
 // --- B. Open Extension Methods (UFCS) without modifying the original Form ---
-// Because `user . greet` == `greet(user)`, any standalone function `fn(User)`
-// automatically acts as a method on `User` (with full IDE autocomplete via Law 4)!
 greet(User) [ "Welcome, {user.name}!" ]
 
 
@@ -605,11 +622,6 @@ greet(User) [ "Welcome, {user.name}!" ]
 5. PARAMETERIZED FORMS, EAGER `()` vs LAZY `[]` & RELATIVE OPERATOR `/` OVERLOADING
 #
 
-// Parameterized Form `MathOps(a Int, b Int) { ... }`:
-// • By Law 1a, constructor value slots `a` and `b` are automatically fields on `self` (`self.a`, `self.b`).
-// • Inside `{}`, single parens `(a + b)` compute EAGERLY on construction,
-//   while brackets `[ self.a / self.b ]` define a LAZY Zero-Cost Static Getter evaluated on access
-//   (occupies 0 bytes in struct layout and never increments `self` refcount)!
 MathOps(a Int, b Int) {
   add      (a + b)
   sub      (a - b)
@@ -617,8 +629,8 @@ MathOps(a Int, b Int) {
   div      (a / b)
   mod      (a % b)
   pow      (a ** b)
-  neg_a    (-a)                  // Tight unary `-` works on variables and expressions!
-  lazy_div [ self.a / self.b ]
+  neg_a    (-a)
+  lazy_div [ a / b ]             // Zero-Cost Static Getter: direct lexical access to `a` and `b`!
 
   bit_and  (a . bit_and(b))
   bit_or   (a . bit_or(b))
@@ -627,24 +639,23 @@ MathOps(a Int, b Int) {
   shift_r  (a >> 2)
 }
 
-// Custom Operator Overloading inside Forms (including relative `/` on Value instances!):
-// • When `/` is applied to Types/Forms (`User / 'name'`), it performs algebraic type subtraction.
-// • When `/` is applied to Form Value instances (`vec_a / 2.0` or `shape_a / shape_b`), it invokes `/(...)`!
+// Custom Operator Overloading inside Forms (including `/` on runtime value instances!):
+// • On `PascalCase` Types (`User / 'name'`), `/` performs compile-time structural type subtraction.
+// • On `snake_case` value instances (`vec_a / 2.0` or `shape_a / shape_b`), `/` invokes method `/ (...)`!
 Vec2 {
   x Float
   y Float
 
-  +  (other Vec2)  [ Vec2 { x (self.x + other.x), y (self.y + other.y) } ]
-  -  (other Vec2)  [ Vec2 { x (self.x - other.x), y (self.y - other.y) } ]
-  *  (scale Float) [ Vec2 { x (self.x * scale),   y (self.y * scale) } ]
-  /  (scale Float) [ Vec2 { x (self.x / scale),   y (self.y / scale) } ]
-  == (other Vec2) [ (self.x == other.x) && (self.y == other.y) ]
+  +  (other Vec2)  [ Vec2 { x (x + other.x), y (y + other.y) } ]
+  -  (other Vec2)  [ Vec2 { x (x - other.x), y (y - other.y) } ]
+  *  (scale Float) [ Vec2 { x (x * scale),   y (y * scale) } ]
+  /  (scale Float) [ Vec2 { x (x / scale),   y (y / scale) } ]
+  == (other Vec2)  [ (x == other.x) && (y == other.y) ]
 }
 
-// Overloading `/` for CSG Boolean Geometry Subtraction (`Shape / Shape`):
 Shape {
   vertices Tuple(Vec2)
-  / (cutter Shape) [ (self, cutter) . native_csg_subtract ]
+  / (cutter Shape) [ (shape, cutter) . native_csg_subtract ]
 }
 
 LogicOps(x Bool, y Bool, val Int) {
@@ -657,10 +668,9 @@ LogicOps(x Bool, y Bool, val Int) {
   gte      (val >= 10)
   lt       (val < 100)
   lte      (val <= 100)
-  in_range (val == (1..100))     // `==` against a Range or Union is infix sugar for `val . matches(1..100)`!
+  in_range (val == Range(1, 100)) // `==` against `Range` or Union is infix sugar for `val . matches(Range(1, 100))`!
 }
 
-// Universal Binding Axiom: `full "{first} {last}"` binds a local variable inside `[]`:
 string_ops(first String, last String) [
   full "{first} {last}"
 
@@ -672,47 +682,55 @@ string_ops(first String, last String) [
 
 
 #
-6. HOW FAMILIAR IMPERATIVE CONCEPTS MAP TO RAZOMY (NO `return`, `break`, `null`, `if`)
+6. HOW IMPERATIVE CONCEPTS MAP TO RAZOMY (`.?` WHEN TRUE, `.!` WHEN FALSE, `Loop`, `Break`)
 #
-// Razomy has NO imperative statements (`if`, `switch`, `for`, `while`, `return`, `break`, `try/catch`).
-// Everything is an expression built from the 3 brackets `{}`, `[]`, `()`:
+// Symmetric Control-Flow Operators in Razomy v6.2:
 //
-// | Classical Language         | Razomy Equivalent                                         |
-// |----------------------------|-----------------------------------------------------------|
-// | `if (c) A else B`          | `c . { true [ A ], false [ B ] }`                         |
-// | `switch (x) { case ... }`  | `x . { Pattern1 [ A ], Pattern2 [ B ], _ [ Default ] }`   |
-// | `return val` (early exit)  | Router branch `{ [ _ < 0 ] [ Err ], _ [ continue_pipe ] }`|
-// | `break` (in loop/fold)     | `Break { value acc }` inside `. fold(...)`                |
-// | `for (x in list)`          | `list . map([ ... ])` or `list . for_each([ ... ])`       |
-// | `while (cond)`             | Tail-recursive stream `loop(state) [ ... loop(next) ]`    |
-// | `null` / `nil` / `undefined`| `None` (`{} & Bypass`) inside `User | None` (Law 3)       |
-// | `try { f() } catch (e)`    | Union outcome `f() . { Success [...], IoError [...] }`    |
+// | Classical Language         | Razomy Equivalent                                                  |
+// |----------------------------|--------------------------------------------------------------------|
+// | `assert(cond, Err)`        | `cond .! Err` (Negative Guard: continues if true, exits if FALSE!) |
+// | `if (exit_cond) break(v)`  | `exit_cond .? Break(v)` (Positive Exit: exits when `exit_cond` is TRUE!) |
+// | `if (c) A else B`          | `c . { true [ A ], false [ B ] }`                                  |
+// | `switch (x) { case ... }`  | `x . { Pattern1 [ A ], Pattern2 [ B ], _ [ Default ] }`            |
+// | `while (i < len) { ... }`  | `Loop [ i >= len .? Break(res), ... ]`                             |
+// | `for (x in list)`          | `list . map([ ... ])` or `list . for_each([ ... ])`                |
+// | `null` / `nil`             | `None` (`{} & Bypass`) inside `User | None` (Law 3)                |
+// | `try { f() } catch (e)`    | Typed bind `u User (f())` (auto-bypasses `Err`) or `. { ... }`     |
 
-// Built-in control-flow signal for early termination of `fold` / `reduce` (supports optional label):
-Break(T) { value T, label Symbol 'default' }
+Break(T)  { value T, label Symbol 'default' } & Bypass
+Return(T) { value T } & Bypass
+Loop(body Stream) [ body . native_loop ]
 
-classical_patterns_demo(numbers Tuple(Int), limit Int) [
-  // ❌ COMPILE ERROR: Razomy has no `return`, `break`, or `if` keywords!
-  // if (limit < 0) { return 0 }
+MinorError { name String } & Bypass
+EmptyError {} & Bypass
 
-  // ✅ 1. Early Exit / Guard Clause via Router `{}`:
-  limit . {
-    [ _ <= 0 ] [ 0 ]
-    _ [
-      // ✅ 2. Loop with Early `Break` via `fold`:
-      numbers . fold(0, (acc Int, n Int) [
-        (acc + n) . {
-          [ _ > limit ] [ Break { value _ } ] // Immediately halts `fold` and unwraps `value`!
-          _             [ _ ]                 // Continues iteration
-        }
-      ])
-    ]
-  }
+// 1. Flat Imperative Style with `.!` Negative Guards, `.?` Positive Exit, `Loop`, and `(.+ x)` updates:
+process_checkout { user User, items Tuple(Int) } [
+  user.age >= 18   .! MinorError { name user.name } // Assert `age >= 18`, ELSE (`.!`) exit with MinorError!
+  items.length > 0 .! EmptyError {}                 // Assert `length > 0`, ELSE (`.!`) exit with EmptyError!
+
+  total 0
+  i     0
+  Loop [
+    i >= items.length .? Break(total)               // IF (`.?`) `i >= length` is true -> exit Loop with `total`!
+    total (.+ items.get(i))                         // Explicit in-place addition: total = total + items[i]
+    i     (.+ 1)                                    // Explicit in-place increment: i = i + 1
+  ]
+]
+
+// 2. Functional `fold` Style with Early `Return` and `Break` (both `<: Bypass` via Law 3!):
+classical_fold_demo(numbers Tuple(Int), limit Int) [
+  limit <= 0 .? Return(0)                           // IF `limit <= 0` -> early return `0` via `Return(0)`!
+  numbers . fold(0, (acc Int, n Int) [
+    next_acc (acc + n)
+    next_acc > limit .? Break(next_acc)             // IF `next_acc > limit` -> halt `fold` with `next_acc`!
+    next_acc
+  ])
 ]
 
 
 #
-7. FUNCTION ARGUMENTS: NAMED vs AUTO-NAMED SLOTS, DEFAULTS, DI & PARTIAL APPLICATION
+7. FUNCTION ARGUMENTS: FORM-TUPLE DUALITY, AUTO-PROJECTED SLOTS, DEFAULTS, DI & PARTIAL APPLICATION
 #
 
 Shell {
@@ -723,26 +741,22 @@ Shell {
 Cart { cart_id String, amount Int }
 
 Db {
-  // 1. Named Slot (`id String`) returning `User | NotFound` (where `NotFound` is `& Bypass`):
   find_user(id String) User | NotFound [
     User { id id, name "Alice", age 25, role 'user', password_hash "xyz" }
   ]
 
-  // 2. Single Known Type Slot (`Identifiable`):
-  //    Triggers Law 1c (auto-binds `identifiable`) and Law 3 (bypasses `None` / `NotFound` because they are `& Bypass`)!
   find_cart(Identifiable) [
     Cart { cart_id "c_for_{identifiable.id}", amount 2500 }
   ]
 }
 
-// 3. Default Arguments, Partial Application & Dependency Injection via `&`:
 default_conn   connect()                                // Uses all defaults ("localhost", 8080, false)
-partial_conn   connect("db.internal")                   // Fixes 1st arg, returns fn of (port, tls)
-named_call     connect(port 9090, tls true)             // Passes named arguments directly in `()`
+pos_conn       connect("10.0.0.1", 9000, true)          // Positional Tuple call `()`
+form_conn      connect { port 9090, tls true }          // Named Form call `{}` (only overrides specified keys!)
+partial_conn   connect("db.internal")                   // Fixes 1st arg, returns fn of remaining slots
 custom_connect connect & { port 9090, tls true }        // Rebinds default slots via `&` into a new fn
 active_conn    custom_connect()                         // Invokes the customized function
 
-// 4. Function Refinements via Option Forms:
 FindOptions { case_sensitive false, limit 0, last false }
 
 find(collection, target, opts FindOptions) [
@@ -755,71 +769,57 @@ search_users(names) [
 
 
 #
-8. PIPELINE OPERATORS (`.`, `.>`, `.&`, `.?`, `.|`), CONTEXT ENRICHMENT & MULTI-QUERY `do`-NOTATION
+8. PIPELINE OPERATORS (`.`, `.>`, `.&`, `./`, `.?`, `.!`, `.|`), CONTEXT ENRICHMENT & FLAT `do`-NOTATION
 #
 
-// By Law 1d, a compound intersection parameter `(ctx User & Cart)` uses an explicit `snake_case` name `ctx`
-// (or you can define a named type `BillContext User & Cart` to auto-bind `bill_context` via Law 1c).
-// Notice how `ctx`, `self`, and `_` (or depth-indexed `_1`) have zero ambiguity:
 finalize_bill(ctx User & Cart) [
   ctx & {
     discount [
-      self.amount . {
-        [ _ >= 2000 ] [ 300 ]
-        [ _ >= 1000 ] [ 100 ]
-        _             [ 0 ]
+      amount . {
+        [ .>= 2000 ] [ 300 ]
+        [ .>= 1000 ] [ 100 ]
+        _            [ 0 ]
       }
     ]
-    final_price [ self.amount - self.discount ]
+    final_price [ amount - discount ]
   }
-  .> [ "Receipt for {_1.name}: {_1.final_price} USD (Discount: {_1.discount})" . Shell.log ]
+  ./ User.password_hash // `./` Subtract Pipe: strips sensitive `password_hash` field right in the pipeline!
+  .> [ "Receipt for {.name}: {.final_price} USD (Discount: {.discount})" . Shell.log ]
 ]
 
-// 1. Linear Pipeline with Dependency Injection slot (`db Db`):
-//    In tests, override via `(process_order_pipeline & { db MockDb })("u1")`!
-//    Because `NotFound` and `None` are marked `& Bypass`, Law 3 automatically short-circuits them!
+// 1. Linear Pipeline with Positive Filter `.?` and Custom Negative Error `.!`:
 process_order_pipeline(user_id String, db Db) [
   user_id
-  .  db.find_user         // `.`  Standard Pipe: returns `User | NotFound`
-  .? [ _.age >= 18 ]      // `.?` Filter Pipe: returns `User | NotFound | None`
-  .& db.find_cart         // `.&` Enrich Pipe: `NotFound | None` (`<: Bypass`) bypasses via Law 3; `User` merges -> `(User & Cart) | NotFound | None`
-  .  finalize_bill        // `.`  Processes `(User & Cart)`, while `NotFound | None` bypasses to final output
+  .  db.find_user                                     // Returns `User | NotFound`
+  .? [ .age >= 18 ] .! MinorError { name "underage" } // Passes adult `User`, or replaces `None` with `MinorError`!
+  .& db.find_cart                                     // Merges `User & Cart`; bypasses `NotFound | MinorError` via Law 3
+  .  finalize_bill
 ]
 
-// 2. Combining Multiple Fallible Queries (Replaces Haskell `do`-notation and Rust `?` operator!):
-//    Because `.&` distributes over `Bypass` Unions (`Context .& (Result | Err)` -> `(Context & Result) | Err`),
-//    any `NotFound` error in step 1 or step 2 automatically short-circuits the remaining `.&` steps via Law 3!
+// 2. Combining Multiple Fallible Queries (Flat Typed Binding with Law 3 Auto-Bypass!):
 load_user_and_friend(uid1 String, uid2 String) [
-  { first_id uid1, second_id uid2 }
-  .& [ _.first_id . Db.find_user . [ { u1 _ } ] ]
-  .& [ _.second_id . Db.find_user . [ { u2 _ } ] ]
-  .  [ "{_.u1.name} is friends with {_.u2.name}" ]
+  u1 User (uid1 . Db.find_user)
+  u2 User (uid2 . Db.find_user)
+  "{u1.name} is friends with {u2.name}"
 ]
 
 
 #
 9. REFINEMENT TYPES & UNIVERSAL ROUTER AXIOM (`{ Pattern [Body] }`)
 #
-// Every key `K` in a router `x . { K [Body] }` is sugar for `[ _ . matches(K) ]`:
-// • Value `(0, 0)` -> `[ _ == (0, 0) ]`
-// • Type `Manager` -> `[ _ . is(Manager) ]` + auto-binds `manager` (Law 1c)
-// • Tuple of Types `(Disconnected, ConnectCmd)` -> matches both types + binds `disconnected` & `connect_cmd`!
 
-// Predicates can specify known input type `(User)` or use stream subject `_`:
 is_adult(User)   [ user.age >= 18 ]
 is_minor(User)   [ user.age < 18 ]
-is_manager(User) [ user.role == ('admin' | 'manager') ] // Infix sugar for `user.role . matches('admin' | 'manager')`
-non_empty        [ _.length > 0 ]
-EmailStr         String & [ _ . Regex.matches(r"^[^@]+@[^@]+\.[^@]+$") ]
+is_manager(User) [ user.role == ('admin' | 'manager') ]
+non_empty        [ .length > 0 ]
+EmailStr         String & [ .Regex.matches(r"^[^@]+@[^@]+\.[^@]+$") ]
 
-// Refinement Type = Base Type `User` intersected `&` with boolean predicate function:
 Adult   User & is_adult
 Minor   User & is_minor
 Manager User & is_manager
 
 classify_account(account User) [
   account . {
-    // Law 1c: Matching Type `Manager` automatically binds variable `manager`!
     Manager [ "Dashboard: {manager.name}" . Shell.log ]
     Adult   [ "Adult account: {adult.name}" . Shell.log ]
     Minor   [ "Child account: {minor.name}" . Shell.log ]
@@ -827,7 +827,6 @@ classify_account(account User) [
   }
 ]
 
-// Named `Geometry` so it never collides with `Form` `{}` terminology:
 Circle   { radius Float }
 Rect     { width Float, height Float }
 Geometry Circle | Rect
@@ -843,8 +842,6 @@ area(g Geometry) [
 #
 10. COLLECTIONS IN PARENS `()`, STREAM ITERATION (`zip`, `enumerate`, `fold`) & TUPLE MATCHING
 #
-// Ordered lists of data use parens `()`, keeping `[]` exclusively for executable streams!
-// Inside `()`, items can be separated by newlines `\n` or commas `,` interchangeably.
 
 Item { name String, price Int, in_stock Bool }
 
@@ -856,12 +853,11 @@ order_list (
 
 calculate_total_in_stock(items Tuple(Item)) [
   items
-  . filter([ _.in_stock == true ])
-  . map([ _.price ])
+  . filter(.in_stock)
+  . map(.price)
   . fold(0, (acc Int, price Int) [ acc + price ])
 ]
 
-// Parallel iteration via `zip` and indexed iteration via `enumerate`:
 format_numbered_catalog(items Tuple(Item), discounts Tuple(Int)) [
   items
   . zip(discounts)
@@ -872,11 +868,11 @@ format_numbered_catalog(items Tuple(Item), discounts Tuple(Int)) [
 ]
 
 fizz_buzz(limit Int) [
-  (1..limit) . map((n Int) [
+  Range(1, limit) . map((n Int) [
     (n % 3, n % 5) . {
-      (0, 0) [ "FizzBuzz" ]      // Sugar for `[ _ == (0, 0) ]`
-      (0, _) [ "Fizz" ]          // Sugar for `[ _.0 == 0 ]`
-      (_, 0) [ "Buzz" ]          // Sugar for `[ _.1 == 0 ]`
+      (0, 0) [ "FizzBuzz" ]
+      (0, _) [ "Fizz" ]
+      (_, 0) [ "Buzz" ]
       _      [ "{n}" ]
     }
   ])
@@ -887,31 +883,21 @@ fizz_buzz(limit Int) [
 11. LINEAGE COLLISION RESOLUTION (LAW 2), ERROR CASES & TYPE MIGRATION
 #
 
-// 1. Merging `User` and `Order` causes a collision on the `id` field
 UserOrder User & Order
 
 process_combined(combined_context) [
   combined_context . {
     UserOrder [
-      // Unique fields (`name`, `amount`) are accessed directly on `user_order`:
       "Client Name: {user_order.name}, Order Amount: {user_order.amount}" . Shell.log
-
-      // ❌ COMPILE ERROR (Law 2 Violation `E05_AMBIGUOUS_LINEAGE_FIELD`): Ambiguous field `id` (present in both `User` and `Order`)
-      // "ID: {user_order.id}" . Shell.log
-
-      // ✅ VALID: Colliding fields are accessed via explicit Lineage path:
       "User ID: {user_order.User.id}, Order ID: {user_order.Order.id}" . Shell.log
     ]
   }
 ]
 
-// 2. Resolving collision permanently via Subtraction `/`:
-UserOrderClean UserOrder / Order.id // Removes Order's id; `.id` now unambiguously refers to `User.id`!
+UserOrderClean UserOrder / Order.id
 
-// 3. Declarative Type Migration:
 ClientAccount { account_id String, name String, is_adult Bool }
 
-// Law 1c: Single Known Type slot `(User)` binds `user` for clean, self-documented mapping:
 migrate_user(User) [
   ClientAccount {
     account_id user.id
@@ -922,42 +908,36 @@ migrate_user(User) [
 
 
 #
-12. REACTIVE FORMS (`self`) & FINE-GRAINED REACTIVE SIGNALS (`Signal`, `Effect`)
+12. REACTIVE FORMS (DIRECT LEXICAL FIELDS) & UNIFIED REACTIVE SIGNALS (`Signal`, `Effect [...]`)
 #
 
-// 1. Excel-Style Reactive Forms `{}`:
-//    Reactive streams `[]` inside a Form `{}` compile to zero-cost static inline getters (`Invoice.get_total(self)`)
-//    and recompute automatically when source fields are overridden via `&`:
 Invoice {
   price    Money"100.00"
   quantity 3.0
   tax_rate 0.20
 
-  subtotal [ self.price * self.quantity ]
-  tax      [ self.subtotal * self.tax_rate ]
-  total    [ self.subtotal + self.tax ]
+  subtotal [ price * quantity ]
+  tax      [ subtotal * tax_rate ]
+  total    [ subtotal + tax ]
 }
 
 order_1 Invoice & { quantity 5.0 }
-// order_1.total automatically evaluates to Money"600.00" using exact fixed-point arithmetic!
 
-// 2. Fine-Grained Reactive Signals (`Signal(T)` + Computed `[...]` + `Effect([...])`):
 count_sig   Signal(2)
-doubled_sig [ count_sig.get() * 2 ]
+doubled_sig [ count_sig() * 2 ]
 
 run_signal_demo() [
-  Effect([
-    "Count: {count_sig.get()}, Doubled: {doubled_sig()}" . Shell.log
-  ])
-  count_sig.set(10) // Automatically re-runs Effect -> "Count: 10, Doubled: 20"
+  Effect [
+    "Count: {count_sig()}, Doubled: {doubled_sig()}" . Shell.log
+  ]
+  count_sig(10)     // Writes 10 -> "Count: 10, Doubled: 20"
+  count_sig(.+ 5)   // Relative update -> "Count: 15, Doubled: 30"
 ]
 
 
 #
-13. ONTOLOGICAL TYPING (TYPESTATE), OUTCOME BYPASS (LAW 3) & IDE AUTOCOMPLETE (LAW 4)
+13. ONTOLOGICAL TYPING (TYPESTATE), NEGATIVE TYPE GUARD (`& !State`) & OUTCOME BYPASS (LAW 3)
 #
-// Instead of exceptions or Result<T, E> monads, the pipeline collects outcomes into a Union.
-// Failure outcomes are explicitly marked with `& Bypass` so Law 3 safely short-circuits them!
 
 Reserved   { reserved_at Int }
 Paid       { transaction_id String }
@@ -966,25 +946,19 @@ Cancelled  { cancelled_at Int }
 OutOfStock { reason String } & Bypass
 NoMoney    { reason String } & Bypass
 
-// Negative Type Constraint (Closed-World Typestate Guard): because `Cancelled` is not a base field of `Order`,
-// `Order / Cancelled` means `Order & ![ _ . is(Cancelled) ]` — cancelled orders cannot enter fulfillment!
-reserve_stock(o Order / Cancelled) [
-  o.amount . {
-    [ _ > 0 ] [ o & Reserved { reserved_at 1620000000 } ]
-    _         [ OutOfStock { reason "Warehouse empty" } ]
-  }
+// Closed-World Negative Type Guard (`Order & !Cancelled`):
+// Clearly distinguishes a negative typestate guard (`& !Cancelled`) from structural subtraction (`/`)!
+reserve_stock(o Order & !Cancelled) [
+  o.amount > 0 .! OutOfStock { reason "Warehouse empty" }
+  o & Reserved { reserved_at 1620000000 }
 ]
 
 charge_payment(o Order & Reserved) [
-  o.amount . {
-    [ _ < 50000 ] [ o & Paid { transaction_id "tx_001" } ]
-    _             [ NoMoney { reason "Insufficient funds" } ]
-  }
+  o.amount < 50000 .! NoMoney { reason "Insufficient funds" }
+  o & Paid { transaction_id "tx_001" }
 ]
 
-// Inferred return type: `(Order & Reserved & Paid) | OutOfStock | NoMoney`
-// If `reserve_stock` returns `OutOfStock` (`<: Bypass`), it automatically bypasses `charge_payment` (Law 3)!
-execute_fulfillment(initial_order Order / Cancelled) [
+execute_fulfillment(initial_order Order & !Cancelled) [
   initial_order
   . reserve_stock
   . charge_payment
@@ -994,22 +968,15 @@ ship_to_customer(order Order & Reserved & Paid) [
   "Shipping order {order.id}. Transaction {order.transaction_id} confirmed." . Shell.log
 ]
 
-// Subtyping Rule of Law 3: A function accepting the full Union (or `Any`) does NOT bypass!
 audit_any_outcome(outcome (Order & Reserved & Paid) | OutOfStock | NoMoney) [
   "Auditing fulfillment outcome: {outcome}" . Shell.log
 ]
 
-// --- LAW 4: IDE AUTOCOMPLETE FOR COMPLEMENTARY FUNCTIONS ---
-// Because `o . reserve_stock` == `reserve_stock(o)`, whenever you have a variable of type
-// `Order / Cancelled` and type `.`, the IDE automatically proposes `reserve_stock` and
-// `execute_fulfillment` as complementary functions for that exact typestate!
-
 
 #
-14. TYPE-LEVEL COMPUTATIONS, RECURSIVE `Self` & 1ST/2ND/3RD-ORDER GENERICS (HKT & MONADS)
+14. TYPE-LEVEL COMPUTATIONS, RECURSIVE TYPES & 1ST/2ND/3RD-ORDER GENERICS (HKT & MONADS)
 #
 
-// 1. Type-level Peano numbers & Fixed-Length Vector (`T`, `N` are 1st-Order Type Params `*`; `Tuple(T)` is built-in)
 Zero    {}
 Succ(N) { prev N }
 One     Succ(Zero)
@@ -1021,10 +988,8 @@ FixedVector(T, N) {
   length N
 }
 
-// 2. Self-Recursive `Json` Union (`Self` references `Json`; `None` is defined in Sec 4 as `{} & Bypass`):
-Json String | Int | Float | Bool | None | Tuple(Self) | Map(String, Self)
+Json String | Int | Float | Bool | None | Tuple(Json) | Map(String, Json)
 
-// 3. Recursive Generics: Linked List, Multi-Branch Tree (`Self`) and Binary Tree
 Cons(T) {
   head T
   tail List(T)
@@ -1033,7 +998,7 @@ List(T) None | Cons(T)
 
 RoseTree(T) {
   value    T
-  children Tuple(Self) ()
+  children Tuple(RoseTree(T)) ()
 }
 
 Leaf {}
@@ -1044,7 +1009,6 @@ Node(T) {
 }
 Tree(T) Leaf | Node(T)
 
-// 4. F-Bounded Polymorphism (replaces `T extends Comparable<T>`)
 sort(items List(Comparable)) [
   items . native_sort_by((a, b) [ a < b ])
 ]
@@ -1053,46 +1017,37 @@ sort_users(users List(User & Comparable(User))) [
   users . sort
 ]
 
-// 5. Higher-Order Generics: 1st-Order (`*`), 2nd-Order HKT (`* -> *`), and 3rd-Order (`(* -> *) -> * -> *`)!
-//    • Function type signature is written naturally via Tuple + Stream: `(A) [B]`
-//    • 2nd-order type constructor parameter is written `F(_)` (invariant by default for decidable type checking!)
-//    • 3rd-order type constructor parameter is written `T(_(_), _)`
-//    • Unbound `PascalCase` slots (`A`, `B`) are compile-time type parameters inferred automatically at call sites!
-
-// 1st-Order Generic Application:
 NestedBox(T) Box(Box(T))
 
-// 2nd-Order Generics (Higher-Kinded Types: Functor & Monad Contracts):
 Functor(F(_)) {
   fmap(A, B, fa F(A), f (A) [B]) F(B)
 }
 
-Monad(M(_)) & Functor(M) {
+Monad(M(_)) {
+  ..Functor(M)
   pure(A, a A)                          M(A)
   flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
 }
 
-// Concrete Implementation of 2nd-Order `Monad` for `Option` via `&`:
 Some(T)   { value T }
 Option(T) Some(T) | None
 
 OptionMonad Monad(Option) {
   fmap(A, B, fa Option(A), f (A) [B]) [
     fa . {
-      Some [ Some { value (some.value . f) } ]
-      None [ None ]
+      Some(val) [ Some(val . f) ]        // Form-Tuple Duality allows concise positional unpacking `Some(val)`!
+      None      [ None ]
     }
   ]
-  pure(A, a A) [ Some { value a } ]
+  pure(A, a A) [ Some(a) ]
   flat_map(A, B, ma Option(A), f (A) [Option(B)]) [
     ma . {
-      Some [ some.value . f ]
-      None [ None ]
+      Some(val) [ val . f ]
+      None      [ None ]
     }
   ]
 }
 
-// 3rd-Order Generics (Monad Transformer `OptionT` & `MonadTrans` with exact Kind `(* -> *) -> * -> *`):
 OptionT(M(_), A) {
   run M(Option(A))
 }
@@ -1106,37 +1061,27 @@ MonadTrans(T(_(_), _)) {
 15. HIGHER-ORDER FUNCTIONS, EARLY EXIT (`Break`) & CATAMORPHISMS
 #
 
-// 1. Functional Early Exit in `fold` via `Break` (No imperative `break`/`return` needed)
 sum_until_limit(numbers List(Int), max Int) [
   numbers . fold(0, (acc Int, n Int) [
-    (acc + n) . {
-      [ _ > max ] [ Break { value _ } ] // Immediately halts `fold` and unwraps `value`!
-      _           [ _ ]                 // Continues iteration
-    }
+    next (acc + n)
+    next > max .? Break(next)            // Positive `.?` exits `fold` when `next > max` is TRUE!
+    next
   ])
 ]
 
-// Lazy stream short-circuiting via `take_while` and `find`:
 first_adult(users List(User)) [
   users
-  . take_while([ _.age > 0 ])
-  . find([ _.age >= 18 ])        // Returns `User | None` immediately upon first match
+  . take_while([ .age > 0 ])
+  . find([ .age >= 18 ])
 ]
 
-// 2. Functor over recursive List (`A`, `B` are inferred compile-time type params; `Cons` match auto-binds `cons` via Law 1c):
 list_map(A, B, l List(A), action (A) [B]) List(B) [
   l . {
-    None [ None ]
-    Cons [
-      Cons {
-        head (cons.head . action)
-        tail (cons.tail . list_map(action))
-      }
-    ]
+    None            [ None ]
+    Cons(hd, tl)    [ Cons(hd . action, tl . list_map(action)) ]
   }
 ]
 
-// 3. Catamorphism (Generic AST Folder with decoupled Evaluation Algebras)
 Num(T)    { value T }
 Add(L, R) { left L, right R }
 Mul(L, R) { left L, right R }
@@ -1144,9 +1089,9 @@ Expr      Num(Int) | Add(Expr, Expr) | Mul(Expr, Expr)
 
 cata(expression Expr, algebra) [
   expression . {
-    Num [ algebra.on_num(num.value) ]
-    Add [ algebra.on_add(add.left . cata(algebra), add.right . cata(algebra)) ]
-    Mul [ algebra.on_mul(mul.left . cata(algebra), mul.right . cata(algebra)) ]
+    Num(v)    [ algebra.on_num(v) ]
+    Add(l, r) [ algebra.on_add(l . cata(algebra), r . cata(algebra)) ]
+    Mul(l, r) [ algebra.on_mul(l . cata(algebra), r . cata(algebra)) ]
   }
 ]
 
@@ -1161,10 +1106,6 @@ CalcAlgebra {
 16. CONCURRENCY (`.|` PARALLEL PIPE, CSP CHANNELS), ATOMS & STATE MACHINES
 #
 
-// 1. Parallel Fan-Out Operator `.|` (Structured Concurrency + Fault Isolation):
-// All branches in `{}` execute concurrently. If `ads` times out or returns `HttpError`,
-// Law 3 isolates the failure inside the `.ads` field (`AdData | TimeoutError`) without
-// crashing or canceling `profile` and `recs`!
 fetch_profile(id String)         [ Url"https://api.ex/users/{id}" . Http.get ]
 fetch_recommendations(id String) [ Url"https://api.ex/recs/{id}" . Http.get ]
 fetch_ads()                      [ Url"https://api.ex/ads" . Http.get . timeout(Duration"2s") ]
@@ -1177,26 +1118,21 @@ load_dashboard_data(user_id String) [
   }
 ]
 
-// 2. CSP Channels & Tail-Recursive Actor Loop (`self` references the Channel instance via Law 1a)
 Channel(T) {
-  send(val T) [ (self, val) . native_chan_send ]
-  recv()      [ self . native_chan_recv ]
+  send(val T) [ (channel, val) . native_chan_send ]
+  recv()      [ channel . native_chan_recv ]
 }
 
 worker_loop(jobs Channel(String), results Channel(Int)) [
   jobs.recv() . {
-    None [ "Channel closed, terminating worker." . Shell.log ]
-    Some [
-      some.value
-      . length
-      . results.send
-
+    None      [ "Channel closed, terminating worker." . Shell.log ]
+    Some(job) [
+      job . length . results.send
       worker_loop(jobs, results)
     ]
   }
 ]
 
-// 3. Pure State Machine Reducer & Transactional Atom
 CounterState { count Int }
 Increment    { by Int }
 Decrement    { by Int }
@@ -1213,8 +1149,8 @@ update_counter(state CounterState, msg CounterMsg) [
 
 Atom(T) {
   value            T
-  read()           [ self . native_atom_read ]
-  swap(transition) [ (self, transition) . native_atom_swap ]
+  read()           [ atom . native_atom_read ]
+  swap(transition) [ (atom, transition) . native_atom_swap ]
 }
 
 global_counter Atom(CounterState) {
@@ -1225,10 +1161,6 @@ modify_global_counter() [
   global_counter.swap((state CounterState) [ update_counter(state, Increment { by 5 }) ])
 ]
 
-// 4. Explicit Finite State Machine (Connection Lifecycle FSM):
-//    Notice how `(Disconnected, ConnectCmd)` is a Tuple of DISTINCT Types: by the Universal Router Axiom,
-//    it checks `[ _.0 . is(Disconnected) && _.1 . is(ConnectCmd) ]` and auto-binds
-//    `disconnected` and `connect_cmd` into the branch scope (Law 1c)!
 Disconnected { reason String }
 Connecting   { host String, attempt Int }
 Connected    { host String, session_id String }
@@ -1252,27 +1184,21 @@ step_connection(state ConnState, event ConnEvent) ConnState [
 
 
 #
-17. RESOURCE MANAGEMENT, SCOPED LIFETIMES & UNIFIED PORTS
+17. RESOURCE MANAGEMENT, SCOPED LIFETIMES (TYPED BYPASS BIND) & UNIFIED PORTS
 #
 
 FileHandle { fd Int, path Path }
 IoError    { msg String } & Bypass
 
 Fs {
-  open(path Path)   [ path . native_fs_open ]           // Returns `FileHandle | IoError`
-  read(FileHandle)  [ file_handle.fd . native_fs_read ] // Law 1c binds `file_handle`
+  open(path Path)   [ path . native_fs_open ]
+  read(FileHandle)  [ file_handle.fd . native_fs_read ]
   close(FileHandle) [ file_handle.fd . native_fs_close ]
 
-  // Bracket pattern: `FileHandle` match automatically binds `file_handle` so `Fs.close`
-  // closes the file after `action` while returning `action`'s result (`IoError` is `& Bypass`, so it
-  // bypasses the partial router `{ FileHandle [...] }` directly into the return Union via Law 3)!
   with_file(path Path, action) [
-    path . Fs.open . {
-      FileHandle [
-        file_handle . action
-        .> [ file_handle . Fs.close ]
-      ]
-    }
+    fh FileHandle (path . Fs.open)
+    fh . action
+    .> [ fh . Fs.close ]
   ]
 }
 
@@ -1282,7 +1208,6 @@ read_config(path Path) [
   ])
 ]
 
-// Unified Port Protocol: `Url"..."` and `Path"..."` share identical read/write verbs
 sync_remote_backup() [
   Url"https://api.razomy.org/v1/users"
   . Port.read
@@ -1293,7 +1218,6 @@ sync_remote_backup() [
 #
 18. DEEP PATTERN ROUTING (STRUCTURAL & TUPLE DESTRUCTURING)
 #
-// Routers `{}` can simultaneously match Form fields and destructure nested Tuples `()`.
 
 HttpRequest {
   method  'GET' | 'POST' | 'PUT' | 'DELETE'
@@ -1307,19 +1231,17 @@ Unauthorized { reason String } & Bypass
 
 auth_middleware(req HttpRequest) [
   req.headers . Map.get("Authorization") . {
-    Some [ req & { auth_user (some.value . Db.find_user_by_token) } ]
-    None [ Unauthorized { reason "Missing Authorization Header" } ]
+    Some(tok) [ req & { auth_user (tok . Db.find_user_by_token) } ]
+    None      [ Unauthorized { reason "Missing Authorization Header" } ]
   }
 ]
 
 api_router(req HttpRequest) [
   req . {
-    // Matches exact Form field AND single-element Tuple (via Tuple Auto-Lifting)
     { method 'GET', path ("health") } [
       HttpResponse { status 200, body "OK" }
     ]
 
-    // Matches `method 'GET'` AND extracts variable `id` from the 2nd Tuple element!
     { method 'GET', path ("users", id) } [
       req . auth_middleware . {
         Unauthorized [ HttpResponse { status 401, body unauthorized.reason } ]
@@ -1339,30 +1261,27 @@ api_router(req HttpRequest) [
 19. BUILT-IN DIALECTS: PARSE (STREAM GRAMMARS) & VIEW/DRAW (DECLARATIVE UI)
 #
 
-// 1. Parse Dialect: PEG grammar stream where cursor state flows via `.` through rules.
-//    Each combinator returns a cursor stream `[ _ . native_parse_... ]` so rules compose
-//    seamlessly via `.` or `&` inside `Parse.run(...)`!
 Parse {
   end                        'eof'
-  match(pat)                 [ _ . native_parse_match(pat) ]
-  one_or_more(rule)          [ _ . native_parse_one_or_more(rule) ]
-  repeat(bounds, rule)       [ _ . native_parse_repeat(bounds, rule) ]
-  skip(count Int)            [ _ . native_parse_skip(count) ]
-  to(delimiter)              [ _ . native_parse_until(delimiter) ]
-  copy(field Symbol, target) [ _ . native_parse_capture(field, target) ]
+  match(pat)                 [ .native_parse_match(pat) ]
+  one_or_more(rule)          [ .native_parse_one_or_more(rule) ]
+  repeat(bounds, rule)       [ .native_parse_repeat(bounds, rule) ]
+  skip(count Int)            [ .native_parse_skip(count) ]
+  to(delimiter)              [ .native_parse_until(delimiter) ]
+  copy(field Symbol, target) [ .native_parse_capture(field, target) ]
   run(input String, rules)   [ input . rules ]
 }
 
-digit "0".."9"
-alpha "a".."z" | "A".."Z"
+digit Range("0", "9")
+alpha Range("a", "z") | Range("A", "Z")
 
 EmailGrammar String & [
-  _ . Parse.run(
+  .Parse.run(
     Parse.one_or_more(alpha)
     & Parse.match("@")
     & Parse.one_or_more(alpha)
     & Parse.match(".")
-    & Parse.repeat(2..6, alpha)
+    & Parse.repeat(Range(2, 6), alpha)
   )
 ]
 
@@ -1381,9 +1300,6 @@ parse_log_line(line String) [
   }
 ]
 
-// 2. View & Draw Dialect: Declarative UI in Forms `{}` & Tuples `()`, canvas commands in `[]`
-// Tuple-Argument Duality: Because incoming argument slots `()` ARE a Tuple, a function
-// expecting `children Tuple` directly accepts comma- or newline-separated elements without double parens `(())`!
 Ui {
   view(spec)           [ spec . native_ui_view ]
   draw(children Tuple) [ children . native_ui_draw ]
@@ -1412,65 +1328,57 @@ counter_app(state Atom(CounterState)) [
 
 
 #
-20. COMPILE-TIME METAPROGRAMMING (`Compile &`), DOC-COMMENTS (`Meta.doc_of`), COMPOSE & SELF-HOSTED `Meta.rewrite`
+20. COMPILE-TIME METAPROGRAMMING (`Compile &`), DOC-COMMENTS (`Meta.doc_of`), `Bind` REWRITE & SELF-HOSTED `Meta.rewrite`
 #
-// All `Meta` operations are intersected with `& Compile`. When applied to Forms, Streams, or Types,
-// they execute 100% at compile-time with zero runtime reflection overhead!
 
-// Homoiconic `Meta` Module (Reflection, Partial Evaluation, Doc-Comments & Deep AST Rewriting):
 Meta {
   type_of(entity)           [ entity . native_meta_type_of ]            & Compile
+  name_of(entity)           [ entity . native_meta_name_of ]            & Compile
   doc_of(entity)            [ entity . native_meta_doc_of ]             & Compile
   fields_of(entity)         [ entity . native_meta_fields_of ]          & Compile
   steps_of(stream)          [ stream . native_meta_steps_of ]           & Compile
   map_fields(form, mapper)  [ (form, mapper) . native_meta_map_fields ] & Compile
   compose(stream)           [ stream . native_meta_eval_parens ]        & Compile
+  identity                  [ .native_identity ]
 
-  // Self-Hosted Deep Tree Rewriting (`Meta.rewrite` in 10 Lines of Razomy!):
   rewrite(node, rules) [
-    // Step 1: Recursively traverse children across all 3 brackets (`Form`, `Tuple`, `Stream`):
     walked (node . {
       Form   [ node . Meta.map_fields((k, v) [ (k, v . Meta.rewrite(rules)) ]) ]
-      Tuple  [ node . map([ _ . Meta.rewrite(rules) ]) ]
+      Tuple  [ node . map([ .Meta.rewrite(rules) ]) ]
       Stream [
         node . Meta.steps_of
-        . map([ _ . Meta.rewrite(rules) ])
-        . fold([ _ ], (acc, step) [ acc & step ])
+        . map([ .Meta.rewrite(rules) ])
+        . fold(Meta.identity, (acc, step) [ acc & step ])
       ]
       _      [ node ]
     })
 
-    // Step 2: Apply pattern rules to current node (or keep `walked` if no rule matches):
     walked . (rules & { _ [ walked ] })
   ] & Compile
 }
 
-// 1. Algebraic Stream Composition
-step_1 [ _ + 10 ]
-step_2 [ _ * 2 ]
+step_1 [ .+ 10 ]
+step_2 [ .* 2 ]
 combined_pipeline step_1 & step_2
 
-// 2. Partial Evaluation (`Meta.compose`): evaluates only parenthesized `()` expressions inside `[]` at compile-time
 build_multiplier(factor Int) [
-  Meta.compose([ _ * (factor * 10) ]) // Returns stream `[ _ * 50 ]` when factor == 5
+  Meta.compose([ .* (factor * 10) ])
 ] & Compile
 
-// 3. Aspect-Oriented Stream Manipulation (`Meta.steps_of` + `fold` via `&`):
 trace_execution(code_block) [
   code_block
   . Meta.steps_of
   . map((step) [
-    step & [ _ .> [ "Step result: {_}" . Shell.log ] ]
+    step & [ .> ((res) [ "Step result: {res}" . Shell.log ]) ]
   ])
-  . fold([ _ ], (acc, step) [ acc & step ])
+  . fold(Meta.identity, (acc, step) [ acc & step ])
 ] & Compile
 
-// 4. Compile-time AST Macro (`derive_json`), Reflection (`Meta.fields_of`) & Doc-Comments (`Meta.doc_of`):
 derive_json(TargetForm) [
   TargetForm & {
     to_json() [
       inner (
-        self . Meta.fields_of . map((field) [
+        target_form . Meta.fields_of . map((field) [
           "\"{field.name}\": {field.value . Json.format_value}"
         ])
         . join(", ")
@@ -1482,7 +1390,6 @@ derive_json(TargetForm) [
 
 #
 Represents a catalog product with auto-derived JSON serialization.
-Comments attached before or inline on declarations are inspectable via `Meta.doc_of`!
 #
 Product (Compile & [
   {
@@ -1491,66 +1398,74 @@ Product (Compile & [
   } . derive_json
 ])
 
-// Inspecting types, fields, and homoiconic documentation comments (compile-time specialized via `& Compile`):
-inspect_entity(entity) [
-  type_name (entity . Meta.type_of)
-  doc_text  (entity . Meta.doc_of)
-  "Inspecting type: {type_name} (Doc: {doc_text})" . Shell.log
+Resource { kind String "Milk" }
+Cat      { status String }
+Factory  {
+  + (res Resource) [ Cat { status "Fed with {res.kind}" } ]
+}
 
-  entity . Meta.fields_of . for_each((f) [
-    "Field {f.name} ({f.doc}) has type {f.type} and value {f.value}" . Shell.log
-  ])
+abstract_law [
+  a (b + c)
+]
+
+specialize_law(code_stream) [
+  code_stream . Meta.rewrite({
+    a         [ cat_instance ]
+    b         [ Factory {} ]
+    c         [ Resource { kind "Fish" } ]
+    (x + y)   [ x + y ]
+    Compiler.Bind(target, val) [
+      Compiler.Bind(target, val)
+      & [ "Bound {Meta.name_of(target)} to {target}" . Shell.log ]
+    ]
+  })
 ] & Compile
 
+run_cat_factory (Compile & [ abstract_law . specialize_law ])
+
 
 #
-21. IMPORTS, CONTEXT MIXINS (`&Mod`), FIELD UNPACKING (`{}`) & DI INSTANTIATION
+21. IMPORTS, PREFIX LINEAGE SPREAD (`..Mod`), FIELD UNPACKING (`{}`) & DI INSTANTIATION
 #
-// • File `my_mod.rl` == implicit static Form `MyMod { ... } / Private` (0-cost compile-time prototype, NOT a mutable singleton!).
-// • Directory `net/` == nested Form `Net { http Http, tcp Tcp }`. Root project dir == `root`, standard lib == `std`.
-// • Because a file is a Form `{}`, importing modules uses the exact same Three-Bracket & Unary `&` rules as everything else!
 
 // 1. Static Module Alias (`PascalCase` = 0-alloc compile-time prototype binding):
-Base   root.base                        // Binds `root/base.rl` Form to `Base`
-Http   std.net.http                     // Binds `std/net/http.rl` Form to `Http`
-Sqlite std.db.sqlite                    // Binds `std/db/sqlite.rl` Form to `Sqlite`
-ExtMod Path"../shared/ext_mod.rl"       // Direct relative file path binding (compile-time resolved)
+Base   root.base
+Http   std.net.http
+Sqlite std.db.sqlite
+ExtMod Path"../shared/ext_mod.rl"
 
-// 2. Selective Field Unpacking via `{}` (Unpacks Form/Module members by key name into current scope):
-{ String, Int, Money } root.base        // Selective Form key unpack (like `from root.base import String, Int, Money`)
-{ get, post }          std.net.http     // Unpack specific functions/fields by key name
+// 2. Selective Field Unpacking via `{}`:
+{ String, Int, Money } root.base
+{ get, post }          std.net.http
 
-// 3. Full Context Mixin / Spread via Tight Unary `..` (Merges all public members into current file/Form scope):
-//    Note: Tight `..target` (no space after `..`) starts a new statement and NEVER collides with multiline `a \n & b`!
-..root.prelude                           // Spreads all public members of `root.prelude` into current scope
-..Path"../shared/ext_mod.rl"             // Spreads all public members of external file directly into current scope
-..(std.net.http / 'legacy_request')      // Spreads module while subtracting unwanted member via `/`!
+// 3. Full Context Mixin / Lineage Spread via Symmetric Prefix `..`:
+..root.prelude                          // Spreads all public members of `root.prelude` into current scope
+..Path"../shared/ext_mod.rl"            // Spreads all public members of external file directly into current scope
+..(std.net.http / 'legacy_request')     // Spreads module while subtracting unwanted member via `/`!
 
-// 4. In-File Submodules & `/ Private` Encapsulation:
+// 4. In-File Submodules (`SubToken { ... }`) vs Lineage Spread (`..Ancestor`) & `/ Private`:
 AuthInternal {
   salt "x9f2a" & Private
-  hash(raw String)         [ "{raw}_{self.salt}" . native_sha256 ] & Private
-  verify(u User, p String) [ (p . self.hash) == u.password_hash ]
+  hash(raw String)         [ "{raw}_{salt}" . native_sha256 ] & Private
+  verify(u User, p String) [ (p . hash) == u.password_hash ]
+  // Because `SubToken` has no `..` prefix, it is a nested submodule `AuthInternal.SubToken`!
   SubToken {
     secret_key "k123" & Private
-    issue(uid String) [ "jwt_{uid}_{self.secret_key}" ]
+    issue(uid String) [ "jwt_{uid}_{secret_key}" ]
   } / Private
 }
-AuthModule AuthInternal / Private       // Strips `salt` and `hash`; exposes `verify` and `AuthModule.SubToken.issue`
+AuthModule AuthInternal / Private
 
-// 4. Module Facades / Re-exports (combining multiple modules via `&`):
+// 5. Module Facades / Re-exports:
 BillingModule { charge(m Money) [ m ] }
 AppSdk        (AuthModule & BillingModule) / Private
 
-// 5. Parameterized Modules (DI) vs Stateful Runtime Instances (`snake_case`):
-// A module is just a Form! It can declare constructor slots or hold `Atom`/`Channel` state:
+// 6. Parameterized Modules (DI) vs Stateful Runtime Instances (`snake_case`):
 DbDriver(conn_url String, max_pool Int 10) {
   active_conns Atom(Int) { value 0 } & Private
-  query(sql String) [ "Running '{sql}' on {self.conn_url} (pool={self.max_pool})" . Shell.log ]
+  query(sql String) [ "Running '{sql}' on {conn_url} (pool={max_pool})" . Shell.log ]
 }
 
-// `DbDriver` (`PascalCase`) is the immutable module prototype.
-// Binding to `snake_case` instantiates independent runtime service instances (NO hidden global singletons!):
 primary_db   (DbDriver { conn_url "postgres://prod:5432/app", max_pool 32 })
 analytics_db (DbDriver { conn_url "postgres://olap:5432/bi",  max_pool 4  })
 
@@ -1560,6 +1475,7 @@ run_module_demo(u User) [
   "SELECT 1" . primary_db.query
   "SELECT COUNT(*)" . analytics_db.query
 ]
+
 
 #
 22. TESTING AND PROPERTY-BASED ASSERTIONS
@@ -1601,13 +1517,12 @@ CompileError { code Int, log String } & Bypass
 BuildSuccess { status String, artifact String }
 BuildResult  BuildSuccess | CompileError
 
-FatalError CompileError & [ _.code >= 500 ]
-Warning    CompileError & [ _.code < 500 ]
+FatalError CompileError & [ .code >= 500 ]
+Warning    CompileError & [ .code < 500 ]
 
 AiQuery    { system_prompt String, user_prompt String }
 AiResponse { diff String, explanation String }
 
-// Explicit AgentState Form keeps all retry and patch history inspectable in one place:
 AgentState {
   err             CompileError
   retries         Int
@@ -1620,14 +1535,9 @@ Ai {
 
 run_build() BuildResult [ "cargo build --release" . Shell.exec . native_parse_build_result ]
 
-// Pure tail-recursive loop over `AgentState` (compiled to a zero-overhead machine loop via Law 4 TCO):
-// Notice stream depth indexing (Law 1b):
-// • `_0` = `agent_loop` root stream (`state AgentState`)
-// • `_1` = `_ [ ... ]` router branch stream (`state.retries`)
-// • `_2` (or `_`) = `.> [ ... ]` tap stream (`AiResponse` from `Ai.call`)!
 agent_loop(state AgentState) [
   state.retries . {
-    [ _ == 0 ] [ "Retry limit reached. Human intervention required." . Shell.log ]
+    0 [ "Retry limit reached. Human intervention required." . Shell.log ]
 
     _ [
       ai_resp (
@@ -1636,8 +1546,8 @@ agent_loop(state AgentState) [
           user_prompt   "Error log: {state.err.log}. Write a patch."
         }
         . Ai.call
-        .> [ "AI suggests solution: {_2.explanation}" . Shell.log ]
-        .> [ "git apply {_2.diff}" . Shell.exec ]
+        .> [ "AI suggests solution (attempt {state.retries}): {.explanation}" . Shell.log ]
+        .> [ "git apply {.diff}" . Shell.exec ]
       )
 
       run_build() . {
@@ -1645,7 +1555,6 @@ agent_loop(state AgentState) [
           "Build succeeded after applying patch!" . Shell.log
         ]
 
-        // Law 1c: `CompileError` match binds `compile_error`
         CompileError [
           "Patch did not help ({compile_error.log}). Starting next attempt..." . Shell.log
           next_state (state & {
@@ -1660,7 +1569,6 @@ agent_loop(state AgentState) [
   }
 ]
 
-// Top-level entry point function with explicit `()`:
 main() [
   "Starting test suite..." . Shell.log
   run_test_suite()
@@ -1668,7 +1576,6 @@ main() [
   "Starting project build process..." . Shell.log
   run_build() . {
     FatalError [
-      // Law 1c: `FatalError` binds `fatal_error`
       "Critical compilation failure ({fatal_error.code}). Launching agent..." . Shell.log
       agent_loop(AgentState { err fatal_error, retries 3 })
     ]
@@ -1687,52 +1594,118 @@ main() [
 
 
 #
-24. APPENDIX A: ADVANCED HOMOICONIC GRAPH REWRITING & SCENE OPTIMIZATION (`Compile &`)
+24. APPENDIX A: SELF-REWRITING DISTRIBUTED ONTOLOGY & HOMOICONIC GRAPH OPTIMIZATION (`Compile &`)
 #
-// Note on Rule 1 (`{(K) V}`): When a pattern key in `Meta.rewrite` is a compound AST expression or
-// dotted path (`(calc(_))`, `(Shell.log)`, `(self.i_id_attribute)`), wrapping the key in parens `()`
-// keeps the lexer 100% unambiguous!
+// This section demonstrates Razomy's superpower: combining 4-level Diamond Lineage (`..Entity`),
+// 3-level nested stream scope resolution (`.` vs `ledger_node` vs `cluster`), HKT effects,
+// and Compile-Time Ontological Rewriting (`Meta.rewrite` + `/`)!
 
-ComplexSystem {
-  name "Core"
-  calc(x Float) [ x * 1.15 ]
-  SubModule {
-    Nested {
-      logger(msg String) [ msg . Shell.log ]
-      calc(x Float)      [ x * 1.15 ]
+NodeId    String & [ .length > 0 ]
+Timestamp Int    & [ .> 1700000000 ]
+
+Entity {
+  id         NodeId
+  version    Int 1
+  created_at Timestamp
+}
+
+Replicated {
+  ..Entity
+  region     Symbol 'eu_central'
+  state      'synced' | 'drifted' | 'offline'
+  secret_key Hex & Private
+  sync()     [ "Replicating {id} to {region} with {secret_key}" ]
+}
+
+Audited {
+  ..Entity
+  auditor    String "system_daemon"
+  state      'verified' | 'flagged'
+  signature  Hex & Private
+  sync()     [ "Auditing {id} by {auditor}" ]
+}
+
+// Diamond Lineage Merge (`Entity` via both `Replicated` and `Audited`) with collision on `.state` and `.sync()`:
+LedgerNode Replicated & Audited & {
+  payload    Json
+  sync_all() [
+    (
+      ledger_node.Replicated.sync()
+      ledger_node.Audited.sync()
+    )
+  ]
+  is_healthy [
+    (ledger_node.Replicated.state == 'synced')
+    && (ledger_node.Audited.state == 'verified')
+  ]
+}
+
+ConsensusFault { node_id NodeId, reason String } & Bypass
+QuorumLost     { active_nodes Int, required Int } & Bypass
+StorageCorrupt { sector Int }                     & Bypass
+EngineFailure  ConsensusFault | QuorumLost | StorageCorrupt
+
+// 3-Level Nested Stream Scope Resolution (`.` vs Law 1c `ledger_node` vs Law 1a/1c `cluster.min_quorum`):
+Cluster {
+  min_quorum Int 3
+  nodes      Tuple(LedgerNode)
+
+  verify_and_commit(tx_batch Tuple(Json)) [
+    // Level 1: `.is_healthy` targets `LedgerNode`
+    healthy_nodes (nodes .? [ .is_healthy ])
+
+    // Negative Guard `.!`: exits with `QuorumLost` if `healthy_nodes.length < min_quorum`!
+    healthy_nodes.length >= min_quorum .! QuorumLost {
+      active_nodes healthy_nodes.length
+      required     min_quorum
     }
-  }
+
+    // Level 2: `LedgerNode` auto-projects `ledger_node` (Law 1c)
+    healthy_nodes . map((LedgerNode) [
+      committed_txs (
+        // Level 3: `.` is current `Json` tx; `ledger_node` is Level 2; `cluster.min_quorum` is Level 0!
+        tx_batch . map([
+          {
+            target_node   ledger_node.Entity.id
+            node_region   ledger_node.region
+            quorum_target cluster.min_quorum
+            tx_data       .
+          }
+        ])
+      )
+
+      (ledger_node / Audited.state) & {
+        version (ledger_node.Entity.version + 1)
+        payload committed_txs
+      }
+    ])
+  ]
 }
 
-UpgradedSystem (Compile & [
-  ComplexSystem . Meta.rewrite({
-    (calc(_))   [ (x Float) [ x * 1.20 ] ] // Replaces all `calc` functions at every depth
-    (Shell.log) [ Audit.write ]            // Replaces `Shell.log` inside any nested stream
-  })
-])
-
-// --- Case 1: Simultaneous Field Declaration & Call-Site Refactoring ---
-IdNameController {
-  full_name [ "{self.name_attribute}_{self.i_id_attribute.id}" ]
-}
-LoggerController {
-  on_start() [ self.i_id_attribute.id . Shell.log ]
+ServerKernel {
+  NodeModel LedgerNode
+  save_node(LedgerNode) [
+    ledger_node.Replicated.state == 'synced' .! ConsensusFault {
+      node_id ledger_node.Entity.id
+      reason  "Node out of sync"
+    }
+    ledger_node . Storage.write
+  ]
 }
 
-refactor_id_to_my_id(context_tree) [
-  context_tree . Meta.rewrite({
-    // (a) Replace field declaration in Forms `{}`:
-    { i_id_attribute val } [
-      { my_id (MyAttributeForCurrentContext & val) }
-    ]
-    // (b) Replace all read accesses inside Streams `[]` (path keys wrapped in `()` per Rule 1):
-    (self.i_id_attribute) [ self.my_id ]
-    (_.i_id_attribute)    [ _.my_id ]
-    i_id_attribute        [ my_id ]
+// Compile-Time Ontological Transformation: strips `Private` & `Audited` lineage, simplifies `.Replicated.state`
+// to `.state` (since collision is gone!), and rewrites `Storage.write` into `RpcClient.send`!
+derive_edge_client(KernelForm) [
+  KernelForm . Meta.rewrite({
+    LedgerNode          [ (LedgerNode / Private) / Audited ]
+    (.Replicated.state) [ .state ]
+    (Storage.write)     [ RpcClient.send & [ .timeout(Duration"3s") ] ]
   })
 ] & Compile
 
-// --- Case 2A: Collapse a Component Group via Ancestor Subtraction (`/`) ---
+EdgeClientKernel (Compile & [ ServerKernel . derive_edge_client ])
+
+// --- Scene & UI Graph Optimization via `/` and `Meta.rewrite` ---
 Cuboid {
   size     (1.0, 1.0, 1.0)
   anchor   (0.5, 0.5, 0.5)
@@ -1741,38 +1714,17 @@ Cuboid {
   rotation (0.0, 0.0, 0.0)
   scale    (1.0, 1.0, 1.0)
 }
-PlayButton Cuboid & { label "Play" }
+PlayButton {
+  ..Cuboid
+  label "Play"
+}
 
-// Subtract all 6 `Cuboid` fields at once and attach a single `canvas_2d_rect`:
 FlatPlayButton (PlayButton / Cuboid) & {
   canvas_2d_rect (0.5, 0.35, 0.15, 0.15)
 }
 
-// --- Case 2B: Subgraph Reduction (Batching Child Nodes into One `baked_layer`) ---
-optimize_graph(root_context) [
-  root_context . Meta.rewrite({
-    {
-      children {
-        background { image bg_img, rounded r1 }
-        foreground { image fg_img, rounded r2 }
-        icon       icon_node
-      }
-    } [
-      {
-        children {
-          baked_layer {
-            combined_images (bg_img, fg_img)
-            rounded         r1
-          }
-          icon icon_node
-        }
-      }
-    ]
-  })
-] & Compile
-
-// --- Case 2C: Flatten an Entire Deep Component Subtree into a Single Native Node ---
-RoundButton Cuboid & {
+RoundButton {
+  ..Cuboid
   name     String
   children {}
 }
@@ -1794,43 +1746,16 @@ render_for_mobile(screen_graph) [
   })
 ] & Compile
 
-// --- Architectural Best Practices for Graph Rewriting ---
-// Rule 1: Preserve Lineage (`my_btn PlayButton & MyIdContext`) instead of destructive edits.
-// Rule 2: Use Default Parameter Slots for 90% of variation instead of AST rewriting:
-StartNode Element
-Element(id_attr ProceduralId) Cuboid & StartNode {
-  id id_attr
-}
-
-default_el Element()
-custom_el  (Element & { id_attr MyAttributeForCurrentContext })()
-
-// Rule 3: Run Graph `rewrite` in one centralized Render Pipeline at compile-time:
-build_screen(raw_tree) [
-  raw_tree
-  . refactor_id_to_my_id
-  . optimize_graph
-  . render_for_mobile
-] & Compile
-
 
 #
 25. APPENDIX B: COMPILER ERROR CATALOG & HOW TO SOLVE HARD ARCHITECTURAL EDGE CASES
 #
-// This section documents exact compile-time errors (`E01`..`E07`) that protect developers from
-// ambiguity, accidental shadowing, and unhandled union branches, along with canonical solutions.
 
 // -----------------------------------------------------------------------------
 // EDGE CASE 1: Spaced Binding vs Function Call Ambiguity (`E01_AMBIGUOUS_CALL_OR_BIND`)
 // -----------------------------------------------------------------------------
-// Problem: A developer puts a space before `(` when calling a function `area (Circle { radius 5.0 })`.
-// Compiler Rule: `name (expr)` with a space is ONLY legal if `name` is a new local variable or
-// an existing mutable `snake_case` variable/field. If `name` resolves to a Function in scope,
-// the compiler halts immediately!
-
 edge_case_1_demo() [
   // ❌ COMPILE ERROR `E01_AMBIGUOUS_CALL_OR_BIND`:
-  //    `area` is a Function in scope; cannot rebind a function name or call it with a leading space!
   // area (Circle { radius 5.0 })
 
   // ✅ SOLUTION A (To call function `area`, remove the space before `(` or use `.` pipe):
@@ -1842,49 +1767,29 @@ edge_case_1_demo() [
 ]
 
 // -----------------------------------------------------------------------------
-// EDGE CASE 2: Duplicate or Compound Unnamed Types in Parameter Slots (`E02_DUPLICATE_UNNAMED_TYPE`)
+// EDGE CASE 2: Duplicate or Shadowed Auto-Projected Types (`E02_DUPLICATE_UNNAMED_TYPE`)
 // -----------------------------------------------------------------------------
-// Problem: Passing two `Account` types without names (`transfer(Account, Account, Money)`)
-// or an unnamed intersection (`finalize(User & Cart)`) makes slot bindings ambiguous.
-// Compiler Rule: Law 1c auto-binding (`Account` -> `account`) is strictly limited to a SINGLE
-// atomic `PascalCase` Type identifier in `()`. Duplicate or compound types require explicit `snake_case` names!
-
 Account { iban String, balance Money }
 
 // ❌ COMPILE ERROR `E02_DUPLICATE_UNNAMED_TYPE`:
-//    Type `Account` appears twice in parameter slots without explicit names!
-// transfer_bad(Account, Account, Money) [
-//   account1.balance (account1.balance - money)
-// ]
+//    Type `Account` appears twice in parameter slots (or inside `Account` itself) without explicit names!
+// transfer_bad(Account, Account, Money) [ ... ]
 
-// ✅ SOLUTION: Give duplicate types explicit semantic `snake_case` names, while `Money` (unique & atomic!)
-//    can still use Law 1c auto-binding (`money`):
+// ✅ SOLUTION: Give duplicate types explicit `snake_case` names, while `Money` uses Law 1c (`money`),
+//    and use explicit `(.= ...)` for in-place updates:
 transfer_safe(source Account, target Account, Money) [
-  source.balance (source.balance - money)
-  target.balance (target.balance + money)
+  source.balance (.= source.balance - money)
+  target.balance (.= target.balance + money)
   (source, target)
 ]
 
 // -----------------------------------------------------------------------------
 // EDGE CASE 3: Generic Type Parameter Shadowing an Existing Type (`E03_TYPE_PARAM_SHADOWS_TYPE`)
 // -----------------------------------------------------------------------------
-// Problem: You write a generic container `Wrapper(User) { val User }` thinking `User` is an unbound
-// type parameter `T`, or a library update introduces a concrete `Item` type that collides with your
-// generic `Cache(Item)`.
-// Compiler Rule: An unbound Generic Type Parameter MUST NOT share a name with any Type in scope!
-// If you want a concrete field, give it a `snake_case` name or use Law 1c inside `{}`.
-// If you want a Generic Type Parameter, use a non-shadowing name (`T`, `Elem`, `Val`)!
-
-// ❌ COMPILE ERROR `E03_TYPE_PARAM_SHADOWS_TYPE`:
-//    `User` is already a concrete Type in scope. In `Wrapper(User)`, `User` is auto-bound as value `user User`.
-//    Using `User` as a generic type parameter inside `{ item User }` is rejected!
-
-// ✅ SOLUTION A (Generic Container — use an unbound Type Parameter name like `T` or `Elem`):
 Wrapper(Elem) {
   item Elem
 }
 
-// ✅ SOLUTION B (Bounded Generic where `U` is a subtype of `User`):
 UserWrapper(U User, current_user U) {
   active U current_user
 }
@@ -1892,13 +1797,6 @@ UserWrapper(U User, current_user U) {
 // -----------------------------------------------------------------------------
 // EDGE CASE 4: Accidental Union Bypass on Domain Types (`E04_UNHANDLED_UNION_BRANCH`)
 // -----------------------------------------------------------------------------
-// Problem: A pipeline returns `User | Company | NotFound`. You pipe it into `send_welcome(User)`.
-// `NotFound` is an error (`& Bypass`), so it should bypass `send_welcome`.
-// But `Company` is a valid business entity (NOT `& Bypass`)! If `Company` silently bypassed
-// `send_welcome`, business notifications for companies would be silently dropped!
-// Compiler Rule (Law 3): Only branches that implement `& Bypass` (`None`, `NotFound`, `IoError`)
-// automatically bypass functions! Unhandled non-`Bypass` branches trigger `E04_UNHANDLED_UNION_BRANCH`!
-
 fetch_actor(id String) User | Company | NotFound [
   User { id id, name "Alice", age 30, role 'admin', password_hash "hash" }
 ]
@@ -1907,12 +1805,9 @@ send_welcome_email(User) [ "Sent email to {user.name}" ]
 
 handle_actor_pipeline(id String) [
   // ❌ COMPILE ERROR `E04_UNHANDLED_UNION_BRANCH`:
-  //    `fetch_actor` returns `User | Company | NotFound`.
-  //    `NotFound` implements `Bypass` (OK), `User` matches `send_welcome_email(User)` (OK),
-  //    but `Company` is NOT a subtype of `User` and is NOT marked `& Bypass`!
   // id . fetch_actor . send_welcome_email
 
-  // ✅ SOLUTION A: Explicitly route both business branches in `{}` (`NotFound` still auto-bypasses!):
+  // ✅ SOLUTION: Explicitly route both business branches in `{}` (`NotFound` still auto-bypasses!):
   id . fetch_actor . {
     User    [ user . send_welcome_email ]
     Company [ "Sent corporate onboarding to {company.name}" ]
@@ -1922,12 +1817,8 @@ handle_actor_pipeline(id String) [
 // -----------------------------------------------------------------------------
 // EDGE CASE 5: Lineage Diamond Collision (`E05_AMBIGUOUS_LINEAGE_FIELD`)
 // -----------------------------------------------------------------------------
-// Problem: Merging `User & Cloud` creates two `.name` fields (`User.name` and `Cloud.name`).
-// Reading `.name` directly is ambiguous.
-
 resolve_diamond_demo(entity User & Cloud) [
   // ❌ COMPILE ERROR `E05_AMBIGUOUS_LINEAGE_FIELD`:
-  //    Field `name` exists in both ancestor `User` and ancestor `Cloud`!
   // entity.name . Shell.log
 
   // ✅ SOLUTION A (Explicit Ancestor Path at read site):
@@ -1935,376 +1826,49 @@ resolve_diamond_demo(entity User & Cloud) [
 
   // ✅ SOLUTION B (Subtract one ancestor's field at the Type level via `/`):
   clean_entity (entity / Cloud.name)
-  clean_entity.name . Shell.log // Unambiguously resolves to `User.name`!
+  clean_entity.name . Shell.log
 ]
 
 // -----------------------------------------------------------------------------
 // EDGE CASE 6: Mutating an Immutable Form Type vs Instance (`E06_IMMUTABLE_TYPE_BINDING`)
 // -----------------------------------------------------------------------------
-// Problem: Trying to mutate a `PascalCase` Form declaration directly.
-
 immutable_demo() [
   // ❌ COMPILE ERROR `E06_IMMUTABLE_TYPE_BINDING`:
-  //    `Car` is a `PascalCase` Form Prototype/Type and is strictly immutable!
-  // Car.max_speed 500
+  // Car.max_speed (.= 500)
 
-  // ✅ SOLUTION: Instantiate `Car` into a `snake_case` local variable, then mutate in-place:
+  // ✅ SOLUTION: Instantiate `Car` into a `snake_case` local variable, then update via `(.= 500)`:
   my_car (Car {})
-  my_car.max_speed 500
+  my_car.max_speed (.= 500)
 ]
 
 // -----------------------------------------------------------------------------
 // EDGE CASE 7: Static Verification with `Compile &` Assertions (`E07_STATIC_ASSERT_FAILED`)
 // -----------------------------------------------------------------------------
-// How to enforce architectural invariants (e.g. "PublicUser must never contain `password_hash`")
-// at compile-time so the build fails immediately if someone breaks a security rule:
-
 VerifyPublicUserSafety (Compile & [
-  fields (PublicUser . Meta.fields_of . map([ _.name ]))
+  fields (PublicUser . Meta.fields_of . map(.name))
   (fields . contains("password_hash")) . {
     true  [ Compile.error("SECURITY VIOLATION: PublicUser leaked password_hash!") ]
     false [ true ]
   }
 ])
 
-#
-ОНТОЛОГИЯ И ЭВОЛЮЦИЯ ТИПОВ RAZOMY v5.7 (САМООПИСАНИЕ НА БАЗЕ ЯЗЫКА)
-Каждый слой наследует и развивает предыдущий через аксиомы `Name Base` и `&`.
-#
-
-// ============================================================================
-// СЛОЙ 0. ЯДРО КОМПИЛЯТОРА И ГОМОИКОНИЧНЫЙ AST (`Compiler`)
-// Откуда всё растёт: идентификаторы, 3 скобки, операторы и теги фаз.
-// ============================================================================
-Grammar {
-  // 1. Первичный корень AST
-  Princip       {}                              // Любой узел синтаксического дерева
-  Literal       Princip                         // Идентификатор или токен в коде
-
-  // Разделение по Case Rule (Правило регистра №2):
-  Identifier    Literal
-
-  // 2. Три фундаментальные скобки (The Three Brackets — Правило №1)
-  Bracket       Princip
-  TupleBracket  Bracket                           // `()` — Упорядоченный кортеж данных, слоты аргументов, жадная оценка
-  FormBracket   Bracket                           // `{}` — Ключ-Значение: структуры, классы, модули, роутеры, карты
-  StreamBracket Bracket                           // `[]` — Поток выполнения: ленивые операции, предикаты, лямбды
-
-  Sep           Princip                           // `,` или `\n` — Разделитель выражений
-
-  Repeat(T _)     Princip
-
-  // Composition
-  Statement     Literal | Tuple | Form | Stream     // Дно рекурсии (`Key`) + 3 скобки
-  Statements    Repeat(Statement & Sep)
-
-  Property      Statement & Statement     // Дно рекурсии (`Key`) + 3 скобки
-  Propertys     Repeat(Property & Sep)
-
-  Tuple         TupleBracket & Statements  // a, b, c
-  Form          FormBracket &  Propertys  // {a 1, b {}} | enum{} | set{}
-  Stream        StreamBracket & Statements // [(a,b,c),{a}, []]
-
-
-  TextBracket Bracket // key"" | key""key
-  CommentBracket Bracket // key## | key##key
-}
-
-Compiler {
-  Key           Grammar.Identifier                      // Сырые литералы в коде (`0`, `0.0`, `'sym'`, `"..."`)
-  Value         Grammar.Identifier                      // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
-  Type          Grammar.Identifier                      // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
-
-  Stream        Grammar.Stream                  // `[Body]`
-  Record        Grammar.Record                  // `{Body}`
-  Tuple         Grammar.Tuple                   // `{Body}`
-
-  Property              Key & Statement
-
-
-  // Каноническая триада `Name(Slots) {Form} [Stream]`
-  Callable              Tuple & Stream                  // `(args) [Body]` — функция или метод
-  Function              Key & Callable                   // `name(args) [Body]` — именованная функция или метод
-  Record                Type & Tuple & Form  // `Name(Slots) { ... }` — параметризованная форма
-
-  // Sugar
-  Type                  Type & Tuple                     // `Name(T)` — параметризованный тип
-  Record                Type & Repeat(Property)          // `Name { ... }` — форма / структура / модуль
-  Thunk                 Tuple & Stream          // `() [Body]`
-
-  // 3. Контекстные переменные (Закон 1a и 1b)
-  ScopeRef      Bracket
-  SelfVal       ScopeRef                        // `self` — текущий экземпляр Form `{}`
-  SelfType      ScopeRef                        // `Self` — текущий тип Form `{}` (для рекурсии)
-  Subject       ScopeRef                        // `_`, `_0`, `_1`, `_2` — активный вход потока `[]` по глубине
-
-  // 4. Иерархия операторов (Правило №2c и №3)
-  Operator       Key
-  Bind           Operator                       // `key val` — пробельное связывание / O(1) Perceus ребиндинг (нет `=`)
-  UnaryOperator  Operator                       // Плотный префикс без пробела (`!x`, `-x`, `.field`, `..x`)
-  BinaryOperator Operator                       // Окружён пробелами (`a + b`, `a . b`, `a & b`)
-
-  // 4a. Унарные операторы (плотные)
-  Not            UnaryOperator                  // `!x`     — логическое ИЛИ типовое отрицание
-  Neg            UnaryOperator                  // `-x`     — арифметическое отрицание
-  RelGet         UnaryOperator                  // `.field` — относительный геттер `[ _.field ]`
-  Spread         UnaryOperator                  // `..x`    — миксин/развертка контекста в `{}`, `()`, `[]`
-
-  // 4b. Бинарные операторы: Потоки (Pipelines)
-  PipeOperator   BinaryOperator
-  TightDot       PipeOperator                   // `a.b`    — плотный доступ к полю/предку/индексу (`a.0`, `a.-1`)
-  Pipe           PipeOperator                   // `a . b`  — передача данных слева направо (`b(a)`)
-  TapPipe        PipeOperator                   // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
-  EnrichPipe     PipeOperator                   // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
-  FilterPipe     PipeOperator                   // `a .? b` — пропускает `a`, если предикат/тип `b` совпал, иначе `None`
-  ParallelPipe   PipeOperator                   // `a .| {}`— параллельный fan-out веток в `{}` со слиянием `&`
-
-  // 4c. Бинарные операторы: Алгебра типов и значений
-  AlgebraOp      BinaryOperator
-  And            AlgebraOp                      // `&`  — универсальное пересечение / композиция (7 комбинаций)
-  Or             AlgebraOp                      // `|`  — объединение (Union типов, паттернов или исходов)
-  Sub            AlgebraOp                      // `/`  — относительное вычитание (полей, предков, ключей, негативный гард)
-  RangeOp        AlgebraOp                      // `..` — генератор диапазона (`1..10`, `"a".."z"`)
-
-  // 4d. Бинарные операторы: Арифметика, биты, сравнение и логика
-  MathOp         BinaryOperator
-  Plus           MathOp                         // `+`
-  Minus          MathOp                         // `-`
-  Mult           MathOp                         // `*`
-  Div            MathOp                         // `/` (перегруженный метод на значениях)
-  Mod            MathOp                         // `%`
-  Pow            MathOp                         // `**`
-  ShiftL         MathOp                         // `<<`
-  ShiftR         MathOp                         // `>>`
-
-  CompareOp      BinaryOperator
-  Eq             CompareOp                      // `==` (структурное равенство ИЛИ `.matches(Pattern)` для Range/Union!)
-  Neq            CompareOp                      // `!=`
-  Gt             CompareOp                      // `>`
-  Gte            CompareOp                      // `>=`
-  Lt             CompareOp                      // `<`
-  Lte            CompareOp                      // `<=`
-
-  LogicOp        BinaryOperator
-  LogicAnd       LogicOp                        // `&&`
-  LogicOr        LogicOp                        // `||`
-
-  // 5. Директивы фаз, потока управления и видимости
-  Directive      TypeKey
-  Compile        Directive                      // `Compile & [...]` — 100% выполнение на этапе компиляции
-  Bypass         Directive                      // `& Bypass` — автоматический short-circuit в пайплайнах (Закон 3)
-
-  Break(T)       Directive & {                  // Ранний выход из `fold` / `reduce`
-    value T
-    label Identifier
-  }
-
-  IAccess        Directive                      // Модификаторы видимости членов Form/Модуля
-  Public         IAccess
-  Private        IAccess                        // Отсекается через `Module / Private`
-}
-
-
-// ============================================================================
-// СЛОЙ 1. ФУНДАМЕНТАЛЬНЫЕ ПРИМИТИВЫ И ГРАНИЦЫ ТИПОВ (`Primitives`)
-// Базовые атомы памяти, от которых строятся все остальные данные.
-// ============================================================================
-Primitives {
-  ..Compiler
-
-  // Границы решетки типов (Type Lattice Bounds)
-  Any        TypeKey                            // `_` — Top Type (принимает всё, НЕ шорт-серкитит!)
-  None       TypeKey & Bypass                   // Пустой исход (автоматически обходит функции по Закону 3)
-  Never      !Any                               // Bottom Type (пустое множество `T & !T`, невозможный исход)
-
-  // === 1. АППАРАТНАЯ БАЗА (Для генератора кода) ===
-  IBuiltIn   TypeKey
-  // Определяем, в какой регистр процессора класть значение и сколько байт выделять
-  GPR(B)     { bytes B, reg 'general' } & IBuiltIn // Регистры RAX, RBX... (Целые, адреса)
-  XMM(B)     { bytes B, reg 'vector'  } & IBuiltIn // Регистры XMM0... (Для Float)
-  Mem(B)     { bytes B, align 8       } & IBuiltIn // Составная структура на стеке/в регистрах
-
-  // === 2. РЕГИСТРОВЫЕ ПРИМИТИВЫ (Помещаются в 1 регистр) ===
-  // В ассемблере Bool всегда занимает целый байт (команды SETE, TEST AL, AL)
-  Bool       GPR(1)                             // 1 байт: `0` (false) или `1` (true)
-  // Байты и Целые числа
-  Byte       GPR(1)                             // 1 байт: `0x00` (unsigned)
-  Int        GPR(8)                             // 8 байт (QWORD): `0` (знаковое, доп. код)
-  // Float ОБЯЗАН отличаться от Int на уровне железа, т.к. у него свои регистры и инструкции (ADDSD вместо ADD)
-  Float      XMM(8)                             // 8 байт (QWORD): `0.0` (IEEE-754 в регистре XMM)
-  // Указатель на память (нужен для создания строк и массивов)
-  Ptr(T)     GPR(8) & T                         // 8 байт: 64-битный адрес в памяти
-  // Symbol в ассемблере — это просто уникальный ID (число) или адрес строки в секции .rodata
-  Symbol     GPR(8)                             // 8 байт: `'symbol'` (сравнивается за 1 такт инструкцией CMP)
-
-  // === 3. СОСТАВНЫЕ ПРИМИТИВЫ (Fat Pointers / Срезы) ===
-  // Строка в ассемблере — это "толстый указатель" (16 байт: адрес + длина).
-  // При вызове функции передается сразу в двух регистрах (например, RDI и RSI).
-  String     Mem(16) & { ptr Ptr(Byte), len Int } // `"..."` и `r"..."`
-
-  // === ИТОГОВОЕ ОБЪЕДИНЕНИЕ ===
-  Scalar     Bool | Byte | Int | Float | Ptr | Symbol
-  Primitive  Scalar | String
-}
-
-
-// ============================================================================
-// СЛОЙ 2. ПРИКЛАДНЫЕ ДОМЕННЫЕ ЛИТЕРАЛЫ (`DomainTypes`)
-// Развитие `String` и `Int` через синтаксический сахар `Type"..."` == `Type("...")`
-// ============================================================================
-DomainTypes {
-  ..Primitives
-
-  // Все типы `Type"..."` — это параметризованные формы от `String`
-  TaggedString(raw String) Form & { value raw }
-
-  // Сеть и Файловая система (поддерживают протокол `Port.read` / `Port.write`)
-  IPort      TaggedString
-  Url        IPort                              // Url"https://razomy.org"
-  Path       IPort                              // Path"./data/users.json"
-  Ip         TaggedString                       // Ip"192.168.0.1:8080"
-
-  // Время и Даты
-  ITemporal  TaggedString
-  Date       ITemporal                          // Date"2026-03-30"
-  Time       ITemporal                          // Time"14:30:00"
-  Datetime   ITemporal                          // Datetime"2026-03-30T14:30:00Z"
-  Duration   ITemporal                          // Duration"5m30s"
-
-  // Графика, Версии и Финансы
-  Hex        TaggedString                       // Hex"#2A9D8F"
-  Pair       TaggedString                       // Pair"1920x1080"
-  Version    TaggedString                       // Version"1.4.2-beta"
-
-  // Фиксированная десятичная точка (4 знака, хранится как Int64 микро-единиц)
-  Money(raw String) TaggedString(raw) & { scaled Int }
-}
-
-
-// ============================================================================
-// СЛОЙ 3. КОЛЛЕКЦИИ, АЛГЕБРАИЧЕСКИЕ КОНТЕЙНЕРЫ И ВЫСШИЕ РОДЫ (`Collections`)
-// Как типы комбинируются: кортежи, карты, рекурсивные структуры и HKT (1st..3rd Order).
-// ============================================================================
-Collections {
-  ..DomainTypes
-
-  // 1. Базовые структуры данных (1st-Order Generics: `* -> *`)
-  Option(T)     Some(T) | None
-  Some(T)       Form & { value T }
-
-  Map(K, V)     Form & { (K) V }                // Вычисляемый ключ в круглых скобках `(K)`
-  Set(T)        Map(T, Bool)
-
-  // 2. Рекурсивные типы данных (используют `Self` или взаимную рекурсию)
-  Cons(T)       Form & { head T, tail List(T) }
-  List(T)       None | Cons(T)
-
-  RoseTree(T)   Form & { value T, children Tuple(Self) }
-  Json          String | Int | Float | Bool | None | Tuple(Self) | Map(String, Self)
-
-  // 3. Контракты и Высшие Роды Типов (HKT: 2nd-Order `* -> *` и 3rd-Order `(* -> *) -> * -> *`)
-  Comparable(Other) Form & {
-    < (other Other) Bool
-  }
-
-  Functor(F(_)) Form & {
-    fmap(A, B, fa F(A), f (A) [B]) F(B)
-  }
-
-  Monad(M(_)) Functor(M) & {
-    pure(A, a A)                          M(A)
-    flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
-  }
-
-  MonadTrans(T(_(_), _)) Form & {
-    lift(M(_) Monad, A, ma M(A)) T(M, A)
-  }
-}
-
-
-// ============================================================================
-// СЛОЙ 4. РАНТАЙМ, СОСТОЯНИЕ, ОШИБКИ И МЕТАПРОГРАММИРОВАНИЕ (`Runtime`)
-// Конкурентность, реактивность, ввод-вывод, ошибки `Bypass` и рефлексия `Meta`.
-// ============================================================================
-Runtime {
-  ..Collections
-
-  // 1. Стандартные пропускные ошибки (Law 3 — все наследуют `Bypass`)
-  Error         Form & Bypass
-  Result(T _, E _)  T | (Error & E)
-
-  NotFound      Error & { entity String, id String }
-  IoError       Error & { msg String }
-  NetworkError  Error & { reason String }
-  Unauthorized  Error & { reason String }
-  CompileError  Error & { code Int, log String }
-
-  // 2. Память Perceus, Управляемая мутабельность, Конкурентность и Реактивность
-  Unique(T)     Form & { value T }              // Perceus RC == 1 (O(1) ребиндинг на месте)
-  Shared(T)     Form & { value T }              // Perceus RC > 1 (Copy-on-Write)
-  Atom(T)       Form & { value T }              // Транзакционная CAS-ячейка (`read`, `swap`)
-  Channel(T)    Form                            // CSP-канал передачи сообщений (`send`, `recv`)
-  Signal(T)     Form & { value T }              // Реактивный сигнал (`get`, `set`)
-  Effect        Stream                          // Реактивный подписчик `Effect([...])`
-
-  // 3. Встроенные диалекты и Мета-программирование (`& Compile`)
-  Parse         Form                            // Потоковые PEG-грамматики (`match`, `copy`, `to`, `run`)
-  Ui            Form                            // Декларативный UI (`view`, `draw`)
-  Meta          Form & Compile                  // Рефлексия и перезапись AST (`type_of`, `doc_of`, `fields_of`, `rewrite`)
-}
-
-// 1. Встраивание предков без & и .. (сохраняет Lineage и удаление через `/`):
-ElectricCar {
-  Vehicle                        // Встраивает Vehicle в Lineage (можно делать ElectricCar / Vehicle)
-  HasBattery                     // Встраивает HasBattery
-  charging_port "Type2"
-}
-
-// 2. Постфиксный `..` ("всё внутри / всё дальше") и навигация по AST (`_`, `_._`, `_..`):
-ast_and_spread_demo(node) [
-  current  _                     // Текущий контекст
-  parent   _._                   // Родительский контекст на 1 уровень выше
-  children _..                   // Все внутренние узлы текущего контекста
-
-  nums     (1, 2, 3, 4)
-  (first, rest_nums..) nums      // Сборка хвоста: first = 1, rest_nums = (2, 3, 4)
-  expanded (0, rest_nums.., 5)   // Развертка внутри: (0, 2, 3, 4, 5)
-]
-
-// 3. Аргументы и Классы как единая Форма `{}` (динамические `[]` и дефолты игнорируются сами!):
-User(T) {
-  id       String                // Открытый слот 0
-  name     String                // Открытый слот 1
-  meta     T                     // Открытый слот 2 (T выводится автоматически!)
-  role     'user'                // Дефолтное поле (пропускается при позиционном вызове)
-  is_admin [ self.role == 'admin' ] // Динамическое поле (всегда игнорируется при вводе!)
-}
-
-u_named User { id "1", name "Alice", meta 99 } // Вызов по ключам {}
-u_pos   User("1", "Alice", 99)                 // Позиционный вызов () только по открытым полям!
-
-// Функция со словарём аргументов `{}` (можно вызывать и через `{}`, и через `()`!):
-connect { host String "localhost", port Int 8080 } [
-  "Connecting to {host}:{port}"
-]
-c1 connect { port 9000 }                       // Именованный вызов!
-c2 connect("10.0.0.1", 9000)                   // Позиционный вызов!
-
-// 4. Плоские гарды в `[]` БЕЗ двух функций `[...] .? [...]`:
-MinorError { name String } & Bypass
-
-checkout(user User) [
-  (user.age >= 18) .? MinorError { name user.name } // Если false -> MinorError сразу выходит из checkout!
-  "Order confirmed for {user.name}"
-]
 
 #
-ОНТОЛОГИЯ, ГРАММАТИКА И ЭВОЛЮЦИЯ ТИПОВ RAZOMY v6.0
-Единая аксиоматика:
-1. Каноническая триада: `Name {Поля/Слоты} [Поток]` (где `()` — позиционная проекция `{}`).
-2. Прямое встраивание Lineage внутри `{}` просто по имени Типа/Модуля (`Vehicle`).
-3. Навигация `_` (текущий), `_._` (родитель), `_..` (дети) и постфикс `x..` (сборка/развертка).
-4. Плоский императивный поток (`cond .? BypassVal`, `x (+ 1)`, `Loop [...]`) и мета-перезапись `Bind`.
+26. ОНТОЛОГИЯ, ГРАММАТИКА И ЭВОЛЮЦИЯ ТИПОВ RAZOMY v6.2 (САМООПИСАНИЕ НА БАЗЕ ЯЗЫКА)
+Единая фрактальная и симметричная аксиоматика (Без `self`, `Self`, `_0`, `_._`, `=`!):
+1. Фрактальность: Папка == Файл == Модуль == Класс == Роутер == Аргументы == Узел AST == `{}`.
+2. Каноническая триада: `Name(Слоты) {Форма} [Поток]` (где `()` — позиционная проекция `{}`).
+3. Явное встраивание предков через префиксный спред `..Ancestor` внутри `{}` (`..Vehicle`, `..Functor(M)`)
+   или внешнее пересечение `Vehicle & HasBattery & { ... }`. Вложенное имя без `..` (`SubToken { ... }`) — это подмодуль!
+4. Разрешение скоупов без ключевых слов контекста:
+   • Поля Формы и аргументы функции видны напрямую в лексическом скоупе (Закон 1a).
+   • Ведущая точка (`.field`, `.0`, `.+ 1` — Закон 1b) ВСЕГДА обращается строго ко входу самого внутреннего `[...]`.
+   • Любой атомарный Тип `PascalCase` автоматически проецирует `snake_case` имя (`User` -> `user`, `Cluster` -> `cluster` — Закон 1c),
+     позволяя обращаться к внешним потокам и формам с любой глубины вложенности!
+   • Символ `_` — это СТРОГО Wildcard / Джокер (`Any`) в паттернах `(0, _)`, `{ _ [...] }` и родах `F(_)`.
+5. Симметричные шлюзы и явные обновления:
+   • `cond .? BypassVal` (срабатывает при `true`) vs `cond .! ErrVal` (срабатывает при `false`).
+   • Пробел `a b` — чистое объявление, а `a (.= val)`, `a (.+ 1)`, `a (.& {...})` — явное обновление на месте!
 #
 
 // ============================================================================
@@ -2314,23 +1878,16 @@ Compiler {
   // 1. Первичный корень AST и Токены
   Node          {}                              // Любой узел синтаксического дерева
   Token         Node                            // Неделимая лексема
-  Sep           Token                           // `,` или `\n` — универсальный разделитель
+  Sep           Token                           // `,` или `\n` (кроме строк, начинающихся с бинарного оператора)
   Literal       Token                           // Константы (`0`, `0.0`, `'sym'`)
   Identifier    Token                           // Именованный токен
+  Wildcard      Token                           // `_` — строго джокер/дырка (`Any`) в паттернах и родах `F(_)`
 
   // Разделение по Case Rule (Правило регистра):
-  ValueKey      Identifier                      // `snake_case`: переменные, поля, функции (мутабельные в `[]`)
+  ValueKey      Identifier                      // `snake_case`: переменные, поля, функции
   TypeKey       Identifier                      // `PascalCase`: типы, формы, модули (иммутабельные прототипы!)
 
-  // 2. Контекстная и AST-навигация (`_`, `_._`, `_..`, `self`, `Self`)
-  ScopeRef      Identifier
-  SelfVal       ScopeRef                        // `self` — текущий экземпляр Form `{}`
-  SelfType      ScopeRef                        // `Self` — текущий тип Form `{}` (для рекурсии)
-  Subject       ScopeRef                        // `_`    — активный вход текущего потока `[]`
-  ParentSubject ScopeRef                        // `_._`  — вход родительского потока на уровень выше (`_._._` и т.д.)
-  ChildrenRef   ScopeRef                        // `_..`  — все дочерние узлы текущего контекста/AST
-
-  // 3. Три Фундаментальные Скобки (The Three Brackets)
+  // 2. Три Фундаментальные Скобки (The Three Brackets)
   Bracket       Node
   TextQuote     Bracket                         // `"..."`, `r"..."`, `Type"..."`
   CommentBlock  Bracket                         // `//...` или `# ... #` (доступны через `Meta.doc_of`)
@@ -2339,87 +1896,93 @@ Compiler {
   FormBracket   Bracket                         // `{}` — Именованная форма: классы, аргументы функций, модули, роутеры
   StreamBracket Bracket                         // `[]` — Поток выполнения: ленивые вычисления, циклы, лямбды
 
-  // 4. Грамматическая композиция
+  // 3. Грамматическая композиция
   Repeat(T)     Node                            // Повторение через `,` или `\n`
-  Expr          Literal | Identifier | Tuple | Form | Stream
-  Pair          (Identifier | Tuple) & Expr     // Пара `key val` или `{ (computed_key) val }`
-  LineageEmbed  TypeKey                         // Встраивание предка `Vehicle` напрямую внутри `{}`!
+  Expr          Literal | Identifier | Wildcard | Tuple | Form | Stream
+  Pair          (Identifier | Tuple) & Expr     // Пара `key val`, `key Type val` или `{ (computed_key) val }`
+  LineageSpread ExpandSpread & (TypeKey | (TypeKey & Tuple)) // Встраивание предка `..Vehicle` или `..Functor(M)`!
 
   Tuple         TupleBracket  & Repeat(Expr)
-  Form          FormBracket   & Repeat(Pair | LineageEmbed)
+  Form          FormBracket   & Repeat(Pair | LineageSpread)
   Stream        StreamBracket & Repeat(Expr)
 
-  // 5. Дуальность Формы и Кортежа в Функциях и Классах:
-  //    Входные слоты могут задаваться как Форма `{ a Int, b Int 0 }` ИЛИ позиционно `(a Int, b Int)`.
-  //    При вызове `Name(...)` или `Name { ... }` динамические поля `[]` и дженерики `T` игнорируются автоматически!
+  // 4. Дуальность Формы и Кортежа в Функциях и Классах:
   Slots         Form | Tuple
   Class         TypeKey  & Slots                // `User(T) { id String, ... }`
   Callable      Slots    & Stream               // `{ a Int } [ a + 1 ]` или `(a Int) [ a + 1 ]`
   Function      ValueKey & Slots & Stream       // `connect { host "localhost", port 8080 } [ ... ]`
 
-  // 6. ПОЛНАЯ МАТРИЦА СВЯЗЫВАНИЙ (Пробел `' '` — перегружаемый узел `Bind(Target, Source)`)
+  // 5. ПОЛНАЯ МАТРИЦА СВЯЗЫВАНИЙ (Пробел `' '` — перегружаемый узел `Bind(Target, Source)`)
   Bind(Target, Source) Node                     // Базовый AST-узел связывания (переопределяем в `Meta.rewrite`!)
   TypeAliasBind Bind(TypeKey, TypeKey)          // 1. Алиас типа:          `BrandName String`
   ProtoFormBind Bind(TypeKey, Form)             // 2. Прототип формы:      `Vehicle { max_speed Int 180 }`
   FieldSpecBind Bind(ValueKey, TypeKey & Expr)  // 3. Открытое/деф. поле:  `id String` или `role String 'user'`
-  LazyFieldBind Bind(ValueKey, Stream)          // 4. Динамическое поле:   `total [ self.price * self.qty ]` (игнор при вводе!)
-  VarBind       Bind(ValueKey, Expr)            // 5. Переменная:          `a (b + c)`
-  CompoundBind  Bind(ValueKey, Tuple)           // 6. Мутация на месте:    `count (+ 1)`, `price (* 1.2)`
-  LensPathBind  Bind(Identifier, Expr)          // 7. Глубокий ребинд O(1):`corp.depts.0.budget 2500`
-  RestUnpack    Bind(Tuple | Form, Expr)        // 8. Распаковка с `x..`:  `(head, tail..) list`, `{ id, rest.. } user`
+  LazyFieldBind Bind(ValueKey, Stream)          // 4. Динамическое поле:   `total [ price * quantity ]`
+  VarBind       Bind(ValueKey, Expr)            // 5. Чистое объявление:   `a (b + c)`
+  TypedVarBind  Bind(ValueKey & TypeKey, Expr)  // 6. Типизированный бинд: `fh FileHandle (Fs.open(p))` (с авто-Bypass по Закону 3!)
+  RelativeUpd   Bind(Identifier, Tuple)         // 7. Явное обновление O(1): `count (.+ 1)`, `a.b.0 (.= 2500)`, `car (.& { ... })`
+  RestUnpack    Bind(Tuple | Form, Expr)        // 8. Распаковка с `..x`:  `(head, ..tail) list`, `{ id, ..rest } user`
 
-  // 7. Операторы (Унарные, Постфиксные и Бинарные)
+  // 6. Операторы (Все Унарные — строго префиксные, Все Бинарные — строго через пробел)
   Operator       Token
-  UnaryOperator  Operator                       // Плотный префикс: `!x`, `-x`, `.field`
-  PostfixOp      Operator                       // Плотный постфикс: `x..` (внутренности / хвост / развертка)
+  UnaryOperator  Operator                       // Плотный префикс: `!x`, `-x`, `.field`, `.+ x`, `..x`
   BinaryOperator Operator                       // С пробелами вокруг: `a + b`, `a . b`, `a & b`
 
-  Not            UnaryOperator                  // `!x`     — логическое или типовое отрицание (`!Any` -> `Never`)
+  Not            UnaryOperator                  // `!x`     — логическое отрицание или негативный шлюз типа (`Order & !Cancelled`)
   Neg            UnaryOperator                  // `-x`     — арифметическое отрицание (`-5`)
-  RelGet         UnaryOperator                  // `.field` — относительный геттер `[ _.field ]`
-  ExpandRest     PostfixOp                      // `x..`    — слева собирает остаток `(a, rest..)`, справа разворачивает `(0, x..)`!
+  RelGet         UnaryOperator                  // `.field` — относительный геттер/метод самого внутреннего `[...]`
+  RelOp          UnaryOperator                  // `.+ x`   — относительный оператор/апдейт (`.+ 1`, `.= val`, `.>= 18`)
+  ExpandSpread   UnaryOperator                  // `..x`    — слева собирает остаток `(a, ..rest)`, справа встраивает `{ ..Vehicle }` / `(0, ..x)`!
 
-  // 7b. Потоковые операторы (Pipelines)
+  // 6b. Потоковые операторы (Pipelines)
   PipeOperator   BinaryOperator
   TightDot       PipeOperator                   // `a.b`    — плотный доступ к полю, предку `a.Vehicle.id`, индексу `a.0`
   Pipe           PipeOperator                   // `a . b`  — передача данных `b(a)`
   TapPipe        PipeOperator                   // `a .> b` — сайд-эффект `b(a)`, возвращает исходный `a`
   EnrichPipe     PipeOperator                   // `a .& b` — вызывает `b(a)` и сливает через `&` с `a`
-  GuardPipe      PipeOperator                   // `cond .? err` — плоский шлюз: если `cond` false/Error, выходит с `err` (`Bypass`)!
+  SubtractPipe   PipeOperator                   // `a ./ b` — удаляет поле/ключ/предка `b` из `a` прямо в потоке (`a / b`)
+  PositivePipe   PipeOperator                   // `a .? b` — фильтр в потоке ИЛИ выход при `true` (`i >= len .? Break(res)`)
+  NegativePipe   PipeOperator                   // `a .! b` — шлюз/assert: продолжает при `true`, выбрасывает `b` (`Bypass`) при `false`!
   ParallelPipe   PipeOperator                   // `a .| {}`— параллельный fan-out веток в `{}`
 
-  // 7c. Алгебра, Математика и Логика
+  // 6c. Алгебра, Математика, Сравнение и Логика
   AlgebraOp      BinaryOperator
   And            AlgebraOp                      // `a & b`  — пересечение / слияние с сохранением Lineage
   Or             AlgebraOp                      // `a | b`  — объединение (Union)
-  Sub            AlgebraOp                      // `a / b`  — вычитание поля `'key'`, пути `A.id` или целого предка `Vehicle`!
-  RangeOp        AlgebraOp                      // `a..b`   — генератор диапазона (`1..10`)
+  Sub            AlgebraOp                      // `a / b`  — структурное вычитание поля `'key'`, пути `A.id` или предка `Vehicle`!
 
   MathOp         BinaryOperator
   Plus           MathOp                         // `a + b`
   Minus          MathOp                         // `a - b`
   Mult           MathOp                         // `a * b`
-  Div            MathOp                         // `a / b` (на значениях вызывает метод `/`)
+  Div            MathOp                         // `a / b` (на `snake_case` значениях вызывает метод `/`)
   Mod            MathOp                         // `a % b`
   Pow            MathOp                         // `a ** b`
+  ShiftL         MathOp                         // `a << b`
+  ShiftR         MathOp                         // `a >> b`
 
   CompareOp      BinaryOperator
-  Eq             CompareOp                      // `a == b`
+  Eq             CompareOp                      // `a == b` (структурное равенство ИЛИ `.matches(Pattern)` для `Range`/Union!)
   Neq            CompareOp                      // `a != b`
   Gt             CompareOp                      // `a > b`
   Gte            CompareOp                      // `a >= b`
   Lt             CompareOp                      // `a < b`
   Lte            CompareOp                      // `a <= b`
 
-  // 8. Директивы управления и компиляции
-  Directive      TypeKey
-  Compile        Directive                      // `Compile & [...]` — 100% выполнение на этапе компиляции
-  Bypass         Directive                      // `& Bypass` — автоматический short-circuit (Закон 3)
+  LogicOp        BinaryOperator
+  LogicAnd       LogicOp                        // `a && b`
+  LogicOr        LogicOp                        // `a || b`
+
+  // 7. Директивы управления и компиляции
+  Directive         TypeKey
+  Compile           Directive                   // `Compile & [...]` — 100% выполнение на этапе компиляции
+  Bypass            Directive                   // `& Bypass` — автоматический short-circuit (Закон 3)
   Loop(body Stream) Directive                   // Императивный цикл `Loop [ ... ]`
-  Break(T)       Directive & Bypass & { value T }
-  Return(T)      Directive & Bypass & { value T }
-  Public         Directive
-  Private        Directive
+  Effect(body Stream) Directive                 // Реактивный подписчик `Effect [ ... ]`
+  Break(T)          Directive & Bypass & { value T, label Symbol 'default' }
+  Return(T)         Directive & Bypass & { value T }
+  Public            Directive
+  Private           Directive
 }
 
 
@@ -2427,7 +1990,7 @@ Compiler {
 // СЛОЙ 1. АППАРАТНЫЕ РЕГИСТРЫ И ПРИМИТИВЫ (`Primitives`)
 // ============================================================================
 Primitives {
-  Compiler                                      // Прямое встраивание предка `Compiler` (без `..` и `&`!)
+  ..Compiler                                    // Явное встраивание предка `..Compiler`
 
   Any        TypeKey
   None       TypeKey & Bypass
@@ -2452,116 +2015,93 @@ Primitives {
 
 
 // ============================================================================
-// ПРАКТИЧЕСКАЯ ДЕМОНСТРАЦИЯ НОВЫХ КОНЦЕПТОВ RAZOMY v6.0
+// СЛОЙ 2. ПРИКЛАДНЫЕ ДОМЕННЫЕ ЛИТЕРАЛЫ (`DomainTypes`)
 // ============================================================================
+DomainTypes {
+  ..Primitives                                  // Явное встраивание предка `..Primitives`
 
-// --- КОНЦЕПТ 1: Единое встраивание предков внутри `{}` и удаление через `/` ---
-Vehicle    { brand String "Generic", max_speed Int 180 }
-HasBattery { battery_kwh Int 75 }
+  Range(T)   Form & { start T, end T }
+  TaggedString(raw String) Form & { value raw }
 
-// Внутри `{}` (или файла) просто пишем имена предков `Vehicle` и `HasBattery`:
-ElectricCar {
-  Vehicle                                       // Встраивает Vehicle с сохранением Lineage!
-  HasBattery                                    // Встраивает HasBattery!
-  brand         "Tesla"                         // Переопределяет дефолт brand
-  charging_port String "Type2"
+  IPort      TaggedString
+  Url        IPort                              // Url"https://razomy.org"
+  Path       IPort                              // Path"./data/users.json"
+  Ip         TaggedString                       // Ip"192.168.0.1:8080"
+
+  ITemporal  TaggedString
+  Date       ITemporal                          // Date"2026-03-30"
+  Time       ITemporal                          // Time"14:30:00"
+  Datetime   ITemporal                          // Datetime"2026-03-30T14:30:00Z"
+  Duration   ITemporal                          // Duration"5m30s"
+
+  Hex        TaggedString                       // Hex"#2A9D8F"
+  Pair       TaggedString                       // Pair"1920x1080"
+  Version    TaggedString                       // Version"1.4.2-beta"
+
+  Money(raw String) TaggedString(raw) & { scaled Int }
 }
 
-// Проверяем Lineage и вычитание `/`:
-orig_brand      ElectricCar.Vehicle.brand       // -> "Generic" (история предка сохранена!)
-CarWithoutBat   ElectricCar / HasBattery        // -> Удаляет весь срез HasBattery из ElectricCar!
 
+// ============================================================================
+// СЛОЙ 3. КОЛЛЕКЦИИ, АЛГЕБРАИЧЕСКИЕ КОНТЕЙНЕРЫ И ВЫСШИЕ РОДЫ (`Collections`)
+// ============================================================================
+Collections {
+  ..DomainTypes                                 // Явное встраивание предка `..DomainTypes`
 
-// --- КОНЦЕПТ 2: Форма `{}` как аргументы + Авто-игнор дженериков, дефолтов и динамики `[]` ---
-User(T) {
-  id       String                               // Открытое поле 0 (требуется при вводе)
-  name     String                               // Открытое поле 1 (требуется при вводе)
-  meta     T                                    // Открытое поле 2 (тип `T` выводится сам из значения!)
-  role     String 'user'                        // Дефолтное поле (необязательно при вводе)
-  is_admin [ self.role == 'admin' ]             // Динамическое поле `[]` (ВСЕГДА игнорируется при вводе!)
+  Option(T)     Some(T) | None
+  Some(T)       Form & { value T }
+
+  Map(K, V)     Form & { (K) V }
+  Set(T)        Map(T, Bool)
+
+  Cons(T)       Form & { head T, tail List(T) }
+  List(T)       None | Cons(T)
+
+  RoseTree(T)   Form & { value T, children Tuple(RoseTree(T)) }
+  Json          String | Int | Float | Bool | None | Tuple(Json) | Map(String, Json)
+
+  Comparable(Other) Form & {
+    < (other Other) Bool
+  }
+
+  Functor(F(_)) Form & {
+    fmap(A, B, fa F(A), f (A) [B]) F(B)
+  }
+
+  Monad(M(_)) {
+    ..Functor(M)
+    pure(A, a A)                          M(A)
+    flat_map(A, B, ma M(A), f (A) [M(B)]) M(B)
+  }
+
+  MonadTrans(T(_(_), _)) Form & {
+    lift(M(_) Monad, A, ma M(A)) T(M, A)
+  }
 }
 
-// Вызываем хоть через объект `{}`, хоть позиционно через `()` — `T`, `role` и `is_admin` не мешают!
-u_by_form  User { id "u1", name "Alice", meta 42 }
-u_by_tuple User("u1", "Alice", 42)              // Позиционно заполняет только открытые поля (id, name, meta)!
 
-// Функция с аргументами-формой `{}`:
-connect { host String "localhost", port Int 8080, tls Bool false } [
-  "Connecting to {host}:{port} (tls={tls})"
-]
-conn_1 connect { port 9000, tls true }          // Передали только нужные ключи как объект `{}`!
-conn_2 connect("192.168.1.1", 9000, true)       // Или позиционно через `()`!
+// ============================================================================
+// СЛОЙ 4. РАНТАЙМ, СОСТОЯНИЕ, ОШИБКИ И МЕТАПРОГРАММИРОВАНИЕ (`Runtime`)
+// ============================================================================
+Runtime {
+  ..Collections                                 // Явное встраивание предка `..Collections`
 
+  Error            Form & Bypass
+  Result(T, E)     T | (Error & E)
 
-// --- КОНЦЕПТ 3: Постфикс `x..` (Сборка и Развертка) + Навигация `_`, `_._`, `_..` ---
-spread_and_ast_demo(tree_node) [
-  // Навигация по контексту и AST:
-  current_val  _                                // Текущий вход
-  parent_val   _._                              // Вход родительского блока на 1 уровень выше
-  all_children _..                              // Все внутренние дочерние элементы `tree_node`
+  NotFound         Error & { entity String, id String }
+  IoError          Error & { msg String }
+  NetworkError     Error & { reason String }
+  Unauthorized     Error & { reason String }
+  CompileError     Error & { code Int, log String }
 
-  // Постфикс `..` для СБОРКИ (слева) и РАЗВЕРТКИ (справа):
-  nums (1, 2, 3, 4, 5)
-  (first, second, tail_nums..) nums             // Сборка хвоста: first=1, second=2, tail_nums=(3, 4, 5)
-  expanded_nums (0, tail_nums.., 6)             // Развертка внутри: (0, 3, 4, 5, 6)
+  Unique(T)        Form & { value T }           // Perceus RC == 1 (O(1) апдейт через `(.= val)`)
+  Shared(T)        Form & { value T }           // Perceus RC > 1 (Copy-on-Write)
+  Atom(T)          Form & { value T }           // Транзакционная CAS-ячейка (`read`, `swap`)
+  Channel(T)       Form                         // CSP-канал передачи сообщений (`send`, `recv`)
+  Signal(T)        Form & { value T }           // Реактивный сигнал (`sig()`, `sig(new_val)`, `sig(.+ 1)`)
 
-  { id, other_fields.. } u_by_form              // Сборка остальных полей формы User кроме `id`!
-]
-
-
-// --- КОНЦЕПТ 4: Плоский императивный код БЕЗ лишних скобок `()` и `[]` ---
-MinorError { name String } & Bypass
-EmptyError {} & Bypass
-
-process_checkout { user User(Int), items Tuple(Int) } [
-  // Плоские гарды через `.?` — НИКАКИХ круглых `()` или двойных квадратных `[]` скобок!
-  user.age >= 18      .? MinorError { name user.name }
-  items.length > 0    .? EmptyError {}
-
-  // Императивный цикл и короткая мутация `(+ x)`:
-  total 0
-  i     0
-  Loop [
-    i >= items.length .? Break(total)           // Выход из Loop со значением `total`
-    total (+ items.get(i))                      // In-place сложение: total = total + items[i]
-    i     (+ 1)                                 // In-place инкремент: i = i + 1
-  ]
-]
-
-
-// --- КОНЦЕПТ 5: Метапрограммирование `a (b + c)` -> `Cat (Factory + Resource)` ---
-// Переопределяем переменные `a, b, c`, оператор `+` и само связывание `Bind` (пробел)!
-
-Resource { kind String "Milk" }
-Cat      { status String }
-Factory  {
-  // Переопределяем `+` для `Factory + Resource`:
-  + (res Resource) [ Cat { status "Fed with {res.kind}" } ]
+  Parse            Form                         // Потоковые PEG-грамматики (`match`, `copy`, `to`, `run`)
+  Ui               Form                         // Декларативный UI (`view`, `draw`)
+  Meta             Form & Compile               // Рефлексия и перезапись AST (`type_of`, `doc_of`, `fields_of`, `rewrite`)
 }
-
-// 1. Исходный абстрактный закон `a (b + c)`:
-abstract_law [
-  a (b + c)
-]
-
-// 2. Мета-функция, которая заменяет `a, b, c`, перегружает `+` и перехватывает связывание `Bind`:
-specialize_law(code_stream) [
-  code_stream . Meta.rewrite({
-    // а) Подменяем идентификаторы a, b, c на доменные сущности:
-    a [ cat_instance ]
-    b [ Factory {} ]
-    c [ Resource { kind "Fish" } ]
-
-    // б) Можем переписать сам оператор `(x + y)` в любой другой вызов:
-    (x + y) [ x + y ]
-
-    // в) Можем перехватить и переопределить само СВЯЗЫВАНИЕ `Bind(target, val)` (т.е. `a = ...`)!
-    Bind(target, val) [
-      target val
-      .> [ "Bound {Meta.name_of(target)} to {target}" . Shell.log ]
-    ]
-  })
-] & Compile
-
-// Получаем готовую скомпилированную функцию без накладных расходов в рантайме:
-run_cat_factory (Compile & [ abstract_law . specialize_law ])
