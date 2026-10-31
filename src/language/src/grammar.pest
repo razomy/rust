@@ -5,14 +5,19 @@ WHITESPACE = _{ " " | "\t" | "\r" }
 WS_NL      = _{ WHITESPACE | NEWLINE }
 COMMENT    = _{ line_comment | block_comment }
 
-line_comment  = @{ ("//" | ("#" ~ ASCII_DIGIT* ~ &(" " | "\t"))) ~ (!NEWLINE ~ ANY)* }
+line_comment  = @{ ("//" | ("#" ~ !("\r"? ~ "\n"))) ~ (!NEWLINE ~ ANY)* }
 block_comment = @{
     "#" ~ PUSH(ASCII_DIGIT*) ~ &("\r"? ~ "\n")
-  ~ (!(PEEK ~ "#") ~ ANY)*
+  ~ (!(PEEK ~ "#" ~ (WHITESPACE | NEWLINE | EOI)) ~ ANY)*
   ~ POP ~ "#"
 }
 // --- 2. СТРУКТУРА И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
-PIPE_OP_AHEAD = @{ ".>" | ".&" | "./" | ".?" | ".!" | ".|" | ".=" | ".+" | ".-" | ".*" | (("." | "&" | "|") ~ WS_NL) }
+PIPE_OP_AHEAD = @{
+    ".~" | ".>" | ".&" | "./" | ".?" | ".!" | ".|" | ".="
+  | "+=" | "-=" | "*=" | "/=" | "&="
+  | ".+" | ".-" | ".*" | ".>=" | ".<=" | ".==" | ".!="
+  | (("." | "&" | "|") ~ WS_NL)
+}
 
 pipe_nl    = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
 SEP        = _{ "," | (!pipe_nl ~ NEWLINE) }
@@ -58,35 +63,33 @@ number_lit = @{
   ~ !(ident | ("." ~ !(ident | ".")))
 }
 
-// --- 6. ОПЕРАТОРЫ ---
+// --- 6. ОПЕРАТОРЫ (4 ORTHOGONAL SYMMETRIC LAYERS COMBINED) ---
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
 
 callable_op = @{ overload_op ~ &(WHITESPACE* ~ "(") }
 
 unary_op = _{
     ("!" ~ !("=" | WS_NL))
-  | ("&" ~ !("&" | WS_NL))
-  | ("-" ~ !(ASCII_DIGIT | WS_NL))
+  | ("&" ~ !("&" | "=" | WS_NL))
+  | ("-" ~ !(ASCII_DIGIT | "=" | WS_NL))
   | (".." ~ !WS_NL)
 }
 
-rel_op = @{
-    "." ~ ("==" | "!=" | ">=" | "<=" | "**" | "+" | "-" | "*" | "/" | "%" | ">" | "<" | "=")
-  ~ &(WS_NL | EOI)
-}
+// Combined Layer 2 (Relative `.op`), Layer 3 (Spaced Pipes `.op`), Layer 4 (Rebind `op=`), and Layer 1 (Pure Math/Logic/Algebra)
+dot_op    = _{ "." ~ ("==" | "!=" | ">=" | "<=" | "**" | "~" | "&" | "/" | "?" | "!" | "|" | "=" | "+" | "-" | "*" | "%" | ">" | "<")? }
+rebind_op = _{ ("+" | "-" | "*" | "/" | "&") ~ "=" }
+pure_op   = _{ "&&" | "||" | overload_op | "&" | "|" }
+
+spaced_op = _{ (dot_op | rebind_op | pure_op) ~ &(WS_NL | EOI) }
 
 operator = @{
     unary_op
   | ".."
-  | rel_op
-  | (
-        (".>" | ".&" | "./" | ".?" | ".!" | ".|" | "&&" | "||" | overload_op | "&" | "|" | ".")
-      ~ &(WS_NL | EOI)
-    )
+  | spaced_op
 }
 
 // --- 7. ПУТИ И ИДЕНТИФИКАТОРЫ ---
 PATH_END  = _{ &(WS_NL | "," | "(" | ")" | "[" | "]" | "{" | "}" | ".." | EOI) }
-path      = @{ "."? ~ ident ~ ("." ~ (ident | index_seg))* ~ PATH_END }
+path      = @{ ("." ~ (ident | index_seg) ~ ("." ~ (ident | index_seg))* | ident ~ ("." ~ (ident | index_seg))* | ".") ~ PATH_END }
 ident     = _{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 index_seg = _{ "-"? ~ ASCII_DIGIT+ }

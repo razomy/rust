@@ -929,6 +929,54 @@ fn test_runtime_named_call_arguments_and_compile_time_static_verify() {
 }
 
 #[test]
+fn test_runtime_v9_combined_operators_attractor_fold_and_inversion() {
+    let code = r#"
+        Order { id String, amount Int }
+
+        newton_sqrt(target Float) Float [
+            (target / 2.0) . [
+                next_guess ((. + (target / .)) / 2.0)
+                ((next_guess - .).abs < 0.0001) .? Break(next_guess)
+                next_guess . ..
+            ]
+        ]
+
+        celsius_to_fahrenheit [ (. * 1.8) + 32.0 ]
+        fahrenheit_to_celsius !celsius_to_fahrenheit
+
+        main() [
+            counter 10
+            counter += 5
+            counter -= 3
+            counter *= 2
+            counter /= 4
+            raw_order (Order { id "o1", amount 100 })
+            raw_order &= { amount 250 }
+
+            mapped_and_folded ((1, 2, 3) . [ .+ 10 ] . [ _a + _b ])
+            root_val (newton_sqrt(16.0).round_to_int)
+            temp_f (100.0 . celsius_to_fahrenheit)
+            temp_c (temp_f . fahrenheit_to_celsius)
+
+            (counter, raw_order.amount, mapped_and_folded, root_val, temp_f, temp_c)
+        ]
+    "#;
+
+    let res = run_and_log("Razomy v9.0 Combined Operators, Attractor, Emergent Fold & Inversion", code);
+    assert_eq!(
+        res,
+        Value::Tuple(vec![
+            Value::Int(6),
+            Value::Int(250),
+            Value::Int(36),
+            Value::Int(4),
+            Value::Float(212.0),
+            Value::Float(100.0),
+        ])
+    );
+}
+
+#[test]
 fn test_runtime_full_specification_compact_executes_cleanly() {
     let spec = std::fs::read_to_string("./specification.rl")
         .expect("Failed to read specification.rl");

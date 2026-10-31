@@ -233,6 +233,31 @@ fn is_rel_op_str(op: &str) -> bool {
     )
 }
 
+fn is_param_hole(s: &str) -> bool {
+    s.starts_with('_')
+        && s.len() >= 2
+        && s.chars().nth(1).map(|c| c.is_ascii_lowercase()).unwrap_or(false)
+}
+
+fn collect_param_holes_in_sentence(tokens: &[Token], out: &mut Vec<String>) {
+    for tok in tokens {
+        match tok {
+            Token::Path(p) => {
+                let root = p.split('.').next().unwrap_or(p);
+                if is_param_hole(root) && !out.contains(&root.to_string()) {
+                    out.push(root.to_string());
+                }
+            }
+            Token::Group('(', sents) | Token::Group(')', sents) => {
+                for s in sents {
+                    collect_param_holes_in_sentence(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Нормализует синтаксический сахар Razomy v6.4 на уровне токенов предложения:
 /// 1. Leading-dot в выражениях и потоках: `.field` -> `_.field`, `.0` -> `_.0`
 /// 2. Relative Operator Step в начале потока/выражения: `[ .+ 1 ]` -> `[ _ + 1 ]`
@@ -292,16 +317,12 @@ fn desugar_sentence_tokens(tokens: Vec<Token>) -> Vec<Token> {
         }
     }
 
-    // 4. Explicit In-Place Assignment & Compound Update:
-    //    `a .= b` -> `a (b)`, `a .+ b` -> `a (a + b)`, `a .- b` -> `a (a - b)`, `a .* b` -> `a (a * b)`
+    // 4. Layer 4 — Ergonomic Perceus Value Rebind Operators (`a .= b`, `a += b`, `a -= b`, `a *= b`, `a /= b`, `a &= b`)
+    //    plus legacy `a .+ b`, `a .- b`, `a .* b`:
     if tokens.len() >= 3 {
         if let (Token::Path(lhs), Token::Op(op)) = (&tokens[0], &tokens[1]) {
             if op == ".=" {
-                let rhs: Vec<Token> = tokens[2..]
-                    .iter()
-                    .cloned()
-                    .map(desugar_token_inner)
-                    .collect();
+                let rhs = desugar_sentence_tokens(tokens[2..].to_vec());
                 let wrapped = if rhs.len() == 1 {
                     rhs
                 } else {
@@ -311,12 +332,23 @@ fn desugar_sentence_tokens(tokens: Vec<Token>) -> Vec<Token> {
                 out.extend(wrapped);
                 return out;
             }
-            if matches!(op.as_str(), ".+" | ".-" | ".*") {
-                let math_op = op.trim_start_matches('.').to_string();
-                let mut rhs_expr = vec![Token::Path(lhs.clone()), Token::Op(math_op)];
-                for t in &tokens[2..] {
-                    rhs_expr.push(desugar_token_inner(t.clone()));
-                }
+            let compound_math_op = match op.as_str() {
+                "+=" | ".+" => Some("+"),
+                "-=" | ".-" => Some("-"),
+                "*=" | ".*" => Some("*"),
+                "/=" => Some("/"),
+                "&=" => Some("&"),
+                _ => None,
+            };
+            if let Some(math_op) = compound_math_op {
+                let rhs_desugared = desugar_sentence_tokens(tokens[2..].to_vec());
+                let rhs_wrapped = if rhs_desugared.len() == 1 {
+                    rhs_desugared
+                } else {
+                    vec![Token::Group('(', vec![rhs_desugared])]
+                };
+                let mut rhs_expr = vec![Token::Path(lhs.clone()), Token::Op(math_op.to_string())];
+                rhs_expr.extend(rhs_wrapped);
                 return vec![
                     Token::Path(lhs.clone()),
                     Token::Group('(', vec![rhs_expr]),
@@ -393,6 +425,17 @@ fn desugar_sentence_tokens(tokens: Vec<Token>) -> Vec<Token> {
                     }
                 }
             }
+            // Constrained hole inside parens: `(_a & Int)` or `(_T & Comparable(_T))` -> `_a` or `_T` in runtime expression position
+            Token::Group('(', ref inner) if inner.len() == 1 => {
+                if let [Token::Path(hole), Token::Op(amp), ..] = inner[0].as_slice() {
+                    if amp == "&" && hole.starts_with('_') {
+                        out.push(Token::Path(hole.clone()));
+                        i += 1;
+                        continue;
+                    }
+                }
+                out.push(desugar_token_inner(tok));
+            }
             other => out.push(desugar_token_inner(other)),
         }
         i += 1;
@@ -427,6 +470,36 @@ fn desugar_token_inner(tok: Token) -> Token {
                 .collect();
             Token::Group(')', new_args)
         }
+        Token::Group('[', sents) => {
+            let new_sents: Vec<Sentence> = sents.into_iter().map(desugar_sentence_tokens).collect();
+            let mut param_holes = Vec::new();
+            for s in &new_sents {
+                collect_param_holes_in_sentence(s, &mut param_holes);
+            }
+            if param_holes.len() >= 2 {
+                // Sugar #5: 2+ Anonymous Parameter Holes `[ _a + _b ]` -> explicit lambda `(_a, _b) [ _a + _b ]`
+                let args: Vec<Sentence> = param_holes
+                    .into_iter()
+                    .map(|h| vec![Token::Path(h)])
+                    .collect();
+                Token::Group(
+                    '(',
+                    vec![vec![
+                        Token::Group('(', args),
+                        Token::Group('[', new_sents),
+                    ]],
+                )
+            } else if param_holes.len() == 1 {
+                let hole_name = &param_holes[0];
+                let replaced: Vec<Sentence> = new_sents
+                    .into_iter()
+                    .map(|s| replace_param_hole_with_underscore(s, hole_name))
+                    .collect();
+                Token::Group('[', replaced)
+            } else {
+                Token::Group('[', new_sents)
+            }
+        }
         Token::Group(delim, sents) => {
             let new_sents = sents.into_iter().map(desugar_sentence_tokens).collect();
             Token::Group(delim, new_sents)
@@ -441,6 +514,26 @@ fn desugar_token_inner(tok: Token) -> Token {
         }
         other => other,
     }
+}
+
+fn replace_param_hole_with_underscore(tokens: Sentence, hole_name: &str) -> Sentence {
+    tokens
+        .into_iter()
+        .map(|t| match t {
+            Token::Path(p) if p == hole_name => Token::Path("_".into()),
+            Token::Path(p) if p.starts_with(&format!("{hole_name}.")) => {
+                Token::Path(format!("_.{}", &p[hole_name.len() + 1..]))
+            }
+            Token::Group(d, sents) if d != '[' => Token::Group(
+                d,
+                sents
+                    .into_iter()
+                    .map(|s| replace_param_hole_with_underscore(s, hole_name))
+                    .collect(),
+            ),
+            other => other,
+        })
+        .collect()
 }
 
 pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule>> {
@@ -603,7 +696,7 @@ pub fn recover_source_for_ide(source: &str) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipeOp {
     Dot,      // `.`  Standard Dataflow Pipe
-    Tap,      // `.>` Side-effect Tap Pipe
+    Tap,      // `.>` Side-effect Tap Pipe (and `.~` Finalize / Defer Pipe)
     Enrich,   // `.&` Context Enrich / Merge Pipe
     Subtract, // `./` Subtract / Strip Pipe
     Filter,   // `.?` Positive Filter / Pattern Test / Conditional Exit Pipe
@@ -667,7 +760,7 @@ pub enum SemanticKind {
 pub fn parse_pipe_op(op: &str) -> Option<PipeOp> {
     match op {
         "." => Some(PipeOp::Dot),
-        ".>" => Some(PipeOp::Tap),
+        ".>" | ".~" => Some(PipeOp::Tap),
         ".&" => Some(PipeOp::Enrich),
         "./" => Some(PipeOp::Subtract),
         ".?" => Some(PipeOp::Filter),
@@ -751,6 +844,16 @@ fn split_function_body_and_tail(rest: &[Token]) -> Option<(Vec<Sentence>, Vec<To
 
 pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
     match sentence.as_slice() {
+        // 0. Guarded Pattern Branch in Router: `(a, b) & [ a > b ] [ Body ]`
+        [Token::Group('(' | ')', args), Token::Op(amp), Token::Group('[', _guard), Token::Group('[', body)]
+            if amp == "&" =>
+        {
+            SemanticKind::LambdaOrTupleBranch {
+                args: args.clone(),
+                body: body.clone(),
+            }
+        }
+
         // 1. Анонимная лямбда или ветка кортежа/выражения в роутере: `(args) [Body]`, `(calc(_)) [ ... ]`
         [Token::Group('(' | ')', args), Token::Group('[', body)] => {
             SemanticKind::LambdaOrTupleBranch {
@@ -764,6 +867,16 @@ pub fn classify_sentence(sentence: &Sentence) -> SemanticKind {
             SemanticKind::PatternBranch {
                 pattern: pat.clone(),
                 body: body.clone(),
+            }
+        }
+
+        // 2b. Slotless stream field with directive inside Form `{}`: `auto_cool [ ... ] & Watch`
+        [Token::Path(name), Token::Group('[', stream), Token::Op(amp), Token::Path(_directive)]
+            if amp == "&" =>
+        {
+            SemanticKind::StreamOrBranch {
+                name: name.clone(),
+                stream: stream.clone(),
             }
         }
 

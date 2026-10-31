@@ -709,6 +709,16 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
                     };
                     continue;
                 }
+                if let [Token::Op(dots)] = step.expr.as_slice() {
+                    if dots == ".." {
+                        current = LirExpr::Pipe {
+                            input: Box::new(current),
+                            op: PipeOp::Dot,
+                            step: Box::new(LirExpr::Ident("..".into())),
+                        };
+                        continue;
+                    }
+                }
             } else if step.op == PipeOp::Parallel {
                 if let [Token::Group('{', sents)] = step.expr.as_slice() {
                     current = LirExpr::Pipe {
@@ -947,19 +957,30 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
         },
         Token::Group('{', sents) => {
             let is_router = !sents.is_empty()
-                && sents.iter().all(|s| match classify_sentence(s) {
-                    SemanticKind::PatternBranch { .. }
-                    | SemanticKind::LambdaOrTupleBranch { .. } => true,
-                    SemanticKind::StreamOrBranch { name, .. } => {
-                        name == "_"
-                            || is_pascal_case(&name)
-                            || hir.forms.contains_key(&name)
-                            || hir.functions.contains_key(&name)
+                && sents.iter().all(|s| {
+                    let has_directive_tail = s
+                        .iter()
+                        .any(|t| matches!(t, Token::Op(op) if op == "&"));
+                    if has_directive_tail
+                        && matches!(s.first(), Some(Token::Path(_)))
+                        && matches!(s.get(1), Some(Token::Group('[', _)))
+                    {
+                        return false;
                     }
-                    SemanticKind::FunctionDef { body, tail, .. } => {
-                        tail.is_empty() && !body.is_empty()
+                    match classify_sentence(s) {
+                        SemanticKind::PatternBranch { .. }
+                        | SemanticKind::LambdaOrTupleBranch { .. } => true,
+                        SemanticKind::StreamOrBranch { name, .. } => {
+                            name == "_"
+                                || is_pascal_case(&name)
+                                || hir.forms.contains_key(&name)
+                                || hir.functions.contains_key(&name)
+                        }
+                        SemanticKind::FunctionDef { body, tail, .. } => {
+                            tail.is_empty() && !body.is_empty()
+                        }
+                        _ => false,
                     }
-                    _ => false,
                 });
             if is_router {
                 LirExpr::Router {
@@ -1094,7 +1115,25 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
             SemanticKind::LambdaOrTupleBranch { args, body } => {
                 let mut conds = Vec::new();
                 let mut bindings = Vec::new();
-                lower_tuple_pattern("_", &args, hir, &mut conds, &mut bindings);
+                if args.len() == 1 {
+                    // Dynamic/value key in router: `(target_val) [ ... ]` or `(jobs.recv()) [ ... ]`
+                    conds.push(LirExpr::Binary {
+                        left: Box::new(LirExpr::Ident("_".into())),
+                        op: "==".into(),
+                        right: Box::new(lower_tokens_to_expr(&args[0], hir)),
+                    });
+                } else {
+                    lower_tuple_pattern("_", &args, hir, &mut conds, &mut bindings);
+                }
+                if let [Token::Group('(' | ')', _), Token::Op(amp), Token::Group('[', guard_sents), Token::Group('[', _)] =
+                    b.as_slice()
+                {
+                    if amp == "&" {
+                        if let Some(first_guard) = guard_sents.first() {
+                            conds.push(lower_tokens_to_expr(first_guard, hir));
+                        }
+                    }
+                }
                 out.push(LirBranch {
                     condition: combine_and(conds),
                     bindings,

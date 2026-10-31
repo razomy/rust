@@ -156,6 +156,29 @@ fn register_primitives(scope: &mut Scope) {
     });
     scope.set("Decimal", Value::Form(Arc::new(RwLock::new(decimal))));
 
+    let mut byte_mod = FormInstance::new("Byte");
+    reg_mod_fn(&mut byte_mod, "parse_hex", |args, _| {
+        let s = args.first().map(ToString::to_string).unwrap_or_default();
+        let clean = s.trim_start_matches("0x").trim_start_matches('#');
+        let b = u8::from_str_radix(clean, 16).unwrap_or(0);
+        Ok(Value::Byte(b))
+    });
+    scope.set("Byte", Value::Form(Arc::new(RwLock::new(byte_mod))));
+
+    reg_fn(scope, "starts_with", |a, _| match (a.first(), a.get(1)) {
+        (Some(Value::String(s)), Some(Value::String(p))) => Ok(Value::Bool(s.starts_with(p.as_str()))),
+        _ => Ok(Value::Bool(false)),
+    });
+    reg_fn(scope, "byte_slice", |a, _| match (a.first(), a.get(1), a.get(2)) {
+        (Some(Value::String(s)), Some(Value::Int(start)), Some(Value::Int(end))) => {
+            let st = (*start).max(0) as usize;
+            let en = (*end).max(0) as usize;
+            let slice = s.get(st..en.min(s.len())).unwrap_or("").to_string();
+            Ok(Value::String(slice))
+        }
+        _ => Ok(Value::String(String::new())),
+    });
+
     reg_fn(scope, "bit_and", |a, _| match (a.first(), a.get(1)) {
         (Some(Value::Int(x)), Some(Value::Int(y))) => Ok(Value::Int(x & y)),
         _ => Ok(Value::Int(0)),

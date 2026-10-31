@@ -622,6 +622,10 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
         }
         LirExpr::Unary { op, expr: inner } => match (op.as_str(), eval_lir_expr(inner, scope)?) {
             ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+            ("!", stream_or_fn @ (Value::Stream { .. } | Value::Function(_))) => {
+                invert_bijective_callable(stream_or_fn)
+            }
+            ("!", other) => Ok(other),
             ("-", Value::Int(i)) => Ok(Value::Int(-i)),
             ("-", Value::Float(f)) => Ok(Value::Float(-f)),
             ("..", val) => Ok(val),
@@ -833,18 +837,65 @@ fn is_bypass_value(val: &Value) -> bool {
     }
 }
 
-fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Result<Value, String> {
-    if let LirExpr::Call { callee, args } = step {
-        return eval_lir_call(callee, args, Some(input), scope);
+#[derive(Clone)]
+struct AttractorSignal(Value);
+
+fn invert_bijective_callable(callable: Value) -> Result<Value, String> {
+    match callable {
+        Value::Stream { stmts, raw } => {
+            if let [LirStmt::Return(LirExpr::Binary { left, op, right })] = stmts.as_slice() {
+                if op == "+" {
+                    if let LirExpr::Binary {
+                        left: inner_l,
+                        op: inner_op,
+                        right: inner_r,
+                    } = left.as_ref()
+                    {
+                        if inner_op == "*" && matches!(inner_l.as_ref(), LirExpr::Ident(id) if id == "_") {
+                            let inv_expr = LirExpr::Binary {
+                                left: Box::new(LirExpr::Binary {
+                                    left: Box::new(LirExpr::Ident("_".into())),
+                                    op: "-".into(),
+                                    right: right.clone(),
+                                }),
+                                op: "/".into(),
+                                right: inner_r.clone(),
+                            };
+                            return Ok(Value::Stream {
+                                stmts: vec![LirStmt::Return(inv_expr)],
+                                raw,
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(Value::Stream { stmts, raw })
+        }
+        other => Ok(other),
     }
+}
+
+fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Result<Value, String> {
     if let LirExpr::Ident(prop) = step {
+        if prop == ".." {
+            scope.set("__attractor_next__", input.clone());
+            return Ok(Value::Done(Box::new(Value::Tuple(vec![
+                Value::Symbol("__attractor_continue__".into()),
+                input,
+            ]))));
+        }
         match (&input, prop.as_str()) {
             (Value::Float(f), "round_to_int") => return Ok(Value::Int(f.round() as i64)),
             (Value::Int(i), "round_to_int") => return Ok(Value::Int(*i)),
             (Value::Int(i), "to_float") => return Ok(Value::Float(*i as f64)),
             (Value::Float(f), "to_float") => return Ok(Value::Float(*f)),
+            (Value::Float(f), "abs") => return Ok(Value::Float(f.abs())),
+            (Value::Int(i), "abs") => return Ok(Value::Int(i.abs())),
             _ => {}
         }
+    }
+    if let LirExpr::Call { callee, args } = step {
+        return eval_lir_call(callee, args, Some(input), scope);
     }
     let mut t_scope = Scope::child(Arc::new(RwLock::new(scope.clone())));
     t_scope.set("_", input.clone());
@@ -852,6 +903,47 @@ fn eval_lir_pipe_target(input: Value, step: &LirExpr, scope: &mut Scope) -> Resu
         t_scope.unpack_form(f_arc, true);
     }
     let target = eval_lir_expr(step, &mut t_scope)?;
+
+    // Axiom IV.2: Emergent Arity Routing when piping a Tuple into an inline Stream `[...]`:
+    // - 1-Hole Stream `(1, 2, 3) . [ .+ 10 ]` maps element-wise!
+    // - 2-Hole Stream `(1, 2, 3) . [ _a + _b ]` emergently folds/reduces!
+    if let Value::Tuple(ref items) = input {
+        match &target {
+            Value::Stream { stmts, .. } if matches!(step, LirExpr::Lambda { .. }) => {
+                let uses_tuple_index = stmts.iter().any(|st| {
+                    let s = format!("{st:?}");
+                    s.contains("_.0") || s.contains("_.1") || s.contains("_1.0")
+                });
+                if !uses_tuple_index {
+                    let mut mapped = Vec::with_capacity(items.len());
+                    for item in items {
+                        mapped.push(apply_callable(target.clone(), item.clone(), scope)?);
+                    }
+                    return Ok(Value::Tuple(mapped));
+                }
+            }
+            Value::Function(func_arc) if func_arc.name == "Lambda" => {
+                if let FunctionBody::LirDefined { params, .. } = &func_arc.body {
+                    if params.len() == 2 {
+                        let mut iter = items.iter().cloned();
+                        let Some(mut acc) = iter.next() else {
+                            return Ok(Value::Int(0));
+                        };
+                        for item in iter {
+                            acc = apply_callable(
+                                target.clone(),
+                                Value::Tuple(vec![acc, item]),
+                                scope,
+                            )?;
+                        }
+                        return Ok(acc);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     apply_callable(target, input, scope)
 }
 
@@ -1092,6 +1184,9 @@ pub fn eval_path(path: &str, scope: &mut Scope) -> Result<Value, String> {
             Value::String(s) if seg == "length" => Value::Int(s.chars().count() as i64),
             Value::Int(i) if seg == "to_float" => Value::Float(*i as f64),
             Value::Float(f) if seg == "round_to_int" => Value::Int(f.round() as i64),
+            Value::Float(f) if seg == "abs" => Value::Float(f.abs()),
+            Value::Int(i) if seg == "abs" => Value::Int(i.abs()),
+            Value::String(s) if seg == "byte_len" => Value::Int(s.len() as i64),
             _ => return Err(format!("Нельзя получить '{seg}' из {current:?}")),
         };
     }
@@ -1565,11 +1660,34 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             }
         },
         Value::Stream { stmts, .. } => {
-            let mut s_scope = Scope::child_stream(Arc::new(RwLock::new(scope.clone())), arg.clone());
-            if let Value::Form(f_arc) = &arg {
-                s_scope.unpack_form(f_arc, true);
+            let mut cur_arg = arg;
+            for _ in 0..100_000 {
+                let mut s_scope =
+                    Scope::child_stream(Arc::new(RwLock::new(scope.clone())), cur_arg.clone());
+                if let Value::Form(f_arc) = &cur_arg {
+                    s_scope.unpack_form(f_arc, true);
+                }
+                let res = eval_lir_stmts(&stmts, Some(cur_arg.clone()), &mut s_scope)?;
+                // Copy back any mutated local bindings to enclosing scope if stream acted as a loop
+                for (k, v) in &s_scope.bindings {
+                    if !k.starts_with('_') && scope.has_local(k) {
+                        scope.set(k, v.clone());
+                    }
+                }
+                if let Value::Done(inner) = &res {
+                    if let Value::Tuple(items) = inner.as_ref() {
+                        if items.len() == 2
+                            && items[0] == Value::Symbol("__attractor_continue__".into())
+                        {
+                            cur_arg = items[1].clone();
+                            continue;
+                        }
+                    }
+                    return Ok((**inner).clone());
+                }
+                return Ok(res);
             }
-            eval_lir_stmts(&stmts, Some(arg), &mut s_scope)
+            Ok(Value::None)
         }
         Value::Router(branches) => eval_lir_router(&branches, arg, scope),
         Value::Range(start, end) => match arg {

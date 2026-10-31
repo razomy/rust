@@ -305,7 +305,7 @@ fn test_specification_compact_has_zero_diagnostics() {
 
     assert!(
         report.diagnostics.is_empty(),
-        "specification_compact.rl должна проходить анализ с 0 ошибок и 0 предупреждений, но получено:\n{:#?}",
+        "specification.rl должна проходить анализ с 0 ошибок и 0 предупреждений, но получено:\n{:#?}",
         report.diagnostics
     );
 }

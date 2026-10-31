@@ -211,102 +211,7 @@ pub struct HirModule {
 // =============================================================================
 
 pub const PRELUDE_SOURCE: &str = include_str!("prelude.rl");
-
-pub const IDE_STDLIB_SOURCE: &str = r#"
-Decimal {
-  parse_scale4(raw String) Int []
-}
-Regex {
-  matches(input String, pattern String) Bool []
-}
-Json {
-  format_value(v Any) String []
-  encode(v Any) String []
-  parse(s String) Any []
-}
-Http {
-  get(url Any) String []
-}
-Port {
-  read(src Any) Any []
-  write(data Any, dst Any) Any []
-}
-Ui {
-  view(spec Any) Any []
-  draw(children Any) Any []
-}
-Parse {
-  end Symbol 'eof'
-  match(pat Any) Stream []
-  one_or_more(r Any) Stream []
-  repeat(b Any, r Any) Stream []
-  skip(n Int) Stream []
-  to(delim Any) Stream []
-  copy(f Symbol, t Any) Stream []
-  run(input String, rules Any) Any []
-}
-FieldMeta {
-  name String
-  type String
-  value Any
-  doc String
-}
-Meta {
-  type_of(e Any) String [] & Compile
-  name_of(e Any) String [] & Compile
-  doc_of(e Any) String [] & Compile
-  fields_of(e Any) Tuple(FieldMeta) [] & Compile
-  steps_of(s Any) Tuple(Stream) [] & Compile
-  map_fields(f Any, m Any) Form [] & Compile
-  compose(s Any) Stream [] & Compile
-  error(msg String) None [] & Compile
-  identity(x Any) Any []
-  rewrite(node Any, rules Any) Any [] & Compile
-}
-Atom(T) {
-  value T
-  read() T []
-  get() T []
-  set(val T) T []
-  swap(tr Any) T []
-}
-Signal(T) {
-  value T
-  get() T []
-  read() T []
-  set(val T) T []
-  swap(tr Any) T []
-}
-Channel(T) {
-  send(val T) None []
-  recv() Option(T) []
-}
-Map(K, V) {
-  (K) V
-  get(m Map(K, V), key K) Option(V) []
-}
-trim(s String) String []
-to_upper(s String) String []
-split(s String, delim String) Tuple(String) []
-join(items Any, sep String) String []
-length(item Any) Int []
-append(items Any, elem Any) Tuple []
-contains(items Any, target Any) Bool []
-map(items Any, mapper Any) Tuple []
-filter(items Any, predicate Any) Tuple []
-fold(items Any, init Any, folder Any) Any []
-flat_map(items Any, mapper Any) Tuple []
-zip(items Any, other Any) Tuple []
-enumerate(items Any) Tuple []
-for_each(items Any, action Any) None []
-find(items Any, predicate Any) Any []
-take_while(items Any, predicate Any) Tuple []
-Effect(stream Any) None []
-timeout(val Any, dur Any) Any []
-bit_and(a Int, b Int) Int []
-bit_or(a Int, b Int) Int []
-bit_xor(a Int, b Int) Int []
-"#;
+pub const IDE_STDLIB_SOURCE: &str = include_str!("ide_stdlib.rl");
 
 pub fn lower_to_hir(sentences: &[Sentence]) -> HirModule {
     let located: Vec<LocatedSentence> = sentences
@@ -455,7 +360,12 @@ fn lower_located_sentence_into_hir(
                 symbol_context: name.clone(),
                 raw_ast: sentence.clone(),
             };
-            let func = build_hir_function(&name, &args, body, &tail, false, origin, hir);
+            let func = build_hir_function(&name, &args, body, &tail, false, origin.clone(), hir);
+            if is_pascal_case(&name) && !hir.forms.contains_key(&name) {
+                let (_, value_params) = extract_form_slots(&args, hir);
+                let form = lower_form_expr(&name, vec![], value_params, &[], origin, hir);
+                register_form(hir, name.clone(), form);
+            }
             register_function(hir, name, func);
         }
 
@@ -609,15 +519,33 @@ fn lower_located_sentence_into_hir(
     }
 }
 
+fn fn_param_signature_key(func: &HirFunction) -> Vec<String> {
+    func.params
+        .iter()
+        .filter(|p| !p.is_type_param)
+        .map(|p| {
+            if p.type_constraint.is_empty() {
+                "Any".to_string()
+            } else {
+                p.type_constraint.clone()
+            }
+        })
+        .collect()
+}
+
 fn register_function(hir: &mut HirModule, name: String, func: HirFunction) {
     if let Some(existing) = hir.functions.get(&name) {
         if !existing.is_prelude && !func.is_prelude && func.origin.file_path.is_none() {
-            hir.duplicates.push(DuplicateSymbol {
-                name: name.clone(),
-                kind: "Function",
-                first_sentence_index: existing.origin.sentence_index,
-                duplicate_origin: func.origin.clone(),
-            });
+            // Axiom II.2 & E11: Same-name overloads with distinct parameter signatures merge cleanly!
+            // Only flag a duplicate when parameter signatures are identical.
+            if fn_param_signature_key(existing) == fn_param_signature_key(&func) {
+                hir.duplicates.push(DuplicateSymbol {
+                    name: name.clone(),
+                    kind: "Function",
+                    first_sentence_index: existing.origin.sentence_index,
+                    duplicate_origin: func.origin.clone(),
+                });
+            }
         }
     }
     if !hir.function_order.contains(&name) {
@@ -861,9 +789,14 @@ fn extract_form_slots(params: &[Sentence], hir: &HirModule) -> (Vec<String>, Vec
                     });
                 }
             }
-            // Ограниченный параметр типа `_TC Category` или `TC Category`
+            // Ограниченный параметр типа `_TC & Category` или `_TC Category` или `TC Category`
             [Token::Path(tp), Token::Path(bound)]
                 if is_type_or_hole(tp) && is_pascal_case(bound) =>
+            {
+                type_params.push(tp.clone());
+            }
+            [Token::Path(tp), Token::Op(amp), Token::Path(bound), ..]
+                if amp == "&" && is_type_or_hole(tp) && is_pascal_case(bound) =>
             {
                 type_params.push(tp.clone());
             }
@@ -1012,16 +945,22 @@ fn strip_visibility_and_compile_tail(tokens: &[Token]) -> (Vec<Token>, HirVisibi
 }
 
 fn register_stdlib_hir(hir: &mut HirModule) {
+    let mut next_idx = 0; // Единый счетчик для обоих источников
+
     if let Ok(prelude_sentences) = crate::parser::parse_code(PRELUDE_SOURCE) {
-        for (idx, sentence) in prelude_sentences.iter().enumerate() {
-            lower_sentence_into_hir(idx, sentence, hir);
+        for sentence in &prelude_sentences {
+            lower_sentence_into_hir(next_idx, sentence, hir);
+            next_idx += 1;
         }
     }
+
     if let Ok(ide_sentences) = crate::parser::parse_code(IDE_STDLIB_SOURCE) {
-        for (idx, sentence) in ide_sentences.iter().enumerate() {
-            lower_sentence_into_hir(idx, sentence, hir);
+        for sentence in &ide_sentences {
+            lower_sentence_into_hir(next_idx, sentence, hir);
+            next_idx += 1;
         }
     }
+
     for form in hir.forms.values_mut() {
         form.is_prelude = true;
     }
@@ -1029,7 +968,6 @@ fn register_stdlib_hir(hir: &mut HirModule) {
         func.is_prelude = true;
     }
 }
-
 /// Единый понижатель всех аксиом форм (`Name { ... }`, `Name(Slots) ...`, `Name Base & { ... }`, `Name A | B`, `Name A / B`)
 fn collect_type_holes_from_tokens(tokens: &[Token], out: &mut Vec<String>) {
     for tok in tokens {

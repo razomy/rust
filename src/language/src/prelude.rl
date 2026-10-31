@@ -5,8 +5,11 @@ RAZOMY V6.4 — BUILT-IN STANDARD LIBRARY PRELUDE (src/prelude.rl)
 
 Compile {}
 Bypass  {}
+Linear  {}
+Watch   {}
 Public  {}
 Private {}
+Extern(abi String "c") {}
 
 None       {} & Bypass
 Some       { value _T }

@@ -555,6 +555,38 @@ fn test_step_19_full_v5_7_specification_parses_100_percent() -> Result<(), Box<d
 }
 
 #[test]
+fn test_step_20_razomy_v9_combined_operators_and_attractor_loops() {
+    let code = r#"
+# Razomy v9.0 combined operators across all 4 orthogonal layers:
+newton_sqrt(target Float) Float [
+  (target / 2.0) . [
+    next_guess ((. + (target / .)) / 2.0)
+    ((next_guess - .).abs < 0.00001) .? Break(next_guess)
+    next_guess . ..
+  ]
+]
+
+rebind_and_pipes_demo(x Int) [
+  counter 0
+  counter += 1
+  counter -= 1
+  counter *= 2
+  counter /= 2
+  counter .= 10
+  raw_order (Order { id "o1", amount 100 })
+  raw_order &= { amount 25 }
+
+  (1, 2, 3) . [ .+ 10 ] . [ _a + _b ] .~ [ "cleanup" . Shell.log ]
+]
+
+celsius_to_fahrenheit [ (. * 1.8) + 32.0 ]
+fahrenheit_to_celsius !celsius_to_fahrenheit
+"#;
+    let ast = parse_code(code).expect("Razomy v9.0 combined operators should parse cleanly");
+    assert_eq!(ast.len(), 4);
+}
+
+#[test]
 fn test_step_21_canonical_razomy_v6_4_imports() {
     let code = r#"
 Base                   root.base
