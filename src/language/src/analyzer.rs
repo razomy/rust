@@ -1272,6 +1272,9 @@ fn verify_form_slot_rules(hf: &HirForm, report: &mut AnalysisReport) {
 
     for tp in &hf.type_params {
         let base_tp = tp.split('(').next().unwrap_or(tp).trim();
+        if crate::hir::is_type_hole(base_tp) {
+            continue;
+        }
         if is_known_type(base_tp, &report.hir) && base_tp != hf.name {
             report.push_diag(
                 Severity::Error,
@@ -1290,6 +1293,7 @@ fn verify_form_slot_rules(hf: &HirForm, report: &mut AnalysisReport) {
     for anc in &hf.ancestors {
         let base_anc = anc.split('(').next().unwrap_or(anc).trim();
         if is_pascal_case(base_anc)
+            && !crate::hir::is_type_hole(base_anc)
             && !is_known_type(base_anc, &report.hir)
             && !hf.type_params.iter().any(|tp| tp.starts_with(base_anc))
         {
@@ -1315,11 +1319,15 @@ fn extract_type_names_from_constraint(constraint: &str) -> Vec<&str> {
         c.is_whitespace()
             || matches!(
                 c,
-                '(' | ')' | '[' | ']' | '{' | '}' | ',' | '&' | '|' | '/'
+                '(' | ')' | '[' | ']' | '{' | '}' | ',' | '&' | '|' | '/' | '!'
             )
     }) {
         let part = raw_part.trim();
-        if part.is_empty() || part.starts_with('\'') || part.starts_with('"') {
+        if part.is_empty()
+            || part.starts_with('\'')
+            || part.starts_with('"')
+            || crate::hir::is_type_hole(part)
+        {
             continue;
         }
         let base = part.split('.').next().unwrap_or(part);
@@ -1417,7 +1425,7 @@ fn verify_compile_time_assertion(
             if c == "Compile" && amp == "&" {
                 for s in sents {
                     if let [Token::Path(p), Token::Group(')', args)] = s.as_slice() {
-                        if p == "Compile.error" {
+                        if p == "Compile.error" || p == "Meta.error" {
                             let msg = args
                                 .first()
                                 .and_then(|a| a.first())
@@ -1460,6 +1468,11 @@ fn verify_function_body(
     if let Some(hf) = enclosing_form {
         var_types.insert("self".into(), hf.name.clone());
         var_types.insert("Self".into(), hf.name.clone());
+        // Law 1c: Enclosing Form `FormName` auto-projects its `snake_case` name `form_name`!
+        let form_snake = pascal_to_snake_case(&hf.name);
+        local_vars.insert(form_snake.clone());
+        var_types.insert(form_snake, hf.name.clone());
+
         for vp in &hf.value_params {
             local_vars.insert(vp.name.clone());
             if !vp.type_constraint.is_empty() {
@@ -1615,16 +1628,51 @@ fn verify_function_body(
             SemanticKind::TupleBinding { tuple, value } => {
                 let rhs_ty = infer_local_binding_type(&value, &var_types, report)
                     .unwrap_or_else(|| "Tuple".into());
+                let mut rest_count = 0usize;
                 for (i, t) in tuple.iter().enumerate() {
-                    if let [Token::Path(v)] = t.as_slice() {
-                        local_vars.insert(v.clone());
-                        if let Some(elem_ty) = extract_collection_element_type(&rhs_ty, i as i32) {
-                            var_types.insert(v.clone(), elem_ty);
+                    match t.as_slice() {
+                        [Token::Path(v)] => {
+                            local_vars.insert(v.clone());
+                            if let Some(elem_ty) = extract_collection_element_type(&rhs_ty, i as i32)
+                            {
+                                var_types.insert(v.clone(), elem_ty);
+                            }
+                        }
+                        [Token::Op(op), Token::Path(rest_var)] if op == ".." => {
+                            rest_count += 1;
+                            local_vars.insert(rest_var.clone());
+                            var_types.insert(rest_var.clone(), rhs_ty.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                if rest_count > 1 {
+                    report.push_diag(
+                        Severity::Error,
+                        "E10_MULTIPLE_REST_PATTERNS",
+                        format!(
+                            "Ошибка E10 (#{sentence_idx}): В деструктуризации слева не может быть более одного '..rest' паттерна."
+                        ),
+                        Some(fn_name),
+                        sentence_idx,
+                    );
+                }
+            }
+            _ => {
+                // Деструктуризация формы: `{ name, ..other_fields } user_form`
+                if let [Token::Group('{', field_sents), rest @ ..] = sent.as_slice() {
+                    if !rest.is_empty() && !has_pipe_op(rest) {
+                        for fs in field_sents {
+                            match fs.as_slice() {
+                                [Token::Path(v)] | [Token::Op(_), Token::Path(v)] => {
+                                    local_vars.insert(v.clone());
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
             }
-            _ => {}
         }
         check_tokens(
             fn_name,
@@ -1660,6 +1708,18 @@ fn infer_local_binding_type(
     var_types: &HashMap<String, String>,
     report: &AnalysisReport,
 ) -> Option<String> {
+    // Typed Local Binding: `u1 User (uid1 . Db.find_user)`
+    if let [Token::Path(explicit_ty), rest @ ..] = value {
+        if is_pascal_case(explicit_ty)
+            && !rest.is_empty()
+            && !matches!(
+                rest.first(),
+                Some(Token::Op(_) | Token::Group(')' | '{', _))
+            )
+        {
+            return Some(explicit_ty.clone());
+        }
+    }
     let inner = match value {
         [Token::Group('(', sents)] if sents.len() == 1 => sents[0].as_slice(),
         other => other,
@@ -2272,7 +2332,19 @@ fn check_tokens(
                 }
             }
             Token::Group('{', sents) => {
-                let inner_locals = local_vars.clone();
+                // Law 1a: Внутри `{ ... }` (включая обогащение `ctx & { discount [...], final_price [ amount - discount ] }`)
+                // все поля этой формы напрямую видны в лексическом скоупе сиблингов!
+                let mut inner_locals = local_vars.clone();
+                for s in sents {
+                    match classify_sentence(s) {
+                        SemanticKind::Binding { key, .. }
+                        | SemanticKind::StreamOrBranch { name: key, .. }
+                        | SemanticKind::FunctionDef { name: key, .. } => {
+                            inner_locals.insert(key);
+                        }
+                        _ => {}
+                    }
+                }
                 for s in sents {
                     match classify_sentence(s) {
                         SemanticKind::Binding { value, .. }
@@ -2399,9 +2471,15 @@ fn check_tokens(
                     if let [Token::Group('(' | ')', l_args), Token::Group('[', _)] = s.as_slice() {
                         for la in l_args {
                             if let [Token::Path(lp), rest @ ..] = la.as_slice() {
-                                inner_locals.insert(lp.clone());
-                                if let [Token::Path(lty)] = rest {
-                                    var_types.insert(lp.clone(), lty.clone());
+                                if is_pascal_case(lp) && rest.is_empty() {
+                                    let snake = pascal_to_snake_case(lp);
+                                    inner_locals.insert(snake.clone());
+                                    var_types.insert(snake, lp.clone());
+                                } else {
+                                    inner_locals.insert(lp.clone());
+                                    if let [Token::Path(lty)] = rest {
+                                        var_types.insert(lp.clone(), lty.clone());
+                                    }
                                 }
                             }
                         }

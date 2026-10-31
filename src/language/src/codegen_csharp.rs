@@ -146,7 +146,12 @@ impl TargetEmitter for CSharpEmitter {
             let tparams = if st.type_params.is_empty() {
                 String::new()
             } else {
-                format!("<{}>", st.type_params.join(", "))
+                let clean_tps: Vec<&str> = st
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.split('(').next().unwrap_or(tp).trim())
+                    .collect();
+                format!("<{}>", clean_tps.join(", "))
             };
 
             out.push_str(&format!("public record {}{tparams}\n{{\n", st.name));

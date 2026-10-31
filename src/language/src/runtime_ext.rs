@@ -60,6 +60,13 @@ pub fn expand_iterable(val: Value) -> Vec<Value> {
         Value::Range(start, end) => (start..=end).map(Value::Int).collect(),
         Value::Form(f_arc) => {
             let f = f_arc.read().unwrap();
+            if f.type_name == "Range" {
+                if let (Some(Value::Int(start)), Some(Value::Int(end))) =
+                    (f.get_field("start"), f.get_field("end"))
+                {
+                    return (start..=end).map(Value::Int).collect();
+                }
+            }
             if f.type_name == "Cons" {
                 let mut out = Vec::new();
                 if let Some(h) = f.get_field("head") {
@@ -213,6 +220,36 @@ fn register_primitives(scope: &mut Scope) {
             "sha256:{}",
             a.first().map(ToString::to_string).unwrap_or_default()
         )))
+    });
+    reg_fn(scope, "native_loop", |a, sc| {
+        let Some(body) = a.into_iter().next() else {
+            return Ok(Value::None);
+        };
+        for _ in 0..100_000 {
+            let res = apply_callable(body.clone(), Value::None, sc)?;
+            match res {
+                Value::Done(v) => return Ok(*v),
+                Value::Form(f_arc) => {
+                    let f = f_arc.read().unwrap();
+                    if f.type_name == "Break" || f.type_name == "Return" {
+                        return Ok(f.get_field("value").unwrap_or(Value::None));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Value::None)
+    });
+    reg_fn(scope, "get", |a, _| match (a.first(), a.get(1)) {
+        (Some(Value::Tuple(items)), Some(Value::Int(idx))) => {
+            let i = if *idx < 0 {
+                (items.len() as i64 + *idx) as usize
+            } else {
+                *idx as usize
+            };
+            Ok(items.get(i).cloned().unwrap_or(Value::None))
+        }
+        _ => Ok(Value::None),
     });
     reg_fn(scope, "timeout", |a, _| {
         Ok(a.into_iter().next().unwrap_or(Value::None))
@@ -439,6 +476,18 @@ fn register_meta_and_dialects(scope: &mut Scope) {
         Some(Value::Form(f)) => Ok(Value::String(f.read().unwrap().type_name.clone())),
         Some(v) => Ok(Value::String(format!("{v:?}"))),
         None => Ok(Value::String("None".into())),
+    });
+    reg_mod_fn(&mut meta, "name_of", |a, _| match a.first() {
+        Some(Value::Form(f)) => Ok(Value::String(f.read().unwrap().type_name.clone())),
+        Some(Value::Symbol(s) | Value::String(s)) => Ok(Value::String(s.clone())),
+        Some(v) => Ok(Value::String(v.to_string())),
+        None => Ok(Value::String("None".into())),
+    });
+    reg_mod_fn(&mut meta, "identity", |a, _| {
+        Ok(a.into_iter().next().unwrap_or(Value::None))
+    });
+    reg_mod_fn(&mut meta, "error", |a, _| {
+        Err(a.first().map(ToString::to_string).unwrap_or_else(|| "Compile error".into()))
     });
     reg_mod_fn(&mut meta, "doc_of", |_, _| Ok(Value::String(String::new())));
     reg_mod_fn(&mut meta, "fields_of", |a, _| {

@@ -1,6 +1,6 @@
 [package]
 name = "razomy_language"
-version = "0.5.7"
+version = "0.6.4"
 edition = "2021"
 default-run = "razomy"
 

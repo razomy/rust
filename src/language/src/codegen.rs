@@ -51,16 +51,55 @@ pub trait CodegenDialect {
                 format!("{indent}{lhs} = {};", self.emit_expr(value))
             }
             LirStmt::DestructTuple { names, value } => {
+                let clean: Vec<String> = names
+                    .iter()
+                    .map(|n| {
+                        if let Some(rest) = n.strip_prefix("..") {
+                            if self.is_csharp() {
+                                rest.to_string()
+                            } else {
+                                format!("...{rest}")
+                            }
+                        } else {
+                            n.clone()
+                        }
+                    })
+                    .collect();
                 if self.is_csharp() {
                     format!(
                         "{indent}var ({}) = {};",
-                        names.join(", "),
+                        clean.join(", "),
                         self.emit_expr(value)
                     )
                 } else {
                     format!(
                         "{indent}const [{}] = {};",
-                        names.join(", "),
+                        clean.join(", "),
+                        self.emit_expr(value)
+                    )
+                }
+            }
+            LirStmt::DestructForm { names, value } => {
+                let clean: Vec<String> = names
+                    .iter()
+                    .map(|n| {
+                        if let Some(rest) = n.strip_prefix("..") {
+                            if self.is_csharp() {
+                                rest.to_string()
+                            } else {
+                                format!("...{rest}")
+                            }
+                        } else {
+                            n.clone()
+                        }
+                    })
+                    .collect();
+                if self.is_csharp() {
+                    format!("{indent}var _form = {};", self.emit_expr(value))
+                } else {
+                    format!(
+                        "{indent}const {{ {} }} = {} as any;",
+                        clean.join(", "),
                         self.emit_expr(value)
                     )
                 }
@@ -97,11 +136,25 @@ pub trait CodegenDialect {
                     format!("((_in) => ({{ ..._in, ...{st}(_in) }}))({inp})")
                 }
             }
+            PipeOp::Subtract => {
+                if self.is_csharp() {
+                    format!("{inp}")
+                } else {
+                    format!("({inp})")
+                }
+            }
             PipeOp::Filter => {
                 if self.is_csharp() {
                     format!("({st}({inp}) ? {inp} : null)")
                 } else {
                     format!("((_in) => ({st}(_in) ? _in : null))({inp})")
+                }
+            }
+            PipeOp::Guard => {
+                if self.is_csharp() {
+                    format!("(({inp} != null && !({inp} is false)) ? {inp} : {st})")
+                } else {
+                    format!("((_in) => ((_in !== null && _in !== false) ? _in : {st}))({inp})")
                 }
             }
             PipeOp::Parallel => {

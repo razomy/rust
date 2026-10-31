@@ -377,9 +377,39 @@ pub fn eval_lir_stmts(
             LirStmt::DestructTuple { names, value } => {
                 let val = eval_lir_expr(value, scope)?;
                 if let Value::Tuple(items) = &val {
-                    for (n, it) in names.iter().zip(items.iter()) {
-                        if n != "_" {
-                            scope.set(n, it.clone());
+                    for (idx, n) in names.iter().enumerate() {
+                        if let Some(rest_name) = n.strip_prefix("..") {
+                            let rest_slice = if idx < items.len() {
+                                items[idx..].to_vec()
+                            } else {
+                                vec![]
+                            };
+                            scope.set(rest_name, Value::Tuple(rest_slice));
+                            break;
+                        } else if n != "_" {
+                            if let Some(it) = items.get(idx) {
+                                scope.set(n, it.clone());
+                            }
+                        }
+                    }
+                }
+                val
+            }
+            LirStmt::DestructForm { names, value } => {
+                let val = eval_lir_expr(value, scope)?;
+                if let Value::Form(f_arc) = &val {
+                    let f = f_arc.read().unwrap();
+                    let mut captured: Vec<String> = Vec::new();
+                    for n in names {
+                        if let Some(rest_name) = n.strip_prefix("..") {
+                            let mut rest_form = f.clone();
+                            for c in &captured {
+                                rest_form.remove_field(c);
+                            }
+                            scope.set(rest_name, Value::Form(Arc::new(RwLock::new(rest_form))));
+                        } else if let Some(fv) = f.get_field(n) {
+                            captured.push(n.clone());
+                            scope.set(n, fv);
                         }
                     }
                 }
@@ -393,7 +423,7 @@ pub fn eval_lir_stmts(
         }
         if let Value::Form(f_arc) = &last {
             let f = f_arc.read().unwrap();
-            if f.type_name == "Break" {
+            if f.type_name == "Break" || f.type_name == "Return" {
                 if let Some(v) = f.get_field("value") {
                     return Ok(Value::Done(Box::new(v)));
                 }
@@ -504,9 +534,24 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
             Ok(Value::String(out))
         }
         LirExpr::Ident(path) => eval_path(path, scope),
-        LirExpr::Tuple(items) => Ok(Value::Tuple(
-            items.iter().map(|e| eval_lir_expr(e, scope)).collect::<Result<Vec<_>, _>>()?,
-        )),
+        LirExpr::Tuple(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for e in items {
+                if let LirExpr::Unary { op, expr: inner } = e {
+                    if op == ".." {
+                        let spread_val = eval_lir_expr(inner, scope)?;
+                        if let Value::Tuple(sub_items) = spread_val {
+                            out.extend(sub_items);
+                        } else {
+                            out.push(spread_val);
+                        }
+                        continue;
+                    }
+                }
+                out.push(eval_lir_expr(e, scope)?);
+            }
+            Ok(Value::Tuple(out))
+        }
         LirExpr::Range(a, b) => match (eval_lir_expr(a, scope)?, eval_lir_expr(b, scope)?) {
             (Value::Int(x), Value::Int(y)) => Ok(Value::Range(x, y)),
             (Value::String(x), Value::String(y)) => Ok(Value::Range(
@@ -577,6 +622,9 @@ pub fn eval_lir_expr(expr: &LirExpr, scope: &mut Scope) -> Result<Value, String>
         }
         LirExpr::Unary { op, expr: inner } => match (op.as_str(), eval_lir_expr(inner, scope)?) {
             ("!", Value::Bool(b)) => Ok(Value::Bool(!b)),
+            ("-", Value::Int(i)) => Ok(Value::Int(-i)),
+            ("-", Value::Float(f)) => Ok(Value::Float(-f)),
+            ("..", val) => Ok(val),
             _ => Err(format!("Унарный оператор '{op}' не применим")),
         },
         LirExpr::Binary { left, op, right } => {
@@ -661,7 +709,7 @@ fn eval_lir_pipe_step(
     step: &LirExpr,
     scope: &mut Scope,
 ) -> Result<Value, String> {
-    if is_bypass_value(&input) && op != PipeOp::Filter {
+    if is_bypass_value(&input) && !matches!(op, PipeOp::Filter | PipeOp::Guard) {
         return Ok(input);
     }
 
@@ -684,15 +732,62 @@ fn eval_lir_pipe_step(
                 eval_binary_op_in_scope(input, "&", enriched, scope)
             }
         }
+        PipeOp::Subtract => {
+            if let (Value::Form(f_arc), LirExpr::Ident(path_str)) = (&input, step) {
+                let sub = subtract_ancestor_or_path(&f_arc.read().unwrap(), path_str);
+                return Ok(Value::Form(Arc::new(RwLock::new(sub))));
+            }
+            let rhs = eval_lir_expr(step, scope)?;
+            eval_binary_op_in_scope(input, "/", rhs, scope)
+        }
         PipeOp::Filter => {
             if is_bypass_value(&input) {
                 return Ok(input);
             }
+            // 1. Conditional exit `cond .? Break(total)` or `cond .? Return(0)`
+            if let Value::Bool(cond_b) = input {
+                let target_val = eval_lir_expr(step, scope)?;
+                if cond_b {
+                    if let Value::Form(f_arc) = &target_val {
+                        let f = f_arc.read().unwrap();
+                        if f.type_name == "Break" || f.type_name == "Return" {
+                            if let Some(v) = f.get_field("value") {
+                                return Ok(Value::Done(Box::new(v)));
+                            }
+                        }
+                    }
+                    return Ok(target_val);
+                }
+                return Ok(Value::None);
+            }
+            // 2. Collection filter `nodes .? [ _.is_healthy ]`
             let pred = eval_lir_expr(step, scope)?;
+            if let Value::Tuple(items) = &input {
+                let mut filtered = Vec::new();
+                for item in items {
+                    if matches!(
+                        apply_callable(pred.clone(), item.clone(), scope)?,
+                        Value::Bool(true)
+                    ) {
+                        filtered.push(item.clone());
+                    }
+                }
+                return Ok(Value::Tuple(filtered));
+            }
+            // 3. Pattern / Range / Predicate test `val .? Range(1, 100)` or `val .? ('admin' | 'manager')`
             match apply_callable(pred, input.clone(), scope)? {
                 Value::Bool(true) => Ok(input),
                 _ => Ok(Value::None),
             }
+        }
+        PipeOp::Guard => {
+            // Negative Guard `.!`: triggers when input is `false` or `None` / `Bypass`
+            let failed = matches!(input, Value::Bool(false) | Value::None);
+            if failed {
+                let err_val = eval_lir_expr(step, scope)?;
+                return Ok(Value::Done(Box::new(err_val)));
+            }
+            Ok(input)
         }
         PipeOp::Parallel => {
             let LirExpr::StructInit { fields, .. } = step else {
@@ -1493,11 +1588,43 @@ pub fn apply_callable(callable: Value, arg: Value, scope: &mut Scope) -> Result<
             if (!router.ctor_params.is_empty() || is_pascal_case(&router.type_name)) && router.union_variants.is_empty() {
                 return instantiate_form_constructor(&router, arg, scope);
             }
+            if router.type_name == "Range" {
+                if let (Some(start), Some(end)) =
+                    (router.get_field("start"), router.get_field("end"))
+                {
+                    return match (&start, &end, &arg) {
+                        (Value::Int(a), Value::Int(b), Value::Int(v)) => {
+                            Ok(Value::Bool(*v >= *a && *v <= *b))
+                        }
+                        (Value::String(a), Value::String(b), Value::String(s)) => {
+                            let ch = s.chars().next().unwrap_or('\0');
+                            let ca = a.chars().next().unwrap_or('\0');
+                            let cb = b.chars().next().unwrap_or('\0');
+                            Ok(Value::Bool(ch >= ca && ch <= cb))
+                        }
+                        _ => Ok(Value::Bool(false)),
+                    };
+                }
+            }
             if !router.union_variants.is_empty() {
                 let matched = router.union_variants.iter().any(|v| match (v, &arg) {
                     (Value::Range(a, b), Value::String(s)) => {
                         let ch = s.chars().next().unwrap_or('\0') as i64;
                         ch >= *a && ch <= *b
+                    }
+                    (Value::Form(f_arc), Value::String(s))
+                        if f_arc.read().unwrap().type_name == "Range" =>
+                    {
+                        let rf = f_arc.read().unwrap();
+                        if let (Some(Value::String(a)), Some(Value::String(b))) =
+                            (rf.get_field("start"), rf.get_field("end"))
+                        {
+                            let ch = s.chars().next().unwrap_or('\0');
+                            ch >= a.chars().next().unwrap_or('\0')
+                                && ch <= b.chars().next().unwrap_or('\0')
+                        } else {
+                            false
+                        }
                     }
                     _ => v == &arg,
                 });

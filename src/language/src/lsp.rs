@@ -2508,7 +2508,9 @@ fn serialize_sentence_inspection(
                     PipeOp::Dot => (".", "Dot (Standard Pipe)"),
                     PipeOp::Tap => (".>", "Tap (Side-Effect)"),
                     PipeOp::Enrich => (".&", "Enrich (Merge &)"),
-                    PipeOp::Filter => (".?", "Filter (Predicate)"),
+                    PipeOp::Subtract => ("./", "Subtract (Strip /)"),
+                    PipeOp::Filter => (".?", "Positive Filter / Exit (.?)"),
+                    PipeOp::Guard => (".!", "Negative Guard / Assert (.!)"),
                     PipeOp::Parallel => (".|", "Parallel (Fan-Out)"),
                 };
                 json!({

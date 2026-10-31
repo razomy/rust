@@ -555,15 +555,15 @@ fn test_step_19_full_v5_7_specification_parses_100_percent() -> Result<(), Box<d
 }
 
 #[test]
-fn test_step_21_canonical_razomy_v5_7_imports() {
+fn test_step_21_canonical_razomy_v6_4_imports() {
     let code = r#"
-Base          root.base
-(String, Int) root.base
-_             root.base
-_             base
-_             Path"../../../base"
-Http          std.net.http
-Sqlite        std.db.sqlite
+Base                   root.base
+{ String, Int, Money } root.base
+..root.prelude
+..base
+..Path"../../../base"
+Http                   std.net.http
+Sqlite                 std.db.sqlite
 "#;
     let ast = parse_code(code).unwrap();
     assert_eq!(ast.len(), 7);
@@ -578,22 +578,22 @@ Sqlite        std.db.sqlite
         }
     );
 
-    // 2. (String, Int) root.base -> Destructured
+    // 2. { String, Int, Money } root.base -> Destructured
     let imp1 = extract_import(&ast[1]).unwrap();
     assert_eq!(
         imp1,
         ImportDirective::Destructured {
-            names: vec!["String".into(), "Int".into()],
+            names: vec!["String".into(), "Int".into(), "Money".into()],
             source: ImportSource::ModulePath("root.base".into())
         }
     );
 
-    // 3. _ root.base -> Wildcard
+    // 3. ..root.prelude -> Wildcard
     let imp2 = extract_import(&ast[2]).unwrap();
     assert_eq!(
         imp2,
         ImportDirective::Wildcard {
-            source: ImportSource::ModulePath("root.base".into())
+            source: ImportSource::ModulePath("root.prelude".into())
         }
     );
 

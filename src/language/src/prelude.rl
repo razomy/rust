@@ -1,28 +1,36 @@
-// =============================================================================
-// RAZOMY V5.7 — BUILT-IN STANDARD LIBRARY PRELUDE (src/prelude.rl)
-// Базовые контракты, алгебраические типы, точный десятичный Money и тегированные типы.
-// =============================================================================
+#
+RAZOMY V6.4 — BUILT-IN STANDARD LIBRARY PRELUDE (src/prelude.rl)
+Базовые контракты, алгебраические типы, Range, точный десятичный Money и тегированные типы.
+#
 
 Compile {}
 Bypass  {}
 Public  {}
 Private {}
 
-None      {} & Bypass
-Some(T)   { value T }
-Option(T) Some(T) | None
-Break(T)  { value T, label Symbol 'default' }
+None       {} & Bypass
+Some       { value _T }
+Option(_T) Some(_T) | None
+Break      { value _T, label Symbol 'default' } & Bypass
+Return     { value _T } & Bypass
+Loop(body Stream) [ body . native_loop ]
+
+Range {
+  start _T
+  end   _T
+  contains(val _T) [ (val >= start) && (val <= end) ]
+}
 
 Money(raw String "0.00") {
   scaled (raw . Decimal.parse_scale4)
 
   from_scaled(val Int) [ Money { scaled val } ]
 
-  +   (other Money)   [ Money.from_scaled(self.scaled + other.scaled) ]
-  -   (other Money)   [ Money.from_scaled(self.scaled - other.scaled) ]
-  *   (factor Float)  [ Money.from_scaled((self.scaled.to_float * factor).round_to_int) ]
-  /   (divisor Float) [ Money.from_scaled((self.scaled.to_float / divisor).round_to_int) ]
-  ==  (other Money)   [ self.scaled == other.scaled ]
+  +   (other Money)   [ Money.from_scaled(scaled + other.scaled) ]
+  -   (other Money)   [ Money.from_scaled(scaled - other.scaled) ]
+  *   (factor Float)  [ Money.from_scaled((scaled.to_float * factor).round_to_int) ]
+  /   (divisor Float) [ Money.from_scaled((scaled.to_float / divisor).round_to_int) ]
+  ==  (other Money)   [ scaled == other.scaled ]
 }
 
 Usd(raw String)        { money Money(raw), currency 'USD' }

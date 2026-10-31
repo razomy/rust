@@ -5,14 +5,14 @@ WHITESPACE = _{ " " | "\t" | "\r" }
 WS_NL      = _{ WHITESPACE | NEWLINE }
 COMMENT    = _{ line_comment | block_comment }
 
-line_comment  = @{ "//" ~ (!NEWLINE ~ ANY)* }
+line_comment  = @{ ("//" | ("#" ~ ASCII_DIGIT* ~ &(" " | "\t"))) ~ (!NEWLINE ~ ANY)* }
 block_comment = @{
-    "#" ~ PUSH(ASCII_DIGIT*) ~ &WS_NL
+    "#" ~ PUSH(ASCII_DIGIT*) ~ &("\r"? ~ "\n")
   ~ (!(PEEK ~ "#") ~ ANY)*
   ~ POP ~ "#"
 }
 // --- 2. СТРУКТУРА И МНОГОСТРОЧНЫЕ ПАЙПЛАЙНЫ ---
-PIPE_OP_AHEAD = @{ ".>" | ".&" | ".?" | ".|" | (("." | "&") ~ WS_NL) }
+PIPE_OP_AHEAD = @{ ".>" | ".&" | "./" | ".?" | ".!" | ".|" | ".=" | ".+" | ".-" | ".*" | (("." | "&" | "|") ~ WS_NL) }
 
 pipe_nl    = _{ (NEWLINE ~ (WHITESPACE | COMMENT)*)+ ~ &PIPE_OP_AHEAD }
 SEP        = _{ "," | (!pipe_nl ~ NEWLINE) }
@@ -61,19 +61,26 @@ number_lit = @{
 // --- 6. ОПЕРАТОРЫ ---
 overload_op = _{ "==" | "!=" | ">=" | "<=" | "**" | "<<" | ">>" | "+" | "-" | "*" | "/" | "%" | ">" | "<" }
 
-callable_op = @{ overload_op ~ &(WHITESPACE+ ~ "(") }
+callable_op = @{ overload_op ~ &(WHITESPACE* ~ "(") }
 
 unary_op = _{
     ("!" ~ !("=" | WS_NL))
   | ("&" ~ !("&" | WS_NL))
   | ("-" ~ !(ASCII_DIGIT | WS_NL))
+  | (".." ~ !WS_NL)
+}
+
+rel_op = @{
+    "." ~ ("==" | "!=" | ">=" | "<=" | "**" | "+" | "-" | "*" | "/" | "%" | ">" | "<" | "=")
+  ~ &(WS_NL | EOI)
 }
 
 operator = @{
     unary_op
   | ".."
+  | rel_op
   | (
-        (".>" | ".&" | ".?" | ".|" | "&&" | "||" | overload_op | "&" | "|" | ".")
+        (".>" | ".&" | "./" | ".?" | ".!" | ".|" | "&&" | "||" | overload_op | "&" | "|" | ".")
       ~ &(WS_NL | EOI)
     )
 }

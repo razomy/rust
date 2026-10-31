@@ -59,6 +59,17 @@ pub fn is_pascal_case(s: &str) -> bool {
     s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
 }
 
+/// Закон 2 (V6.4): Проверяет, является ли идентификатор именованной типовой дыркой `_PascalCase` (`_T`, `_A`, `_Key`, `_M`)
+pub fn is_type_hole(s: &str) -> bool {
+    s.starts_with('_')
+        && s.len() >= 2
+        && s.chars().nth(1).map(|c| c.is_uppercase()).unwrap_or(false)
+}
+
+pub fn is_type_or_hole(s: &str) -> bool {
+    is_pascal_case(s) || is_type_hole(s)
+}
+
 // =============================================================================
 // 2. УЗЛЫ HIR (СТАТИЧЕСКИЕ СХЕМЫ ФОРМ, ПОЛЕЙ, МЕТОДОВ, ИМПОРТОВ И ФУНКЦИЙ)
 // =============================================================================
@@ -242,11 +253,14 @@ FieldMeta {
 }
 Meta {
   type_of(e Any) String [] & Compile
+  name_of(e Any) String [] & Compile
   doc_of(e Any) String [] & Compile
   fields_of(e Any) Tuple(FieldMeta) [] & Compile
   steps_of(s Any) Tuple(Stream) [] & Compile
   map_fields(f Any, m Any) Form [] & Compile
   compose(s Any) Stream [] & Compile
+  error(msg String) None [] & Compile
+  identity(x Any) Any []
   rewrite(node Any, rules Any) Any [] & Compile
 }
 Atom(T) {
@@ -815,13 +829,15 @@ fn extract_form_slots(params: &[Sentence], hir: &HirModule) -> (Vec<String>, Vec
 
     for sent in params {
         match sent.as_slice() {
-            // HKT 2-го или 3-го порядка: `F(_)`, `T(_(_), _)` или `M(_) Monad`
-            [Token::Path(name), Token::Group(')', _), ..] if is_pascal_case(name) => {
+            // HKT 2-го или 3-го порядка: `_F(_)`, `_T(_(_), _)`, `F(_)`, `M(_) Monad`
+            [Token::Path(name), Token::Group(')', _), ..] if is_type_or_hole(name) => {
                 type_params.push(name.clone());
             }
-            // Одиночный идентификатор: `Box(T)` vs `UserWithAge(Age)`
+            // Одиночный идентификатор: `Set(_T)`, `Box(T)`, `Some(value)` vs `UserWithAge(Age)`
             [Token::Path(single)] => {
-                if is_pascal_case(single) {
+                if is_type_hole(single) {
+                    type_params.push(single.clone());
+                } else if is_pascal_case(single) {
                     if is_known_type(single, hir) {
                         value_params.push(HirParam {
                             name: pascal_to_snake_case(single),
@@ -845,15 +861,18 @@ fn extract_form_slots(params: &[Sentence], hir: &HirModule) -> (Vec<String>, Vec
                     });
                 }
             }
-            // Ограниченный параметр типа `TC Category` (`PascalCase` + `PascalCase`)
+            // Ограниченный параметр типа `_TC Category` или `TC Category`
             [Token::Path(tp), Token::Path(bound)]
-                if is_pascal_case(tp) && is_pascal_case(bound) =>
+                if is_type_or_hole(tp) && is_pascal_case(bound) =>
             {
                 type_params.push(tp.clone());
             }
             // Явный слот значения `a Int` или с дефолтом `raw String "0.00"` (`snake_case`)
             [Token::Path(param_name), rest @ ..] => {
                 let (constraint, def_expr) = split_type_and_default(rest, hir);
+                if is_type_hole(&constraint) && !type_params.contains(&constraint) {
+                    type_params.push(constraint.clone());
+                }
                 value_params.push(HirParam {
                     name: param_name.clone(),
                     type_constraint: constraint,
@@ -891,16 +910,16 @@ pub fn is_known_type(name: &str, hir: &HirModule) -> bool {
 /// Разделяет `Int 180` или `String "0.00"` или `'default'` на `(inferred_type, default_expr)`
 fn split_type_and_default(tokens: &[Token], hir: &HirModule) -> (String, Vec<Token>) {
     match tokens {
-        // Explicit type + default value: `max_speed Int 180`, `label Symbol 'default'`, `items Tuple(T) ()`
+        // Explicit type + default value: `max_speed Int 180`, `active _U current_user`, `items Tuple(_T) ()`
         [Token::Path(ty), rest @ ..]
-            if is_pascal_case(ty)
+            if is_type_or_hole(ty)
                 && !rest.is_empty()
                 && !matches!(rest.first(), Some(Token::Op(_) | Token::Group(')', _))) =>
         {
             (ty.clone(), rest.to_vec())
         }
         [Token::Path(ty), Token::Group(')', targs), rest @ ..]
-            if is_pascal_case(ty)
+            if is_type_or_hole(ty)
                 && !rest.is_empty()
                 && !matches!(rest.first(), Some(Token::Op(_))) =>
         {
@@ -908,14 +927,14 @@ fn split_type_and_default(tokens: &[Token], hir: &HirModule) -> (String, Vec<Tok
             let _ = targs;
             (format_tokens_as_type(type_slice), rest.to_vec())
         }
-        // Only type: `brand BrandName`, `id String`, `role 'admin' | 'user'`
-        [Token::Path(ty)] if is_pascal_case(ty) && is_known_type(ty, hir) => {
+        // Only type or type hole: `brand BrandName`, `start _T`, `id String`
+        [Token::Path(ty)] if is_type_hole(ty) || (is_pascal_case(ty) && is_known_type(ty, hir)) => {
             (ty.clone(), tokens.to_vec())
         }
         _ => {
             let is_lit_or_expr = matches!(tokens.first(), Some(Token::Lit(_) | Token::Group(_, _)))
                 || (tokens.len() >= 2
-                    && matches!(&tokens[0], Token::Path(p) if is_pascal_case(p))
+                    && matches!(&tokens[0], Token::Path(p) if is_pascal_case(p) && !matches!(p.as_str(), "Tuple" | "List" | "Map" | "Set" | "Option" | "Tree" | "RoseTree" | "Channel" | "Atom"))
                     && matches!(&tokens[1], Token::Group(')', _)));
             if is_lit_or_expr {
                 (infer_hir_type(tokens, hir), tokens.to_vec())
@@ -1012,9 +1031,27 @@ fn register_stdlib_hir(hir: &mut HirModule) {
 }
 
 /// Единый понижатель всех аксиом форм (`Name { ... }`, `Name(Slots) ...`, `Name Base & { ... }`, `Name A | B`, `Name A / B`)
+fn collect_type_holes_from_tokens(tokens: &[Token], out: &mut Vec<String>) {
+    for tok in tokens {
+        match tok {
+            Token::Path(p) if is_type_hole(p) => {
+                if !out.contains(p) {
+                    out.push(p.clone());
+                }
+            }
+            Token::Group(_, sents) => {
+                for s in sents {
+                    collect_type_holes_from_tokens(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn lower_form_expr(
     name: &str,
-    type_params: Vec<String>,
+    mut type_params: Vec<String>,
     value_params: Vec<HirParam>,
     expr: &[Token],
     origin: SourceOrigin,
@@ -1073,10 +1110,14 @@ fn lower_form_expr(
                 populate_hir_form_members(
                     name,
                     body,
+                    &mut type_params,
                     &mut fields,
                     &mut field_order,
+                    &mut ancestor_fields,
                     &mut methods,
                     &mut method_order,
+                    &mut ancestors,
+                    &mut is_bypass,
                     Some(&mut submodules),
                     &origin,
                     hir,
@@ -1154,6 +1195,9 @@ fn lower_form_expr(
             );
         }
     }
+
+    // Автоматически собираем все `_PascalCase` дырки типов (`_T`, `_K`, `_V`, `_N`) из полей формы в `type_params`
+    collect_type_holes_from_tokens(expr_slice, &mut type_params);
 
     ancestor_fields.insert(name.to_string(), fields.clone());
     let has_own_body_fields = expr_slice.iter().any(|t| matches!(t, Token::Group('{', _)));
@@ -1305,10 +1349,14 @@ fn insert_hir_method(
 fn populate_hir_form_members(
     owner_name: &str,
     sentences: &[Sentence],
+    type_params: &mut Vec<String>,
     fields: &mut HashMap<String, HirField>,
     field_order: &mut Vec<String>,
+    ancestor_fields: &mut HashMap<String, HashMap<String, HirField>>,
     methods: &mut HashMap<String, HirFunction>,
     method_order: &mut Vec<String>,
+    ancestors: &mut Vec<String>,
+    is_bypass: &mut bool,
     mut submodules: Option<&mut HashMap<String, HirForm>>,
     owner_origin: &SourceOrigin,
     hir: &HirModule,
@@ -1320,6 +1368,111 @@ fn populate_hir_form_members(
             symbol_context: format!("{owner_name}.{f_idx}"),
             raw_ast: s.clone(),
         };
+
+        // Axiom 3 (V6.4): Prefix Lineage Spread `..Ancestor` или `..Functor(_M)` внутри `{}`!
+        if let [Token::Op(op), Token::Path(anc_name), rest @ ..] = s.as_slice() {
+            if op == ".." {
+                let spread_targs = if let Some(Token::Group(')', args)) = rest.first() {
+                    extract_type_params(args)
+                } else {
+                    vec![]
+                };
+                if !ancestors.contains(anc_name) {
+                    ancestors.push(anc_name.clone());
+                }
+                if let Some(base_form) = hir.forms.get(anc_name) {
+                    let mut subst = HashMap::new();
+                    for (param_raw, arg_val) in
+                        base_form.type_params.iter().zip(spread_targs.iter())
+                    {
+                        let param_name = param_raw.split_whitespace().next().unwrap_or(param_raw);
+                        let param_clean = param_name.split('(').next().unwrap_or(param_name);
+                        subst.insert(param_clean.to_string(), arg_val.clone());
+                    }
+                    if base_form.is_bypass {
+                        *is_bypass = true;
+                    }
+                    ancestor_fields.insert(anc_name.clone(), base_form.fields.clone());
+                    for (anc_k, anc_map) in &base_form.ancestor_fields {
+                        ancestor_fields.insert(anc_k.clone(), anc_map.clone());
+                    }
+                    for anc in &base_form.ancestors {
+                        if !ancestors.contains(anc) {
+                            ancestors.push(anc.clone());
+                        }
+                    }
+                    for k in &base_form.field_order {
+                        if let Some(rhs_f) = base_form.fields.get(k) {
+                            let mut cloned_f = rhs_f.clone();
+                            if !subst.is_empty() {
+                                cloned_f.inferred_type =
+                                    substitute_type_vars(&cloned_f.inferred_type, &subst);
+                            }
+                            if let Some(existing) = fields.get_mut(k) {
+                                if existing.origin_form != cloned_f.origin_form
+                                    && existing.origin_form != owner_name
+                                {
+                                    existing.is_ambiguous = true;
+                                    if !existing
+                                        .conflicting_origins
+                                        .contains(&existing.origin_form)
+                                    {
+                                        existing
+                                            .conflicting_origins
+                                            .push(existing.origin_form.clone());
+                                    }
+                                    if !existing
+                                        .conflicting_origins
+                                        .contains(&cloned_f.origin_form)
+                                    {
+                                        existing
+                                            .conflicting_origins
+                                            .push(cloned_f.origin_form.clone());
+                                    }
+                                }
+                            } else {
+                                field_order.push(k.clone());
+                                fields.insert(k.clone(), cloned_f);
+                            }
+                        }
+                    }
+                    for m in &base_form.method_order {
+                        if let Some(rhs_m) = base_form.methods.get(m) {
+                            if !methods.contains_key(m) {
+                                method_order.push(m.clone());
+                                methods.insert(m.clone(), apply_subst_to_method(rhs_m, &subst));
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Sugar #4 (V6.4): Auto-Generic Open Slot `Box { item }` -> `item _T`
+        if let [Token::Path(open_slot)] = s.as_slice() {
+            if !is_pascal_case(open_slot) && !is_type_hole(open_slot) && open_slot != "_" {
+                if !type_params.contains(&"_T".to_string()) {
+                    type_params.push("_T".into());
+                }
+                insert_hir_field(
+                    fields,
+                    field_order,
+                    HirField {
+                        name: open_slot.clone(),
+                        inferred_type: "_T".into(),
+                        origin_form: owner_name.to_string(),
+                        default_expr: vec![],
+                        is_reactive: false,
+                        is_ambiguous: false,
+                        conflicting_origins: vec![],
+                        visibility: HirVisibility::Default,
+                        origin: member_origin,
+                    },
+                );
+                continue;
+            }
+        }
 
         match classify_sentence(s) {
             SemanticKind::FormDef {
@@ -1525,13 +1678,18 @@ fn resolve_type_algebra_into_fields(
             // Каноническая форма слияния в V5.7: `PrintableUser User & Printable { format() [...] }`
             // или `SortableUser User & Comparable(User) { < (other User) [...] }`, где `{...}` идет после типа без второго `&`!
             Token::Group('{', override_sents) => {
+                let mut dummy_tparams = Vec::new();
                 populate_hir_form_members(
                     owner_name,
                     override_sents,
+                    &mut dummy_tparams,
                     fields,
                     field_order,
+                    ancestor_fields,
                     methods,
                     method_order,
+                    ancestors,
+                    is_bypass,
                     None,
                     owner_origin,
                     hir,
@@ -1644,13 +1802,18 @@ fn resolve_type_algebra_into_fields(
                             }
                         }
                         Token::Group('{', override_sents) => {
+                            let mut dummy_tparams = Vec::new();
                             populate_hir_form_members(
                                 owner_name,
                                 override_sents,
+                                &mut dummy_tparams,
                                 fields,
                                 field_order,
+                                ancestor_fields,
                                 methods,
                                 method_order,
+                                ancestors,
+                                is_bypass,
                                 None,
                                 owner_origin,
                                 hir,
@@ -1799,14 +1962,25 @@ pub fn lower_fn_params_with_ret(
 
     for (idx, sent) in args.iter().enumerate() {
         match sent.as_slice() {
-            // HKT Type Param: `lift(M(_) Monad, A, ma M(A))`
-            [Token::Path(tp), Token::Group(')', _), ..] if is_pascal_case(tp) => {
+            // HKT Type Param: `lift(_M(_) Monad, ma _M(_A))` или `lift(M(_) Monad, A, ma M(A))`
+            [Token::Path(tp), Token::Group(')', _), ..] if is_type_or_hole(tp) => {
                 out.push(HirParam {
                     name: tp.clone(),
                     type_constraint: tp.clone(),
                     default_expr: vec![],
                     is_anonymous_type_slot: false,
                     is_type_param: true,
+                    destructured_fields: vec![],
+                });
+            }
+            // Variadic rest parameter: `..rest`
+            [Token::Op(op), Token::Path(rest_name)] if op == ".." => {
+                out.push(HirParam {
+                    name: rest_name.clone(),
+                    type_constraint: "Tuple".into(),
+                    default_expr: vec![],
+                    is_anonymous_type_slot: false,
+                    is_type_param: false,
                     destructured_fields: vec![],
                 });
             }
@@ -1845,8 +2019,19 @@ pub fn lower_fn_params_with_ret(
                     destructured_fields,
                 });
             }
-            // Одиночный идентификатор: `fn(User)` vs `fmap(A, B, ...)` vs `fn(x)`
+            // Одиночный идентификатор: `derive_json(_TargetForm)` vs `fn(User)` vs `fmap(A, B, ...)` vs `fn(x)`
             [Token::Path(single)] => {
+                if is_type_hole(single) {
+                    out.push(HirParam {
+                        name: single.clone(),
+                        type_constraint: "Form".into(),
+                        default_expr: vec![],
+                        is_anonymous_type_slot: false,
+                        is_type_param: false,
+                        destructured_fields: vec![],
+                    });
+                    continue;
+                }
                 let is_upper = is_pascal_case(single);
                 if is_upper {
                     let used_as_type_later = args.iter().skip(idx + 1).any(|later| {
@@ -2059,7 +2244,13 @@ pub fn infer_hir_type_with_locals(
         for step in steps {
             match step.op {
                 crate::parser::PipeOp::Tap => {}
-                crate::parser::PipeOp::Filter => {}
+                crate::parser::PipeOp::Filter | crate::parser::PipeOp::Guard => {}
+                crate::parser::PipeOp::Subtract => {
+                    let sub_ty = format_tokens_as_type(&step.expr);
+                    if !sub_ty.is_empty() {
+                        current = format!("{current} / {sub_ty}");
+                    }
+                }
                 crate::parser::PipeOp::Parallel => {
                     current = "Form".into();
                 }

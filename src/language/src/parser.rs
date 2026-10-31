@@ -199,23 +199,248 @@ pub fn parse_sentences(pair: pest::iterators::Pair<Rule>) -> Vec<Sentence> {
                 raw_tokens.push(tok);
             }
 
-            // 4. Сворачиваем оператор диапазона `start .. end` в `Token::Range(start, end)`
+            // 4. Сворачиваем оператор диапазона `start .. end` в `Token::Range(start, end)`,
+            //    а префиксный `..x` сохраняем как `Token::Op("..")` + `x`.
             let mut final_tokens: Vec<Token> = Vec::with_capacity(raw_tokens.len());
             let mut iter = raw_tokens.into_iter();
             while let Some(tok) = iter.next() {
                 if matches!(&tok, Token::Op(op) if op == "..") {
-                    if let (Some(start), Some(end)) = (final_tokens.pop(), iter.next()) {
-                        final_tokens.push(Token::Range(Box::new(start), Box::new(end)));
-                        continue;
+                    let prev_is_range_start = matches!(
+                        final_tokens.last(),
+                        Some(Token::Lit(_) | Token::Path(_) | Token::Group('(', _))
+                    );
+                    if prev_is_range_start {
+                        if let (Some(start), Some(end)) = (final_tokens.pop(), iter.next()) {
+                            final_tokens.push(Token::Range(Box::new(start), Box::new(end)));
+                            continue;
+                        }
                     }
                 }
                 final_tokens.push(tok);
             }
 
+            let final_tokens = desugar_sentence_tokens(final_tokens);
             sentences.push(final_tokens);
         }
     }
     sentences
+}
+
+fn is_rel_op_str(op: &str) -> bool {
+    matches!(
+        op,
+        ".+" | ".-" | ".*" | ".==" | ".!=" | ".>=" | ".<=" | ".>" | ".<" | ".%" | ".**"
+    )
+}
+
+/// Нормализует синтаксический сахар Razomy v6.4 на уровне токенов предложения:
+/// 1. Leading-dot в выражениях и потоках: `.field` -> `_.field`, `.0` -> `_.0`
+/// 2. Relative Operator Step в начале потока/выражения: `[ .+ 1 ]` -> `[ _ + 1 ]`
+/// 3. Point-Free Relative Sugar в аргументах вызова: `map(.price)` -> `map([ _.price ])`, `filter(.age >= 18)` -> `filter([ _.age >= 18 ])`
+/// 4. Negative Type Guard: `Order & !Cancelled` -> `Order / Cancelled`
+/// 5. Explicit In-Place Update: `a .= val` -> `a val`, `a .+ 1` -> `a (a + 1)`
+/// 6. Named Function with Form Slots: `name { a Int, b Int 0 } [Body]` -> `name(a Int, b Int 0) [Body]`
+fn desugar_sentence_tokens(tokens: Vec<Token>) -> Vec<Token> {
+    if tokens.is_empty() {
+        return tokens;
+    }
+
+    // 1. Named Function with Form Slots: `name { a Int, b Int 0 } [Body]` -> `name(a Int, b Int 0) [Body]`
+    if let [Token::Path(fn_name), Token::Group('{', slot_sents), rest @ ..] = tokens.as_slice() {
+        let is_snake = fn_name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_lowercase())
+            .unwrap_or(false);
+        if is_snake && rest.iter().any(|t| matches!(t, Token::Group('[', _))) {
+            let mut rewritten = Vec::with_capacity(tokens.len());
+            rewritten.push(Token::Path(fn_name.clone()));
+            rewritten.push(Token::Group(')', slot_sents.clone()));
+            rewritten.extend_from_slice(rest);
+            return desugar_sentence_tokens(rewritten);
+        }
+    }
+
+    // 2. Ветка роутера с относительным оператором: `.>= 2000 [ 300 ]` или `.== target [ "Matched" ]`
+    if tokens.len() >= 3 {
+        if let (Some(Token::Op(op)), Some(Token::Group('[', body))) =
+            (tokens.first(), tokens.last())
+        {
+            if is_rel_op_str(op) || op == "./" {
+                let raw_op = op.trim_start_matches('.').to_string();
+                let mut pred_sent = vec![Token::Path("_".into()), Token::Op(raw_op)];
+                for mid in &tokens[1..tokens.len() - 1] {
+                    pred_sent.push(desugar_token_inner(mid.clone()));
+                }
+                return vec![
+                    Token::Group('[', vec![pred_sent]),
+                    Token::Group('[', body.clone()),
+                ];
+            }
+        }
+    }
+
+    // 3. Relative Operator Step в начале предложения внутри `[...]`: `.+ 10` -> `_ + 10`
+    if let Some(Token::Op(op)) = tokens.first() {
+        if is_rel_op_str(op) && tokens.len() >= 2 {
+            let raw_op = op.trim_start_matches('.').to_string();
+            let mut out = vec![Token::Path("_".into()), Token::Op(raw_op)];
+            for t in tokens.into_iter().skip(1) {
+                out.push(desugar_token_inner(t));
+            }
+            return out;
+        }
+    }
+
+    // 4. Explicit In-Place Assignment & Compound Update:
+    //    `a .= b` -> `a (b)`, `a .+ b` -> `a (a + b)`, `a .- b` -> `a (a - b)`, `a .* b` -> `a (a * b)`
+    if tokens.len() >= 3 {
+        if let (Token::Path(lhs), Token::Op(op)) = (&tokens[0], &tokens[1]) {
+            if op == ".=" {
+                let rhs: Vec<Token> = tokens[2..]
+                    .iter()
+                    .cloned()
+                    .map(desugar_token_inner)
+                    .collect();
+                let wrapped = if rhs.len() == 1 {
+                    rhs
+                } else {
+                    vec![Token::Group('(', vec![rhs])]
+                };
+                let mut out = vec![Token::Path(lhs.clone())];
+                out.extend(wrapped);
+                return out;
+            }
+            if matches!(op.as_str(), ".+" | ".-" | ".*") {
+                let math_op = op.trim_start_matches('.').to_string();
+                let mut rhs_expr = vec![Token::Path(lhs.clone()), Token::Op(math_op)];
+                for t in &tokens[2..] {
+                    rhs_expr.push(desugar_token_inner(t.clone()));
+                }
+                return vec![
+                    Token::Path(lhs.clone()),
+                    Token::Group('(', vec![rhs_expr]),
+                ];
+            }
+        }
+    }
+
+    // 5. Общий проход по токенам предложения:
+    //    • `& !Cancelled` -> `/ Cancelled`
+    //    • `a .? .is_healthy` -> `a . filter([ _.is_healthy ])`
+    //    • `.field` -> `_.field`
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        // Negative Type Guard: `& !Type` -> `/ Type`
+        if i + 2 < tokens.len() {
+            if let (Token::Op(amp), Token::Op(bang), Token::Path(neg_ty)) =
+                (&tokens[i], &tokens[i + 1], &tokens[i + 2])
+            {
+                if amp == "&"
+                    && bang == "!"
+                    && neg_ty
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_uppercase())
+                        .unwrap_or(false)
+                {
+                    out.push(Token::Op("/".into()));
+                    out.push(Token::Path(neg_ty.clone()));
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+
+        // Point-Free Filter Pipe: `nodes .? .is_healthy` -> `nodes . filter([ _.is_healthy ])`
+        if i + 1 < tokens.len() {
+            if let (Token::Op(qop), Token::Path(rel_p)) = (&tokens[i], &tokens[i + 1]) {
+                if qop == ".?" && rel_p.starts_with('.') && rel_p.len() > 1 {
+                    let prop = format!("_{rel_p}");
+                    out.push(Token::Op(".".into()));
+                    out.push(Token::Path("filter".into()));
+                    out.push(Token::Group(
+                        ')',
+                        vec![vec![Token::Group('[', vec![vec![Token::Path(prop)]])]],
+                    ));
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+
+        let tok = tokens[i].clone();
+        match tok {
+            Token::Path(ref p) if p == "." => {
+                out.push(Token::Path("_".into()));
+            }
+            Token::Path(ref p) if p.starts_with('.') && p.len() > 1 => {
+                // Если это метод после закрывающей скобки `(a * b).round_to_int` — оставляем `.round_to_int`!
+                let after_group = matches!(out.last(), Some(Token::Group('(' | ')', _)));
+                if after_group {
+                    out.push(tok);
+                } else {
+                    // В позиции шага после `.` (`x . .Regex.matches(...)`): убираем ведущую точку
+                    let after_pipe = matches!(
+                        out.last(),
+                        Some(Token::Op(op)) if matches!(op.as_str(), "." | ".>" | ".&" | ".?" | ".!" | "./")
+                    );
+                    if after_pipe {
+                        out.push(Token::Path(p.trim_start_matches('.').to_string()));
+                    } else {
+                        out.push(Token::Path(format!("_{p}")));
+                    }
+                }
+            }
+            other => out.push(desugar_token_inner(other)),
+        }
+        i += 1;
+    }
+
+    out
+}
+
+fn desugar_token_inner(tok: Token) -> Token {
+    match tok {
+        Token::Group(')', args) => {
+            let new_args = args
+                .into_iter()
+                .map(|arg_sent| {
+                    // Point-Free Relative Sugar внутри аргументов вызова:
+                    // `map(.price)` -> `map([ _.price ])`
+                    // `filter(.age >= 18)` -> `filter([ _.age >= 18 ])`
+                    if let Some(Token::Path(first_p)) = arg_sent.first() {
+                        if first_p.starts_with('.') && first_p.len() > 1 {
+                            let desugared = desugar_sentence_tokens(arg_sent);
+                            return vec![Token::Group('[', vec![desugared])];
+                        }
+                    }
+                    if let Some(Token::Op(first_op)) = arg_sent.first() {
+                        if is_rel_op_str(first_op) {
+                            let desugared = desugar_sentence_tokens(arg_sent);
+                            return vec![Token::Group('[', vec![desugared])];
+                        }
+                    }
+                    desugar_sentence_tokens(arg_sent)
+                })
+                .collect();
+            Token::Group(')', new_args)
+        }
+        Token::Group(delim, sents) => {
+            let new_sents = sents.into_iter().map(desugar_sentence_tokens).collect();
+            Token::Group(delim, new_sents)
+        }
+        Token::Range(a, b) => Token::Range(
+            Box::new(desugar_token_inner(*a)),
+            Box::new(desugar_token_inner(*b)),
+        ),
+        Token::Path(ref p) if p == "." => Token::Path("_".into()),
+        Token::Path(ref p) if p.starts_with('.') && p.len() > 1 => {
+            Token::Path(format!("_{p}"))
+        }
+        other => other,
+    }
 }
 
 pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule>> {
@@ -380,7 +605,9 @@ pub enum PipeOp {
     Dot,      // `.`  Standard Dataflow Pipe
     Tap,      // `.>` Side-effect Tap Pipe
     Enrich,   // `.&` Context Enrich / Merge Pipe
-    Filter,   // `.?` Safe / Predicate Filter Pipe
+    Subtract, // `./` Subtract / Strip Pipe
+    Filter,   // `.?` Positive Filter / Pattern Test / Conditional Exit Pipe
+    Guard,    // `.!` Negative Guard / Assert Pipe
     Parallel, // `.|` Concurrent Fan-out Pipe
 }
 
@@ -442,7 +669,9 @@ pub fn parse_pipe_op(op: &str) -> Option<PipeOp> {
         "." => Some(PipeOp::Dot),
         ".>" => Some(PipeOp::Tap),
         ".&" => Some(PipeOp::Enrich),
+        "./" => Some(PipeOp::Subtract),
         ".?" => Some(PipeOp::Filter),
+        ".!" => Some(PipeOp::Guard),
         ".|" => Some(PipeOp::Parallel),
         _ => None,
     }
@@ -754,21 +983,37 @@ fn extract_import_source(tok: &Token, next_tok: Option<&Token>) -> Option<(Impor
     }
 }
 
-/// Сопоставляет предложение Sentence с грамматикой импортов Razomy v5.7:
-/// 1) `_ <source>`                 -> Wildcard
-/// 2) `(A, B, C) <source>`         -> Destructured
-/// 3) `Alias <source>`             -> Namespaced
+/// Сопоставляет предложение Sentence с грамматикой импортов Razomy v6.4 (с поддержкой синтаксиса v5.7):
+/// 1) `..<source>` или `_ <source>`           -> Wildcard / Lineage Spread
+/// 2) `{ A, B, C } <source>` или `(A, B) <src>` -> Destructured
+/// 3) `Alias <source>`                        -> Namespaced
 pub fn extract_import(sent: &Sentence) -> Option<ImportDirective> {
     match sent.as_slice() {
-        // 1. Wildcard-импорт: `_ root.base` или `_ Path"../base"`
+        // 1a. V6.4 Prefix Lineage Spread Import: `..root.prelude`, `..Path"../shared/ext_mod.rl"`, `..(std.net.http / 'legacy_request')`
+        [Token::Op(op), rest @ ..] if op == ".." && !rest.is_empty() => {
+            if let [Token::Group('(', inner)] = rest {
+                if let Some(first_sent) = inner.first() {
+                    if let Some((source, _)) =
+                        extract_import_source(first_sent.first()?, first_sent.get(1))
+                    {
+                        return Some(ImportDirective::Wildcard { source });
+                    }
+                }
+            }
+            let next = rest.get(1);
+            let (source, _) = extract_import_source(&rest[0], next)?;
+            Some(ImportDirective::Wildcard { source })
+        }
+
+        // 1b. Legacy Wildcard-импорт: `_ root.base` или `_ Path"../base"`
         [Token::Path(target), rest @ ..] if target == "_" && !rest.is_empty() => {
             let next = rest.get(1);
             let (source, _) = extract_import_source(&rest[0], next)?;
             Some(ImportDirective::Wildcard { source })
         }
 
-        // 2. Деструктурирующий импорт: `(String, Int) root.base`
-        [Token::Group('(', items), rest @ ..] if !rest.is_empty() => {
+        // 2. Деструктурирующий импорт: `{ String, Int, Money } root.base` или `(String, Int) root.base`
+        [Token::Group('{' | '(', items), rest @ ..] if !rest.is_empty() => {
             let next = rest.get(1);
             let (source, _) = extract_import_source(&rest[0], next)?;
 
@@ -776,9 +1021,14 @@ pub fn extract_import(sent: &Sentence) -> Option<ImportDirective> {
             for item_sentence in items {
                 for t in item_sentence {
                     if let Token::Path(name) = t {
-                        names.push(name.clone());
+                        if name != ".." {
+                            names.push(name.clone());
+                        }
                     }
                 }
+            }
+            if names.is_empty() {
+                return None;
             }
             Some(ImportDirective::Destructured { names, source })
         }

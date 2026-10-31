@@ -97,6 +97,7 @@ pub enum LirStmt {
     Let { name: String, value: LirExpr },
     AssignPath { path: String, value: LirExpr },
     DestructTuple { names: Vec<String>, value: LirExpr },
+    DestructForm { names: Vec<String>, value: LirExpr },
     Expr(LirExpr),
     Return(LirExpr),
 }
@@ -261,6 +262,38 @@ pub fn lower_hir_to_lir(hir: &HirModule) -> LirModule {
     }
 }
 
+fn is_open_field_for_positional_ctor(f: &HirField, hf: &HirForm, hir: &HirModule) -> bool {
+    if f.is_reactive {
+        return false;
+    }
+    if f.default_expr.is_empty() {
+        return true;
+    }
+    match f.default_expr.as_slice() {
+        [Token::Path(p)] => {
+            crate::hir::is_type_hole(p)
+                || matches!(
+                    p.as_str(),
+                    "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Any" | "Self"
+                )
+                || hf.type_params.contains(p)
+                || (is_pascal_case(p) && hir.forms.contains_key(p))
+        }
+        [Token::Path(p), Token::Group(')', args)] if is_pascal_case(p) => {
+            matches!(
+                p.as_str(),
+                "Tuple" | "Map" | "List" | "Set" | "Option" | "Tree"
+            ) || args
+                .iter()
+                .all(|a| matches!(a.as_slice(), [Token::Path(tp)] if crate::hir::is_type_or_hole(tp)))
+        }
+        _ => f
+            .default_expr
+            .iter()
+            .any(|t| matches!(t, Token::Op(op) if op == "|")),
+    }
+}
+
 fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
     let mut fields = Vec::new();
     let mut reactive_getters = Vec::new();
@@ -296,18 +329,29 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
         .map(|sub| lower_form_to_lir(sub, hir))
         .collect();
 
-    let ctor_params = hf
-        .value_params
-        .iter()
-        .map(|vp| {
-            let def = if vp.default_expr.is_empty() {
-                None
-            } else {
-                Some(lower_tokens_to_expr(&vp.default_expr, hir))
-            };
-            (vp.name.clone(), normalize_param_type(vp), def)
-        })
-        .collect();
+    // Form-Tuple Constructor Duality (V6.4):
+    // Если у формы нет явных `value_params` в заголовке `Name(...)`, её открытые поля (без дефолтного значения)
+    // автоматически образуют позиционные слоты конструктора `Name(arg0, arg1, ...)`!
+    let ctor_params = if !hf.value_params.is_empty() {
+        hf.value_params
+            .iter()
+            .map(|vp| {
+                let def = if vp.default_expr.is_empty() {
+                    None
+                } else {
+                    Some(lower_tokens_to_expr(&vp.default_expr, hir))
+                };
+                (vp.name.clone(), normalize_param_type(vp), def)
+            })
+            .collect()
+    } else {
+        hf.field_order
+            .iter()
+            .filter_map(|fname| hf.fields.get(fname))
+            .filter(|f| is_open_field_for_positional_ctor(f, hf, hir))
+            .map(|f| (f.name.clone(), f.inferred_type.clone(), None))
+            .collect()
+    };
 
     let value_params = hf
         .value_params
@@ -365,27 +409,7 @@ fn lower_form_to_lir(hf: &HirForm, hir: &HirModule) -> LirStruct {
 }
 
 fn lower_field_to_lir(f: &HirField, hf: &HirForm, hir: &HirModule) -> LirField {
-    let is_type_only = match f.default_expr.as_slice() {
-        [Token::Path(p)] => {
-            matches!(
-                p.as_str(),
-                "String" | "Symbol" | "Int" | "Float" | "Bool" | "Byte" | "Money" | "Any" | "Self"
-            ) || hf.type_params.contains(p)
-                || (is_pascal_case(p) && hir.forms.contains_key(p))
-        }
-        [Token::Path(p), Token::Group(')', args)] if is_pascal_case(p) => {
-            matches!(
-                p.as_str(),
-                "Tuple" | "Map" | "List" | "Set" | "Option" | "Tree"
-            ) || args
-                .iter()
-                .all(|a| matches!(a.as_slice(), [Token::Path(tp)] if is_pascal_case(tp)))
-        }
-        _ => f
-            .default_expr
-            .iter()
-            .any(|t| matches!(t, Token::Op(op) if op == "|")),
-    };
+    let is_type_only = is_open_field_for_positional_ctor(f, hf, hir);
 
     let default_val = if f.default_expr.is_empty() || is_type_only {
         None
@@ -576,7 +600,21 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
                 }
             }
             SemanticKind::Binding { key, value } => {
-                let expr = lower_tokens_to_expr(&value, hir);
+                // Typed Local Binding (Law 3): `u1 User (uid1 . Db.find_user)` -> strip leading Type annotation `User`
+                let clean_value = match value.as_slice() {
+                    [Token::Path(ty), rest @ ..]
+                        if crate::hir::is_type_or_hole(ty)
+                            && !rest.is_empty()
+                            && !matches!(
+                                rest.first(),
+                                Some(Token::Op(_) | Token::Group(')' | '{', _))
+                            ) =>
+                    {
+                        rest
+                    }
+                    other => other,
+                };
+                let expr = lower_tokens_to_expr(clean_value, hir);
                 if key.contains('.') {
                     stmts.push(LirStmt::AssignPath {
                         path: key.clone(),
@@ -609,6 +647,9 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
                         .iter()
                         .filter_map(|t| match t.as_slice() {
                             [Token::Path(p)] => Some(p.clone()),
+                            [Token::Op(op), Token::Path(p)] if op == ".." => {
+                                Some(format!("..{p}"))
+                            }
                             _ => None,
                         })
                         .collect();
@@ -619,6 +660,26 @@ pub fn lower_body_to_stmts(sentences: &[Sentence], hir: &HirModule) -> Vec<LirSt
                 }
             }
             _ => {
+                // Form Destructuring with optional rest: `{ name, ..other_fields } user_form`
+                if let [Token::Group('{', field_sents), rest @ ..] = s.as_slice() {
+                    if !rest.is_empty() && !has_pipe_op(rest) {
+                        let names: Vec<String> = field_sents
+                            .iter()
+                            .filter_map(|fs| match fs.as_slice() {
+                                [Token::Path(p)] => Some(p.clone()),
+                                [Token::Op(op), Token::Path(p)] if op == ".." => {
+                                    Some(format!("..{p}"))
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        stmts.push(LirStmt::DestructForm {
+                            names,
+                            value: lower_tokens_to_expr(rest, hir),
+                        });
+                        continue;
+                    }
+                }
                 let expr = lower_tokens_to_expr(s, hir);
                 stmts.push(if is_last {
                     LirStmt::Return(expr)
@@ -668,9 +729,9 @@ pub fn lower_tokens_to_expr(tokens: &[Token], hir: &HirModule) -> LirExpr {
     }
 
     if let [Token::Op(op), rest @ ..] = tokens {
-        if op == "!" && !rest.is_empty() {
+        if matches!(op.as_str(), "!" | "-" | "..") && !rest.is_empty() {
             return LirExpr::Unary {
-                op: "!".into(),
+                op: op.clone(),
                 expr: Box::new(lower_tokens_to_expr(rest, hir)),
             };
         }
@@ -895,6 +956,9 @@ pub fn lower_single_token(token: &Token, hir: &HirModule) -> LirExpr {
                             || hir.forms.contains_key(&name)
                             || hir.functions.contains_key(&name)
                     }
+                    SemanticKind::FunctionDef { body, tail, .. } => {
+                        tail.is_empty() && !body.is_empty()
+                    }
                     _ => false,
                 });
             if is_router {
@@ -983,6 +1047,48 @@ pub fn lower_router_branches(branches: &[Sentence], hir: &HirModule) -> Vec<LirB
                     bindings,
                     unpacked_fields,
                     body: lower_body_to_stmts(&stream, hir),
+                });
+            }
+            SemanticKind::FunctionDef {
+                name, args, body, ..
+            } => {
+                // Ветка алгебраического конструктора в роутере: `Some(val) [ ... ]`, `Cons(hd, tl) [ ... ]`, `Add(l, r) [ ... ]`
+                let mut conds = vec![LirExpr::Binary {
+                    left: Box::new(LirExpr::Ident("_".into())),
+                    op: "is".into(),
+                    right: Box::new(LirExpr::Ident(name.clone())),
+                }];
+                let mut bindings = Vec::new();
+                if is_pascal_case(&name) {
+                    bindings.push((pascal_to_snake_case(&name), LirExpr::Ident("_".into())));
+                }
+                let field_names: Vec<String> = hir
+                    .forms
+                    .get(&name)
+                    .map(|hf| hf.field_order.clone())
+                    .unwrap_or_default();
+                for (idx, arg_sent) in args.iter().enumerate() {
+                    let field_accessor = field_names
+                        .get(idx)
+                        .map(|f| format!("_.{f}"))
+                        .unwrap_or_else(|| format!("_.{idx}"));
+                    if let [Token::Path(var_name)] = arg_sent.as_slice() {
+                        if var_name != "_" {
+                            bindings.push((var_name.clone(), LirExpr::Ident(field_accessor)));
+                        }
+                    } else {
+                        conds.push(LirExpr::Binary {
+                            left: Box::new(LirExpr::Ident(field_accessor)),
+                            op: "==".into(),
+                            right: Box::new(lower_tokens_to_expr(arg_sent, hir)),
+                        });
+                    }
+                }
+                out.push(LirBranch {
+                    condition: combine_and(conds),
+                    bindings,
+                    unpacked_fields: vec![],
+                    body: lower_body_to_stmts(&body, hir),
                 });
             }
             SemanticKind::LambdaOrTupleBranch { args, body } => {
