@@ -1003,27 +1003,18 @@ fn parse_interpolated_str(raw: &str) -> LirExpr {
     if !raw.contains('{') && !raw.contains('\\') {
         return LirExpr::Str(raw.to_string());
     }
-    let mut parts = Vec::new();
-    let mut current_lit = String::new();
-    let mut chars = raw.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next_c) = chars.next() {
-                current_lit.push(next_c);
+    let segments = crate::parser::parse_interpolated_string_segments(raw);
+    let mut parts = Vec::with_capacity(segments.len());
+    for seg in segments {
+        match seg {
+            crate::parser::StringSegment::Text(lit) => parts.push(LirInterpPart::Lit(lit)),
+            crate::parser::StringSegment::Interpolation { raw_expr, .. } => {
+                parts.push(LirInterpPart::Expr(raw_expr));
             }
-        } else if c == '{' {
-            if !current_lit.is_empty() {
-                parts.push(LirInterpPart::Lit(std::mem::take(&mut current_lit)));
-            }
-            let expr: String = chars.by_ref().take_while(|&ch| ch != '}').collect();
-            parts.push(LirInterpPart::Expr(expr.trim().to_string()));
-        } else {
-            current_lit.push(c);
         }
     }
-    if !current_lit.is_empty() {
-        parts.push(LirInterpPart::Lit(current_lit));
+    if parts.is_empty() {
+        return LirExpr::Str(String::new());
     }
     if parts.len() == 1 {
         if let LirInterpPart::Lit(s) = &parts[0] {

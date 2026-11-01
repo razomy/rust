@@ -443,3 +443,38 @@ fn hir_08_full_v5_7_specification_lowers_cleanly() {
     assert_eq!(monad_fmap.params[0].type_constraint, "_M(_A)");
     assert_eq!(monad_fmap.return_type.as_deref(), Some("_M(_B)"));
 }
+
+#[test]
+fn hir_09_return_autotype_checks_all_leaves_of_function() {
+    let code = r#"
+User     { id String, name String }
+Company  { id String, title String }
+NotFound { entity String, id String } & Bypass
+Invalid  { reason String } & Bypass
+
+route_actor(kind Symbol, id String) [
+  id == "" .! Invalid { reason "empty id" }
+  kind . {
+    'user'    [ User { id id, name "Alice" } ]
+    'company' [ Company { id id, title "Acme" } ]
+    _         [ NotFound { entity "Actor", id id } ]
+  }
+]
+
+early_return_branch(flag Bool) [
+  flag .? Return("early_str")
+  1_000_000_000
+]
+"#;
+    let ast = parse_code(code).unwrap();
+    let hir = lower_to_hir(&ast);
+
+    let route_fn = hir.functions.get("route_actor").unwrap();
+    assert_eq!(
+        route_fn.effective_return_type(),
+        Some("Invalid | User | Company | NotFound")
+    );
+
+    let early_fn = hir.functions.get("early_return_branch").unwrap();
+    assert_eq!(early_fn.effective_return_type(), Some("String | Int"));
+}

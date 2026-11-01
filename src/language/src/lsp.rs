@@ -2295,12 +2295,15 @@ impl RazomyLanguageServer {
         if method == "GET" && (path == "/" || path.starts_with("/parser.html")) {
             let html = std::fs::read_to_string("parser.html")
                 .or_else(|_| std::fs::read_to_string("src/parser.html"))
-                .unwrap_or_else(|_| "<h1>parser.html not found in working directory</h1>".into());
+                .unwrap_or_else(|_| include_str!("./parser.html").to_string());
             let bytes = html.as_bytes();
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\n\
                  Content-Type: text/html; charset=utf-8\r\n\
+                 Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n\
+                 Pragma: no-cache\r\n\
+                 Expires: 0\r\n\
                  Access-Control-Allow-Origin: *\r\n\
                  Content-Length: {}\r\n\r\n",
                 bytes.len()
@@ -2339,6 +2342,7 @@ impl RazomyLanguageServer {
                 stream,
                 "HTTP/1.1 200 OK\r\n\
                  Content-Type: application/json; charset=utf-8\r\n\
+                 Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n\
                  Access-Control-Allow-Origin: *\r\n\
                  Content-Length: {}\r\n\r\n",
                 resp_bytes.len()

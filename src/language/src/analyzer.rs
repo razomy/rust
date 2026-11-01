@@ -2319,10 +2319,10 @@ fn check_tokens(
                 report,
             ),
             Token::Lit(Literal::String(raw)) => {
-                for chunk in raw.split('{').skip(1) {
-                    if let Some(expr) = chunk.split('}').next() {
+                for seg in crate::parser::parse_interpolated_string_segments(raw) {
+                    if let crate::parser::StringSegment::Interpolation { raw_expr, ast } = seg {
                         verify_identifier(
-                            expr.trim(),
+                            &raw_expr,
                             true,
                             fn_name,
                             local_vars,
@@ -2332,6 +2332,23 @@ fn check_tokens(
                             sentence_idx,
                             report,
                         );
+                        for interp_sent in &ast {
+                            for interp_tok in interp_sent {
+                                if let Token::Path(p) = interp_tok {
+                                    verify_identifier(
+                                        p,
+                                        true,
+                                        fn_name,
+                                        local_vars,
+                                        var_types,
+                                        shadowed,
+                                        ambiguous,
+                                        sentence_idx,
+                                        report,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

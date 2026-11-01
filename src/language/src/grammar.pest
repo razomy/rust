@@ -57,9 +57,10 @@ string_lit = @{ "\"" ~ ("\\" ~ ANY | !"\"" ~ ANY)* ~ "\"" }
 symbol_lit = @{ "'"  ~ ("\\" ~ ANY | !"'"  ~ ANY)* ~ "'" }
 
 // --- 5. ЧИСЛА ---
-hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT+ ~ !(ASCII_ALPHANUMERIC | "_") }
+digits       = _{ ASCII_DIGIT ~ ("_"? ~ ASCII_DIGIT)* }
+hex_byte_lit = @{ "0x" ~ ASCII_HEX_DIGIT ~ ("_"? ~ ASCII_HEX_DIGIT)* ~ !(ASCII_ALPHANUMERIC | "_") }
 number_lit = @{
-    "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+    "-"? ~ digits ~ ("." ~ digits)? ~ (^"e" ~ ("+" | "-")? ~ digits)?
   ~ !(ident | ("." ~ !(ident | ".")))
 }
 

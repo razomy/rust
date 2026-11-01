@@ -12,6 +12,15 @@ pub struct RazomyParser;
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum StringSegment {
+    Text(String),
+    Interpolation {
+        raw_expr: String,
+        ast: Vec<Sentence>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
     Float(f64),
@@ -94,17 +103,17 @@ pub fn parse_token(pair: pest::iterators::Pair<Rule>) -> Token {
         }
 
         Rule::hex_byte_lit => {
-            let s = &pair.as_str()[2..];
-            let val = u8::from_str_radix(s, 16).unwrap_or(0);
+            let clean: String = pair.as_str()[2..].chars().filter(|&c| c != '_').collect();
+            let val = u8::from_str_radix(&clean, 16).unwrap_or(0);
             Token::Lit(Literal::Byte(val))
         }
 
         Rule::number_lit => {
-            let s = pair.as_str();
-            if s.contains('.') {
-                Token::Lit(Literal::Float(s.parse().unwrap()))
+            let clean: String = pair.as_str().chars().filter(|&c| c != '_').collect();
+            if clean.contains('.') || clean.contains('e') || clean.contains('E') {
+                Token::Lit(Literal::Float(clean.parse().unwrap_or(0.0)))
             } else {
-                Token::Lit(Literal::Int(s.parse().unwrap()))
+                Token::Lit(Literal::Int(clean.parse().unwrap_or(0)))
             }
         }
 
@@ -563,6 +572,88 @@ fn replace_param_hole_with_underscore(tokens: Sentence, hole_name: &str) -> Sent
             other => other,
         })
         .collect()
+}
+
+/// Разбирает интерполированную строку `"Hello {a} {b}!"` на сегменты текста и AST выражений,
+/// поддерживая вложенные скобки внутри `{ ... }` и экранирование `\{`, `\}`.
+pub fn parse_interpolated_string_segments(raw: &str) -> Vec<StringSegment> {
+    let mut segments = Vec::new();
+    let mut current_text = String::new();
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next_c) = chars.peek() {
+                if matches!(next_c, '{' | '}' | '"' | '\\' | 'n' | 'r' | 't') {
+                    chars.next();
+                    match next_c {
+                        'n' => current_text.push('\n'),
+                        'r' => current_text.push('\r'),
+                        't' => current_text.push('\t'),
+                        other => current_text.push(other),
+                    }
+                    continue;
+                }
+            }
+            current_text.push(c);
+        } else if c == '{' {
+            if !current_text.is_empty() {
+                segments.push(StringSegment::Text(std::mem::take(&mut current_text)));
+            }
+            let mut expr_str = String::new();
+            let mut depth = 1usize;
+            let mut in_quote: Option<char> = None;
+            while let Some(ch) = chars.next() {
+                if let Some(q) = in_quote {
+                    expr_str.push(ch);
+                    if ch == '\\' {
+                        if let Some(esc) = chars.next() {
+                            expr_str.push(esc);
+                        }
+                    } else if ch == q {
+                        in_quote = None;
+                    }
+                } else {
+                    match ch {
+                        '"' | '\'' => {
+                            in_quote = Some(ch);
+                            expr_str.push(ch);
+                        }
+                        '{' => {
+                            depth += 1;
+                            expr_str.push(ch);
+                        }
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                            expr_str.push(ch);
+                        }
+                        _ => expr_str.push(ch),
+                    }
+                }
+            }
+            let trimmed = expr_str.trim().to_string();
+            if trimmed.is_empty() {
+                segments.push(StringSegment::Text("{}".to_string()));
+            } else {
+                let ast = parse_code(&trimmed).unwrap_or_default();
+                segments.push(StringSegment::Interpolation {
+                    raw_expr: trimmed,
+                    ast,
+                });
+            }
+        } else {
+            current_text.push(c);
+        }
+    }
+
+    if !current_text.is_empty() {
+        segments.push(StringSegment::Text(current_text));
+    }
+
+    segments
 }
 
 pub fn parse_code(source: &str) -> Result<Vec<Sentence>, pest::error::Error<Rule>> {

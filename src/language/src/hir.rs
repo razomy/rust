@@ -669,7 +669,7 @@ fn infer_fn_body_return_type(
     }
     let last = body.last()?;
 
-     if let [Token::Path(p)] = last.as_slice() {
+    if let [Token::Path(p)] = last.as_slice() {
         if p == "self" {
             if let Some(fields) = enclosing_fields {
                 if let Some(domain_field) = fields.values().find(|f| {
@@ -685,11 +685,306 @@ fn infer_fn_body_return_type(
         }
     }
 
-    let inferred = infer_hir_type_with_locals(last, &local_types, hir);
-    if matches!(inferred.as_str(), "" | "Any" | "Stream" | "self") {
+    let mut leaf_types = Vec::new();
+    collect_body_return_leaf_types(body, &local_types, hir, &mut leaf_types);
+
+    if leaf_types.is_empty() {
+        let inferred = infer_hir_type_with_locals(last, &local_types, hir);
+        if !is_uninformative_return_type(&inferred) {
+            push_unique_return_types(&inferred, &mut leaf_types);
+        }
+    }
+
+    if leaf_types.is_empty() {
         None
     } else {
-        Some(inferred)
+        Some(leaf_types.join(" | "))
+    }
+}
+
+fn is_uninformative_return_type(ty: &str) -> bool {
+    let trimmed = ty.trim();
+    trimmed.is_empty()
+        || matches!(trimmed, "Any" | "Stream" | "self" | "_" | "..")
+        || trimmed.starts_with("_.")
+}
+
+fn push_unique_return_types(ty_expr: &str, out: &mut Vec<String>) {
+    for part in ty_expr.split('|').map(str::trim) {
+        if !is_uninformative_return_type(part) && !out.iter().any(|existing| existing == part) {
+            out.push(part.to_string());
+        }
+    }
+}
+
+/// Рекурсивно обходит все терминальные листья возврата функции:
+/// • Ранние выходы `Return(val)`, `Break(val)`, воротные операторы `.?` и `.!`
+/// • Все ветки роутеров `. { Branch [ ... ] }` на любой глубине вложенности
+/// • Последнее выражение тела функции или вложенного потока `[ ... ]`
+fn collect_body_return_leaf_types(
+    stmts: &[Sentence],
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+    out: &mut Vec<String>,
+) {
+    let mut current_locals = locals.clone();
+    for (idx, sent) in stmts.iter().enumerate() {
+        let is_last = idx + 1 == stmts.len();
+
+        match classify_sentence(sent) {
+            SemanticKind::Binding { key, value }
+            | SemanticKind::AlgebraicDef {
+                name: key,
+                expr: value,
+            } => {
+                // Guarded local binding `u1 User (uid1 . Db.find_user)`:
+                // если правая часть возвращает Union с `& Bypass` веткой (`User | NotFound`),
+                // эта Bypass-ветка автоматически пробрасывается в возвращаемый тип функции!
+                if let [Token::Path(explicit_ty), rest @ ..] = value.as_slice() {
+                    if is_pascal_case(explicit_ty) && !rest.is_empty() {
+                        current_locals.insert(key.clone(), explicit_ty.clone());
+                        let rhs_ty = infer_hir_type_with_locals(rest, &current_locals, hir);
+                        for branch in rhs_ty.split('|').map(str::trim) {
+                            if branch != explicit_ty
+                                && hir.forms.get(branch).map_or(false, |f| f.is_bypass)
+                            {
+                                push_unique_return_types(branch, out);
+                            }
+                        }
+                        if is_last {
+                            push_unique_return_types(explicit_ty, out);
+                        }
+                        continue;
+                    }
+                }
+                let ty = infer_hir_type_with_locals(&value, &current_locals, hir);
+                if !is_uninformative_return_type(&ty) {
+                    current_locals.insert(key, ty.clone());
+                    if is_last {
+                        push_unique_return_types(&ty, out);
+                    }
+                }
+                collect_early_exits_from_tokens(&value, &current_locals, hir, out);
+                continue;
+            }
+            _ => {}
+        }
+
+        collect_early_exits_from_tokens(sent, &current_locals, hir, out);
+
+        if is_last {
+            collect_terminal_expr_leaf_types(sent, &current_locals, hir, out);
+        }
+    }
+}
+
+fn collect_early_exits_from_tokens(
+    tokens: &[Token],
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+    out: &mut Vec<String>,
+) {
+    // 1. Явные вызовы `Return(val)` или `Break(val)` или `Break { value val }`
+    for win in tokens.windows(2) {
+        match win {
+            [Token::Path(p), Token::Group(')', args)] if p == "Return" || p == "Break" => {
+                if let Some(first_arg) = args.first() {
+                    let ty = infer_hir_type_with_locals(first_arg, locals, hir);
+                    push_unique_return_types(&ty, out);
+                }
+            }
+            [Token::Path(p), Token::Group('{', field_sents)] if p == "Return" || p == "Break" => {
+                for fs in field_sents {
+                    if let SemanticKind::Binding { key, value } = classify_sentence(fs) {
+                        if key == "value" {
+                            let ty = infer_hir_type_with_locals(&value, locals, hir);
+                            push_unique_return_types(&ty, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 2. Пайплайны с воротами `.!` (Guard) и `.?` (Positive Gate / Early Exit)
+    if has_pipe_op(tokens) {
+        let (head, steps) = crate::parser::split_pipeline(tokens);
+        collect_early_exits_from_tokens(&head, locals, hir, out);
+        for step in steps {
+            match step.op {
+                crate::parser::PipeOp::Guard => {
+                    let guard_ty = infer_hir_type_with_locals(&step.expr, locals, hir);
+                    push_unique_return_types(&guard_ty, out);
+                }
+                crate::parser::PipeOp::Filter => {
+                    collect_early_exits_from_tokens(&step.expr, locals, hir, out);
+                    if let [Token::Path(p), ..] = step.expr.as_slice() {
+                        if p != "Break" && p != "Return" && is_pascal_case(p) {
+                            let ty = infer_hir_type_with_locals(&step.expr, locals, hir);
+                            if hir.forms.get(&ty).map_or(false, |f| f.is_bypass) {
+                                push_unique_return_types(&ty, out);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    collect_early_exits_from_tokens(&step.expr, locals, hir, out);
+                }
+            }
+        }
+        return;
+    }
+
+    for tok in tokens {
+        if let Token::Group(_, sents) = tok {
+            for s in sents {
+                collect_early_exits_from_tokens(s, locals, hir, out);
+            }
+        }
+    }
+}
+
+fn collect_terminal_expr_leaf_types(
+    tokens: &[Token],
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+    out: &mut Vec<String>,
+) {
+    if tokens.is_empty() {
+        return;
+    }
+
+    // Ignore self-loop attractor step `. ..` as a terminal return type
+    if matches!(tokens.last(), Some(Token::Op(op)) if op == "..") {
+        return;
+    }
+
+    if let [Token::Group('[', stream_sents)] = tokens {
+        collect_body_return_leaf_types(stream_sents, locals, hir, out);
+        return;
+    }
+
+    if has_pipe_op(tokens) {
+        let (head, steps) = crate::parser::split_pipeline(tokens);
+        let mut cur_ty = infer_hir_type_with_locals(&head, locals, hir);
+
+        for (s_idx, step) in steps.iter().enumerate() {
+            let is_last_step = s_idx + 1 == steps.len();
+
+            // Propagate bypass union branches from intermediate steps (e.g. `uid . db.find_user . finalize_bill`)
+            if !is_last_step && cur_ty.contains('|') {
+                for branch in cur_ty.split('|').map(str::trim) {
+                    if hir.forms.get(branch).map_or(false, |f| f.is_bypass) {
+                        push_unique_return_types(branch, out);
+                    }
+                }
+            }
+
+            if step.op == crate::parser::PipeOp::Dot {
+                match step.expr.as_slice() {
+                    [Token::Group('{', branches)] if is_last_step => {
+                        for b in branches {
+                            collect_router_branch_leaf_types(b, &cur_ty, locals, hir, out);
+                        }
+                        return;
+                    }
+                    [Token::Group('[', stream_sents)] if is_last_step => {
+                        let mut s_locals = locals.clone();
+                        if !is_uninformative_return_type(&cur_ty) {
+                            s_locals.insert("_".into(), cur_ty.clone());
+                        }
+                        collect_body_return_leaf_types(stream_sents, &s_locals, hir, out);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            let step_slice = &steps[..=s_idx];
+            let mut prefix_tokens = head.clone();
+            for st in step_slice {
+                let op_str = match st.op {
+                    crate::parser::PipeOp::Dot => ".",
+                    crate::parser::PipeOp::Tap => ".>",
+                    crate::parser::PipeOp::Enrich => ".&",
+                    crate::parser::PipeOp::Subtract => "./",
+                    crate::parser::PipeOp::Filter => ".?",
+                    crate::parser::PipeOp::Guard => ".!",
+                    crate::parser::PipeOp::Parallel => ".|",
+                };
+                prefix_tokens.push(Token::Op(op_str.into()));
+                prefix_tokens.extend(st.expr.clone());
+            }
+            cur_ty = infer_hir_type_with_locals(&prefix_tokens, locals, hir);
+        }
+
+        push_unique_return_types(&cur_ty, out);
+        return;
+    }
+
+    let inferred = infer_hir_type_with_locals(tokens, locals, hir);
+    push_unique_return_types(&inferred, out);
+}
+
+fn collect_router_branch_leaf_types(
+    branch: &Sentence,
+    input_ty: &str,
+    locals: &HashMap<String, String>,
+    hir: &HirModule,
+    out: &mut Vec<String>,
+) {
+    match classify_sentence(branch) {
+        SemanticKind::StreamOrBranch { name, stream } => {
+            let mut b_locals = locals.clone();
+            if is_pascal_case(&name) {
+                b_locals.insert(pascal_to_snake_case(&name), name.clone());
+                b_locals.insert("_".into(), name.clone());
+                if let Some(hf) = hir.forms.get(&name) {
+                    for (fname, f) in &hf.fields {
+                        b_locals.insert(fname.clone(), f.inferred_type.clone());
+                    }
+                }
+            } else if !is_uninformative_return_type(input_ty) {
+                b_locals.insert("_".into(), input_ty.to_string());
+            }
+            collect_body_return_leaf_types(&stream, &b_locals, hir, out);
+        }
+        SemanticKind::FunctionDef {
+            name, args, body, ..
+        } => {
+            let mut b_locals = locals.clone();
+            if is_pascal_case(&name) {
+                b_locals.insert(pascal_to_snake_case(&name), name.clone());
+                if let Some(hf) = hir.forms.get(&name) {
+                    for (idx, arg_s) in args.iter().enumerate() {
+                        if let [Token::Path(var_name)] = arg_s.as_slice() {
+                            if let Some(fname) = hf.field_order.get(idx) {
+                                if let Some(fld) = hf.fields.get(fname) {
+                                    b_locals.insert(var_name.clone(), fld.inferred_type.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            collect_body_return_leaf_types(&body, &b_locals, hir, out);
+        }
+        SemanticKind::PatternBranch { body, .. } => {
+            collect_body_return_leaf_types(&body, locals, hir, out);
+        }
+        SemanticKind::LambdaOrTupleBranch { args, body } => {
+            let mut b_locals = locals.clone();
+            for a in &args {
+                if let [Token::Path(p)] = a.as_slice() {
+                    if is_pascal_case(p) {
+                        b_locals.insert(pascal_to_snake_case(p), p.clone());
+                    }
+                }
+            }
+            collect_body_return_leaf_types(&body, &b_locals, hir, out);
+        }
+        _ => {}
     }
 }
 
@@ -2203,31 +2498,13 @@ pub fn infer_hir_type_with_locals(
                         [Token::Group('{', branches)] => {
                             let mut branch_types = Vec::new();
                             for b in branches {
-                                match classify_sentence(b) {
-                                    SemanticKind::StreamOrBranch { name, stream } => {
-                                        let mut b_locals = locals.clone();
-                                        if is_pascal_case(&name) {
-                                            b_locals.insert(pascal_to_snake_case(&name), name.clone());
-                                            b_locals.insert("_".into(), name);
-                                        }
-                                        if let Some(last) = stream.last() {
-                                            let bt = infer_hir_type_with_locals(last, &b_locals, hir);
-                                            if bt != "Any" && !branch_types.contains(&bt) {
-                                                branch_types.push(bt);
-                                            }
-                                        }
-                                    }
-                                    SemanticKind::PatternBranch { body, .. }
-                                    | SemanticKind::LambdaOrTupleBranch { body, .. } => {
-                                        if let Some(last) = body.last() {
-                                            let bt = infer_hir_type_with_locals(last, locals, hir);
-                                            if bt != "Any" && !branch_types.contains(&bt) {
-                                                branch_types.push(bt);
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                collect_router_branch_leaf_types(
+                                    b,
+                                    &current,
+                                    locals,
+                                    hir,
+                                    &mut branch_types,
+                                );
                             }
                             if !branch_types.is_empty() {
                                 current = branch_types.join(" | ");

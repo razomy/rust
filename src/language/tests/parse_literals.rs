@@ -1,4 +1,6 @@
-use razomy_language::parser::{parse_code, Literal, Token};
+use razomy_language::parser::{
+    parse_code, parse_interpolated_string_segments, Literal, StringSegment, Token,
+};
 
 #[test]
 fn micro_lit_int_positive_and_negative() {
@@ -69,6 +71,41 @@ nested_code r2"Can freely embed both " and "1 and # without any lexer conflict!"
         Token::Lit(Literal::RawString(
             r#"Can freely embed both " and "1 and # without any lexer conflict!"#.into()
         ))
+    );
+}
+
+#[test]
+fn micro_lit_numbers_with_underscores() {
+    let ast = parse_code(
+        "billion 1_000_000_000\nneg_million -5_000_000\nprecise 1_000.50_25\nhex_val 0xFF",
+    )
+    .unwrap();
+    assert_eq!(ast[0][1], Token::Lit(Literal::Int(1_000_000_000)));
+    assert_eq!(ast[1][1], Token::Lit(Literal::Int(-5_000_000)));
+    assert_eq!(ast[2][1], Token::Lit(Literal::Float(1000.5025)));
+    assert_eq!(ast[3][1], Token::Lit(Literal::Byte(255)));
+}
+
+#[test]
+fn micro_lit_string_interpolation_segments_a_b() {
+    let ast = parse_code(r#"msg "{a} {b}""#).unwrap();
+    let Token::Lit(Literal::String(ref raw)) = ast[0][1] else {
+        panic!("Expected Literal::String");
+    };
+    let segments = parse_interpolated_string_segments(raw);
+    assert_eq!(
+        segments,
+        vec![
+            StringSegment::Interpolation {
+                raw_expr: "a".into(),
+                ast: vec![vec![Token::Path("a".into())]],
+            },
+            StringSegment::Text(" ".into()),
+            StringSegment::Interpolation {
+                raw_expr: "b".into(),
+                ast: vec![vec![Token::Path("b".into())]],
+            },
+        ]
     );
 }
 

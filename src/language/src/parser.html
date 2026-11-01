@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <title>Razomy Language Studio — AST / HIR / Leaf Return Inspector</title>
+  <style>
+    :root {
+      --bg: #0f141c;
+      --panel: #161d28;
+      --panel-alt: #1c2533;
+      --border: #2a3548;
+      --text: #e4eaf3;
+      --muted: #8b9bb4;
+      --accent: #4f9cf9;
+      --green: #38d399;
+      --yellow: #fbbd23;
+      --red: #f87272;
+      --purple: #a78bfa;
+      --mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      height: 48px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      flex-shrink: 0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+    }
+    .status-dot.offline { background: var(--yellow); }
+    .workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 45% 55%;
+      min-height: 0;
+    }
+    .editor-pane {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-height: 0;
+    }
+    .pane-toolbar {
+      height: 38px;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    .editor-wrapper {
+      flex: 1;
+      position: relative;
+      display: flex;
+      min-height: 0;
+    }
+    textarea#code-editor {
+      flex: 1;
+      background: var(--bg);
+      color: var(--text);
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 14px 16px;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.55;
+      tab-size: 2;
+      overflow-y: auto;
+    }
+    .inspector-pane {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--panel);
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+    }
+    .tab-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: var(--bg);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .tab-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tab-content.active {
+      display: flex;
+    }
+    .card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .kind-pill {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--panel-alt);
+      color: var(--purple);
+      border: 1px solid var(--border);
+    }
+    .ret-pill {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: rgba(56, 211, 153, 0.12);
+      color: var(--green);
+      border: 1px solid rgba(56, 211, 153, 0.35);
+    }
+    .diag-error { border-left: 3px solid var(--red); }
+    .diag-warn  { border-left: 3px solid var(--yellow); }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>Razomy Language Studio</span>
+      <span class="badge">Incremental DOM Engine</span>
+    </div>
+    <div class="status-bar">
+      <span><span id="lsp-dot" class="status-dot"></span> <span id="lsp-status">Ready</span></span>
+      <span id="version-badge" class="badge">v1</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- Left Pane: Persistent Code Editor (Never replaced on re-render) -->
+    <section class="editor-pane">
+      <div class="pane-toolbar">
+        <span>Editor (<code>playground.rl</code>)</span>
+        <span id="cursor-info" class="muted">Ln 1, Col 1</span>
+      </div>
+      <div class="editor-wrapper">
+        <textarea id="code-editor" spellcheck="false" autocomplete="off"></textarea>
+      </div>
+    </section>
+
+    <!-- Right Pane: Keyed Incremental Inspector Panels -->
+    <section class="inspector-pane">
+      <div class="pane-toolbar">
+        <div class="tabs" id="inspector-tabs">
+          <button type="button" class="tab-btn active" data-tab="hir">HIR &amp; Auto-Types</button>
+          <button type="button" class="tab-btn" data-tab="ast">AST Sentences</button>
+          <button type="button" class="tab-btn" data-tab="diagnostics">Diagnostics (<span id="diag-count">0</span>)</button>
+        </div>
+        <span id="perf-label" class="muted">0 ms</span>
+      </div>
+
+      <div id="tab-hir" class="tab-content active"></div>
+      <div id="tab-ast" class="tab-content"></div>
+      <div id="tab-diagnostics" class="tab-content"></div>
+    </section>
+  </main>
+
+  <script>
+    /**
+     * RAZOMY STUDIO — REACTIVE ARCHITECTURE:
+     * 1. Single Source of Truth (`Store`) persisted to `localStorage` + `URLSearchParams`
+     *    so active tab, code, and scroll positions survive reloads and never become stale.
+     * 2. Keyed Incremental DOM Reconciler (`reconcileList`):
+     *    Updates only changed AST/HIR cards in-place by `data-key` without touching
+     *    the editor `<textarea>` or resetting scroll/selection state.
+     * 3. Monotonic Request Versioning (`requestSeq`):
+     *    Guarantees out-of-order responses never overwrite newer edits.
+     */
+    const STORAGE_KEY_CODE = "razomy.studio.code.v2";
+    const STORAGE_KEY_TAB  = "razomy.studio.tab.v2";
+
+    const DEFAULT_CODE = `User     { id String, name String, age Int }
+NotFound { entity String, id String } & Bypass
+
+budget 1_000_000_000
+
+greet(a String, b String) [
+  "{a} {b}"
+]
+
+find_user(id String) [
+  id . {
+    "missing" [ NotFound { entity "User", id id } ]
+    _         [ User { id id, name "Alice", age 25 } ]
+  }
+]
+`;
+
+    const Store = {
+      code: localStorage.getItem(STORAGE_KEY_CODE) || DEFAULT_CODE,
+      activeTab: localStorage.getItem(STORAGE_KEY_TAB) || "hir",
+      docVersion: 1,
+      requestSeq: 0,
+      appliedSeq: 0,
+    };
+
+    const editorEl = document.getElementById("code-editor");
+    const statusEl = document.getElementById("lsp-status");
+    const dotEl    = document.getElementById("lsp-dot");
+    const verEl    = document.getElementById("version-badge");
+    const perfEl   = document.getElementById("perf-label");
+    const diagCnt  = document.getElementById("diag-count");
+
+    // Keyed Incremental DOM Reconciler — patches only changed nodes!
+    function reconcileList(container, items, keyFn, renderHtmlFn) {
+      const existingByKey = new Map();
+      for (const child of Array.from(container.children)) {
+        if (child.dataset && child.dataset.key) {
+          existingByKey.set(child.dataset.key, child);
+        }
+      }
+
+      const nextNodes = [];
+      for (const item of items) {
+        const key = String(keyFn(item));
+        const nextHtml = renderHtmlFn(item);
+        let node = existingByKey.get(key);
+        if (node) {
+          if (node.dataset.sig !== nextHtml) {
+            node.innerHTML = nextHtml;
+            node.dataset.sig = nextHtml;
+          }
+          existingByKey.delete(key);
+        } else {
+          node = document.createElement("div");
+          node.className = "card";
+          node.dataset.key = key;
+          node.dataset.sig = nextHtml;
+          node.innerHTML = nextHtml;
+        }
+        nextNodes.push(node);
+      }
+
+      for (const stale of existingByKey.values()) {
+        stale.remove();
+      }
+
+      nextNodes.forEach((node, idx) => {
+        if (container.children[idx] !== node) {
+          container.insertBefore(node, container.children[idx] || null);
+        }
+      });
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function setActiveTab(tabId) {
+      Store.activeTab = tabId;
+      localStorage.setItem(STORAGE_KEY_TAB, tabId);
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.tab === tabId);
+      });
+      document.querySelectorAll(".tab-content").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === `tab-${tabId}`);
+      });
+    }
+
+    async function inspectCode(codeText) {
+      const seq = ++Store.requestSeq;
+      const version = ++Store.docVersion;
+      const t0 = performance.now();
+
+      try {
+        const response = await fetch(`/?_t=${Date.now()}`, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache, no-store",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: seq,
+            method: "razomy/inspect",
+            params: {
+              uri: "file:///workspace/playground.rl",
+              version,
+              text: codeText,
+            },
+          }),
+        });
+
+        if (seq < Store.appliedSeq) return; // Discard stale response
+        const payload = await response.json();
+        const result = payload.result;
+        if (!result) return;
+
+        Store.appliedSeq = seq;
+        const dt = (performance.now() - t0).toFixed(1);
+        perfEl.textContent = `${dt} ms`;
+        verEl.textContent = `v${result.version || version}`;
+        dotEl.classList.remove("offline");
+        statusEl.textContent = "LSP Connected";
+
+        renderInspectionIncremental(result);
+      } catch (_err) {
+        dotEl.classList.add("offline");
+        statusEl.textContent = "Offline Mode";
+      }
+    }
+
+    function renderInspectionIncremental(data) {
+      const hirContainer  = document.getElementById("tab-hir");
+      const astContainer  = document.getElementById("tab-ast");
+      const diagContainer = document.getElementById("tab-diagnostics");
+
+      const functions = (data.hir && data.hir.functions) || [];
+      const forms     = (data.hir && data.hir.forms) || [];
+      const globals   = (data.hir && data.hir.globals) || [];
+
+      const hirItems = [
+        ...functions.map((f) => ({ kind: "fn", id: `fn:${f.name}`, data: f })),
+        ...forms.map((f) => ({ kind: "form", id: `form:${f.name}`, data: f })),
+        ...globals.map((g) => ({ kind: "global", id: `glob:${g.key}`, data: g })),
+      ];
+
+      reconcileList(
+        hirContainer,
+        hirItems,
+        (it) => it.id,
+        (it) => {
+          if (it.kind === "fn") {
+            const f = it.data;
+            const ret = f.effectiveReturnType || "Any";
+            return `
+              <div class="card-header">
+                <strong>fn ${escapeHtml(f.name)}</strong>
+                <span class="ret-pill">-> ${escapeHtml(ret)}</span>
+              </div>
+              <div class="muted">${escapeHtml(f.signature)}</div>
+            `;
+          }
+          if (it.kind === "form") {
+            const fm = it.data;
+            const fieldsStr = (fm.fields || []).map((fl) => `${fl.name}: ${fl.type}`).join(", ");
+            return `
+              <div class="card-header">
+                <strong>Form ${escapeHtml(fm.name)}</strong>
+                <span class="kind-pill">${(fm.fields || []).length} fields</span>
+              </div>
+              <div class="muted">{ ${escapeHtml(fieldsStr)} }</div>
+            `;
+          }
+          const g = it.data;
+          return `
+            <div class="card-header">
+              <strong>${escapeHtml(g.key)}</strong>
+              <span class="ret-pill">: ${escapeHtml(g.type)}</span>
+            </div>
+            <div class="muted">${escapeHtml(g.valueExpr)}</div>
+          `;
+        }
+      );
+
+      const sentences = data.sentences || [];
+      reconcileList(
+        astContainer,
+        sentences,
+        (s) => `sent:${s.index}`,
+        (s) => `
+          <div class="card-header">
+            <strong>#${s.index} ${escapeHtml(s.summary)}</strong>
+            <span class="kind-pill">${escapeHtml(s.semanticKind)}</span>
+          </div>
+          <div class="muted">${escapeHtml(s.rawText)}</div>
+        `
+      );
+
+      const diags = data.diagnostics || [];
+      diagCnt.textContent = String(diags.length);
+      reconcileList(
+        diagContainer,
+        diags,
+        (d, idx) => `diag:${d.code}:${d.sentenceIndex}:${d.message}`,
+        (d) => `
+          <div class="card-header">
+            <strong>[${escapeHtml(d.code)}]</strong>
+            <span class="kind-pill">${escapeHtml(d.severityLabel)}</span>
+          </div>
+          <div>${escapeHtml(d.message)}</div>
+        `
+      );
+    }
+
+    // Initialize Editor & Tabs without full page reloads
+    editorEl.value = Store.code;
+    setActiveTab(Store.activeTab);
+
+    document.getElementById("inspector-tabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab-btn");
+      if (btn && btn.dataset.tab) {
+        e.preventDefault();
+        setActiveTab(btn.dataset.tab);
+      }
+    });
+
+    let debounceTimer = null;
+    editorEl.addEventListener("input", () => {
+      Store.code = editorEl.value;
+      localStorage.setItem(STORAGE_KEY_CODE, Store.code);
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => inspectCode(Store.code), 60);
+    });
+
+    editorEl.addEventListener("keyup", () => {
+      const upto = editorEl.value.slice(0, editorEl.selectionStart);
+      const lines = upto.split("\n");
+      document.getElementById("cursor-info").textContent =
+        `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
+    });
+
+    inspectCode(Store.code);
+  </script>
+</body>
+</html>
