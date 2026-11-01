@@ -1,5 +1,5 @@
 name "Razomy language"
-version "9.0"
+version "9.1"
 extension ".rl"
 tags (
   "ONTOLOGICAL"
@@ -35,16 +35,18 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
   - Replaces   : Array, Homogeneous Slice, Fixed Tuple, Parameter List, Argument Pack.
 
 • `Stream` (`[]`)
-  - What it is : Lazy executable pipeline of steps, invertible bijection, reactive observer, and tail-call-optimized attractor loop.
-  - Replaces   : Function Body, Lambda, Closure, Computed Getter, Refinement Predicate, Generator, Loop Body, Lens, Dialect Block.
+  - What it is : Lazy executable pipeline of steps, invertible bijection (`<->` / `!`), двусторонняя линза (Lens),
+                 reactive observer, and tail-call-optimized attractor loop (`..`).
+  - Replaces   : Function Body, Lambda, Closure, Computed Getter/Setter, Refinement Predicate, Generator, Loop Body, Lens, Dialect Block.
 
-• `Lineage` (`..`, `&`, `/`)
-  - What it is : Complete ancestor history tree preserved across algebraic compositions and subtractions with zero runtime overhead.
-  - Replaces   : Class Inheritance, Trait Implementation, Mixins, Row Polymorphism, Visibility Modifiers (`public`/`private`).
+• `Lineage` (`..`, `&`, `/`, `^`)
+  - What it is : Complete ancestor history tree and lexical parent scope path preserved across algebraic compositions and
+                 subtractions with zero runtime overhead.
+  - Replaces   : Class Inheritance, Trait Implementation, Mixins, Row Polymorphism, Lexical `super`/`outer`, Visibility (`public`/`private`).
 
 • `Hole` (`_`, `_T`, `_a`)
   - What it is : Polymorphic potential placeholder and Coeffect Requirement slot constrained inline via `&`.
-  - Replaces   : Generic Type Parameter `<T>`, Wildcard, Higher-Kinded Slot `F<_>`, Implicit Fold/Map Argument, Context Slot.
+  - Replaces   : Generic Type Parameter `<T>`, Wildcard, Higher-Kinded Slot `F<_>`, Implicit Fold/Map/Window Argument, Context Slot.
 
 • `Bypass` (`& Bypass`)
   - What it is : Scoped union outcome tag (`None`, `Error`, `Break`, `Return`) that automatically short-circuits pipelines.
@@ -61,17 +63,20 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
     1. Context-Exact Universal Bind Matrix :
        • `TypeA TypeB`              -> Type Alias or Subtype Specialization (`BrandName String`, `Car Vehicle { ... }`)
        • `name expr`                -> Pure Immutable Value Binding (`counter 0`, `my_car (Car {})`)
-       • `name Type default`        -> Form Field with Default inside `{}` (`max_speed Int 180`; stream field uses `&`: `act [ . + 1 ] & Stream`)
-       • `name [ ... ]`             -> Zero-Cost Lazy Getter inside `{}` (participates in `==` & `Meta.fields_of`) or Stream Binding
-       • `name [ ... ] & Watch`     -> Named Stigmergic Observer inside `{}` (auto-triggers when referenced sibling fields update)
+       • `name Type default`        -> Form Field with Default inside `{}` (`max_speed Int 180`; stream field uses `&`: `act [ .+ 1 ] & Stream`)
+       • `name [ ... ]`             -> Zero-Cost Lazy Getter/Lens inside `{}` (participates in `==` & `Meta.fields_of`) or Stream Binding
+       • `name [ f ] <-> [ g ]`     -> Explicit Bijective Stream / Reversible Lens Binding (pairs forward `[ f ]` with inverse `[ g ]`)
+       • `name [ ... ] & Watch`     -> Named Stigmergic Observer inside `{}` (auto-triggers when referenced sibling fields update;
+                                       supports damping/convergence parameters: `& Watch(16ms)` or `& Watch(max_steps 64)`)
        • `name(args) RetType [...]` -> Named Function/Method with Return Type (or Univalent Constructor Path `Meters(Kilometers) [...]`)
        • `name Type (expr)`         -> Guarded Local Binding inside `[]` (`fh FileHandle (path . Fs.open)` — narrows `Type` & auto-bypasses `& Bypass`)
        • `(a, ..rest) expr`         -> Symmetric Tuple/Form Destructuring (`{ name, ..other } user_form`)
     2. Tight Call vs Spaced Bind    : `fn(x)` without space invokes `fn`; `a (x)` with space binds `a` to `(x)`.
     3. 1-Tuple vs Eager Grouping    : `(expr)` groups an eager calculation; `(expr,)` with a trailing comma constructs a 1-element `Tuple`.
-    4. Symmetric Spread (`..`)      : In a Source (`{ ..Vehicle }`, `(0, ..a)`), `..` expands elements; in a Target
-                                      (`(first, ..rest) nums`), `..` captures the remaining slice; at a pipeline step (`. ..`),
-                                      `..` recursively loops the enclosing `[...]` stream (Fractal Attractor Loop).
+    4. Symmetric Spread & Loop (`..`): In a Source (`{ ..Vehicle }`, `(0, ..a)`), tight `..` expands elements; in a Target
+                                      (`(first, ..rest) nums`), tight `..` captures the remaining slice; as a standalone terminal
+                                      step inside `[...]` (`[ step1, .. ]` or `step1 . ..`), `..` tail-recursively loops the
+                                      enclosing `[...]` stream (Fractal Attractor Loop).
   - Compiler Guarantees:
     ◦ `E01_AMBIGUOUS_CALL_OR_BIND` : `area(Circle { radius 5.0 })` calls `area`. Placing a space after a 1-argument callable
       in expression position or without an explicit type guard (`area (Circle { radius 5.0 })`) when `area` accepts `Circle`
@@ -79,7 +84,7 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
     ◦ `E09_DANGLING_BIND_NEWLINE`  : `,` and `\n` separate elements across `{}`, `[]`, `()`, except before a binary/pipe
       operator. Placing `\n` between a bind target and its opening bracket (`discount \n [ amount - 10 ]`) is rejected.
     ◦ `E10_MULTIPLE_REST_PATTERNS` : Multiple `..spreads` in a Source `(0, ..a, ..b)` are valid; multiple `..rest`
-      captures in a Target `(first, ..r1, ..r2) nums` are rejected.
+      captures in a Target `(first, ..r1, ..r2) nums` or non-terminal `..` loop steps inside `[...]` are rejected.
 
 • AXIOM II: THE AXIOM OF THE FRACTAL TRIAD (`()` ORDER <-> `{}` STRUCTURE <-> `[]` ACTION)
   - Philosophical Axiom (Scale Invariance, Stigmergy & Topos Coeffects):
@@ -89,14 +94,18 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
     streams—eliminating external `Signal`/`Effect` primitives.
   - Engineering Laws:
     1. Canonical Triad      : `Name(Tuple) {Form} [Stream]` projects any declaration into `()`, `{}`, and `[]`.
-                              Slotless `name [...]` inside `{}` is a lazy field; `name [...] & Watch` is a reactive observer
-                              triggered on sibling update; slotted `name() [...]` is an explicitly invoked method.
+                              Slotless `name [...]` inside `{}` is a lazy field (and writable Lens if bijective!); `name [...] & Watch`
+                              is a reactive observer triggered on sibling update; slotted `name() [...]` is an explicitly invoked method.
     2. Constructor Duality  : Declaring `Name { ... }` automatically synthesizes a positional constructor `Name(...)`
                               for its fields in declaration order (fields with defaults are optional trailing slots:
                               `ProfileCard { id, name }` <-> `ProfileCard("u1", "Alice")`).
                               A bare `snake_case` key without a value inside `{}` (`Box { item }`) is always an open slot `item _T`.
-    3. Direct Presence      : Inside `{}` and `[]`, there is no `self`, `this`, or `ctx`:
-       • (a) Sibling Scope  : Sibling fields and slot parameters are directly visible by name inside `{}` and `[...]`.
+    3. Direct Presence & Lexical/Lineage Navigation: Inside `{}` and `[]`, there is no `self`, `this`, or `ctx`:
+       • (a) Sibling & Lexical Parent Scope (`..Parent.field` / `.._..field`):
+                              Sibling fields and slot parameters are directly visible by name inside `{}` and `[...]`.
+                              Shadowed fields in enclosing lexical Forms (`{}`) are accessed via `..EnclosingForm.field`
+                              or relative lexical hops `.._..field` (where each `.._` steps one enclosing `{}` outward,
+                              distinct from type-lineage access `entity.AncestorForm.field`).
        • (b) Type & Lineage Projection: A single concrete `PascalCase` Type (or subtracted lineage `(Type / ...)`)
                               in `FormName { ... }`, `fn(User)`, or `{ User [...] }` automatically projects its root
                               `snake_case` binding (`User` -> `user`), and projects each composed ancestor's `snake_case`
@@ -109,87 +118,113 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
       `transfer(Account, Account, Money)` or `User { equals(User) [...] }` with duplicate unnamed `Account`/`User` is rejected.
     ◦ `E11_OVERLOAD_SIGNATURE_CONFLICT` : Multiple declarations sharing a `PascalCase` or `snake_case` name merge into
       one multi-dispatched callable only if their `()` parameter types are distinct; duplicate/overlapping signatures fail.
+    ◦ `E15_CYCLIC_WATCH_OSCILLATION`    : If two or more `& Watch` observers inside a Form `{}` form an unguarded mutual
+      mutation cycle in the static dependency graph (`FieldA -> Watch1 -> FieldB -> Watch2 -> FieldA`) without an explicit
+      `& Watch(max_steps N)` convergence bound, compilation fails.
 
-• AXIOM III: THE AXIOM OF ALGEBRAIC MEMORY, CONSERVATION & DUALITY (`&`, `|`, `/`, `!`)
+• AXIOM III: THE AXIOM OF ALGEBRAIC MEMORY, CONSERVATION & DUALITY (`&`, `|`, `/`, `^`, `!`, `<->`)
   - Philosophical Axiom (Unforgetting Set Algebra, Noether Conservation & Reversible Computation):
-    One boolean algebra (`&`, `|`, `/`, `!`) governs types, forms, functions, streams, invariants, protocols, and visibility.
-    Composition (`&`) merges capabilities and attaches Noether conservation laws while preserving the full ancestor tree
-    (`Lineage`); subtraction (`/`) surgically strips fields, ancestors, or `& Watch` laws; negation (`!`) encodes closed-world
-    complement, negative typestate, protocol session duality, and bidirectional stream inversion.
+    One complete Boolean ring (`&`, `|`, `/`, `^`, `!`) and bijection operator (`<->`) govern types, forms, functions, streams,
+    invariants, protocols, and visibility. Composition (`&`) merges capabilities and attaches Noether conservation laws while
+    preserving the full ancestor tree (`Lineage`); subtraction (`/`) surgically strips fields, ancestors, or `& Watch` laws;
+    symmetric difference (`^`) toggles non-overlapping fields/flags; negation (`!`) encodes closed-world complement, protocol
+    session duality, and bidirectional stream/lens inversion.
   - Engineering Laws:
-    1. Universal Intersection (`&`), Zero-Cost Lineage & Transactional Noether Conservation Laws:
+    1. Universal Intersection (`&`), Symmetric Difference (`^`), Zero-Cost Lineage & Transactional Noether Conservation Laws:
        • `FormA & FormB`       -> Merges fields/traits. Historical ancestor defaults (`MyCar.SportsCar.Car.brand`) reside in
                                   compile-time type metadata (0 runtime bytes); runtime instances store flat active fields (plus
                                   distinct offsets for colliding ancestor fields like `user_order.User.id` and `user_order.Order.id`).
+       • `FormA ^ FormB`       -> Symmetric Difference $((A \cup B) \setminus (A \cap B))$: retains only fields/tags/variants
+                                  present in `A` or `B` but not both (and toggles boolean flags or set memberships at runtime).
        • `OverloadA & OverloadB`-> Implicitly merges distinct same-name constructors/functions (`Color(Byte)` & `Color(String)`).
        • `Function & Form`     -> Partial application, Default override, OR Ambient Coeffect Handler (`connect & { port 9090 }`,
                                   or `fn & { Shell MockShell }` to intercept ambient `PascalCase` capabilities inside `fn`).
        • `StreamA & StreamB`   -> Sequential point-free pipeline composition (`trim_str & upper_str`).
        • `Type & [Predicate]`  -> Single-value refinement (`Positive Int & [ .> 0 ]`), Pattern Guard `(a, b) & [ a > b ]`,
                                   or Multi-Field Noether Conservation Invariant on a Form (`Range { start _T, end _T } & [ start <= end ]`).
-                                  Every `.=` / `&=` executes atomically: (1) fields update, (2) affected `& Watch` observers
-                                  fire to fixed-point when their referenced sibling fields change (`old != new`), and
-                                  (3) Form `& [Invariant]` laws verify (rolling back on fault)!
+                                  Every `.=` / `&=` / `|=` / `^=` executes atomically: (1) fields update (directly or via inverse
+                                  `!lens`), (2) affected `& Watch` observers fire to fixed-point when their referenced sibling
+                                  fields change (`old != new`), and (3) Form `& [Invariant]` laws verify (rolling back on fault)!
        • `Entity & Directive`  -> Attaches stage, memory, reactivity, or visibility metadata (`val & Private`, `fh & Linear`, `rule & Watch`).
     2. Exact Disambiguation of Subtraction (`/`) vs Runtime Division:
        • Compile-Time Type/Form Subtraction: Triggered when the right operand is a `PascalCase` Type/Directive (`User / Private`,
          `Result / Error`, `ElectricCar / Vehicle`, `Reactor / Watch`), a qualified ancestor field (`User / User.password_hash`),
-         or a `'symbol'` key (`UserAndCloud / 'name'`, `Reactor / 'auto_cool'`).
+         or a prefix `'symbol` key (`UserAndCloud / 'name`, `Reactor / 'auto_cool`).
        • Runtime Value Division / Map Removal: Triggered when both operands are `snake_case` runtime values or expressions
          (`a / b`, `shape / cutter`, `config_map / "host"`), invoking the overloaded `/` method.
-    3. Closed-World Negation, Protocol Duality & Stream Inversion (`!`):
+    3. Closed-World Negation, Protocol Duality & Bijective Stream/Lens Inversion (`!` & `<->`):
        • On booleans: logical NOT (`!flag`); on types: closed-world relative complement (`Order & !Cancelled` == `Order / Cancelled`, `Never !Any`).
        • On Session Protocols (`Channel` / `Protocol`): `!ClientProto` synthesizes the dual Opponent protocol (swapping `send` <-> `recv`).
-       • On Bijective Streams: `!stream` symbolically synthesizes the inverse computation by reversing steps (`[ s1, s2 ]`
-         <-> `[ !s2, !s1 ]`, e.g. `c_to_f [ (. * 1.8) + 32 ]` <-> `!c_to_f [ (. - 32) / 1.8 ]`) and inverting structural
-         isomorphisms (`{ id .user_id, name .full_name }` <-> `{ user_id .id, full_name .name }`).
+       • On Bijective Streams & Explicit Isomorphisms (`<->`):
+         - Automatic Symbolic Inversion: `!stream` reverses algebraic steps (`[ s1, s2 ]` <-> `[ !s2, !s1 ]`, e.g.
+           `c_to_f [ (. * 1.8) + 32 ]` <-> `!c_to_f [ (. - 32) / 1.8 ]`) and structural isomorphisms
+           (`{ id .user_id, name .full_name }` <-> `{ user_id .id, full_name .name }`).
+         - Explicit Bijection (`[ forward ] <-> [ backward ]`): Pairs arbitrary forward and backward streams into a guaranteed
+           bijection (`codec [ Json.encode ] <-> [ Json.decode ]`), so `!codec` resolves to `[ Json.decode ]` in O(1).
+         - Bidirectional Lens Rebind: If a Form defines a reversible computed field `f [...]` referencing a single underlying
+           sibling field `raw` (or explicit tuple of fields), `obj.f .= val` automatically synthesizes `obj.raw .= (val . !obj.f)`.
   - Compiler Guarantees:
     ◦ `E05_AMBIGUOUS_LINEAGE_FIELD` : Accessing `entity.name` on `User & Cloud` when both ancestors define `name` is
       rejected until qualified by ancestor (`entity.User.name`) or stripped (`(entity / Cloud.name).name`).
-    ◦ `E13_CONSERVATION_LAW_VIOLATION` : Constructing or rebinding (`.=`, `&=`) a Form equipped with `& [Invariant]` when the
-      invariant evaluates to `false` at compile time (or without handling `InvariantFault & Bypass` at runtime) is rejected.
-    ◦ `E14_NON_INVERTIBLE_STREAM` : Applying `!` to a non-bijective stream (`![ . * 0 ]` or lossy projection) fails compilation.
+    ◦ `E13_CONSERVATION_LAW_VIOLATION` : Constructing or rebinding (`.=`, `&=`, `|=`, `^=`) a Form equipped with `& [Invariant]`
+      when the invariant evaluates to `false` at compile time (or without handling `InvariantFault & Bypass` at runtime) is rejected.
+    ◦ `E14_NON_INVERTIBLE_STREAM` : Applying `!` to a non-bijective stream (`![ . * 0 ]`), or rebinding `obj.getter .= val`
+      when `getter [...]` is non-invertible or depends on multiple ambiguous source fields, fails compilation.
 
 • AXIOM IV: THE AXIOM OF ORTHOGONAL FLOW, FRACTAL ATTRACTORS & PERCEUS VALUE SEMANTICS
   - Philosophical Axiom (Global Immutability, Continuous Flow & Perceus Local Rebind):
     Razomy has 100% Pure Value Semantics: there are no mutable references, no shared mutable state, and passing a value to a
     function can never mutate the caller's data. All operators are partitioned into 4 orthogonal, non-overlapping layers:
     (1) Pure Math & Algebra (no `.`, no `=`), (2) Tight Relative Focus inside `[...]` (leading `.`), (3) Spaced Dataflow
-    Pipelines (spaced `.`, no `=`), and (4) Ergonomic Local Value Rebind (always ending with `=`: `.=`, `+=`, `-=`, `&=`),
-    which desugars to pure immutable `Bind` + `&` while Perceus RC executes it in O(1) in-place when uniquely owned (`RC == 1`).
+    Pipelines (spaced `.`, or step-initial inside `[...]`, no `=`), and (4) Ergonomic Local Value Rebind (always ending with
+    `=`: `.=`, `+=`, `-=`, `&=`, `|=`, `^=`), which desugars to pure immutable `Bind` + `&` while Perceus RC executes it in
+    O(1) in-place when uniquely owned (`RC == 1`).
   - Engineering Laws:
     1. Tight Dot & Relative Focus (`a.b` / `.b` / `.op` — Layer 2):
        • `a.b`, `a.Parent.b`, `a.0`, `a.-1` : Tight path, historical ancestor, or positional tuple/form index access.
-       • `.field`, `.0`, `.+ 1`, `.> 0`, `.`: Relative getter/operator/input targeting the innermost enclosing `[...]` stream.
-                                              When passed directly as a call argument or router key outside `[]`, `.field`
-                                              desugars to `[ .field ]` (Sugar #3).
-    2. Spaced Pipeline Dot (`a . b`, Emergent Arity Routing & Fractal Loop `. ..` — Layer 3):
+       • `.field`, `.0`, `.+ 1`, `.> 0`, `.`: Relative getter/operator/input targeting the current step of the innermost
+                                              enclosing `[...]` stream. When passed directly as a call argument or router key
+                                              outside `[]`, `.field` desugars to `[ .field ]` (Sugar #3).
+    2. Spaced Pipeline Dot (`a . b`, Implicit Step-Start inside `[...]`, Emergent Arity & Window/Zip `.:` — Layer 3):
+       • Implicit Stream Context inside `[...]`: Inside `[...]`, every comma- or newline-separated item is a sequential pipeline
+                                             step whose implicit input `.` is the output of the previous step. Any Layer 3 pipe
+                                             operator (`.@`, `.?`, `.!`, `.~`, `.&`, `./`, `.^`, `.:`, `.|`) may start a step directly
+                                             without a leading `. ` (`[ .+ 1, .@ log, .? [ .> 10 ], .. ]`).
        • `a . b`   (UFCS / Univalent Pipe) : Passes `a` as first argument (`a . fn(b)` == `fn(a, b)`). If `a` is `Tuple(_T)`
                                              flowing into an inline stream `[...]`:
                                              - 1-Hole Stream `(1, 2, 3) . [ .+ 10 ]` (or `[_a * 2]`) maps element-wise -> `(11, 12, 13)`.
                                              - 2-Hole Stream `(1, 2, 3) . [ _a + _b ]` emergently folds/reduces -> `6`
                                                (on an empty `Tuple(_T)`, yields the archetype default `_T {}` such as `0` or `""`,
                                                or `None & Bypass` if `_T` has no default).
-       • `. ..`    (Fractal Attractor Loop): Inside `[...]`, piping into `..` (`step . ..`) tail-recursively feeds the current value
-                                             back into the start of the enclosing `[...]` stream until exited via `.? Break(val)`.
-       • `a . {…}` (Form Router)    : Matches `a` against Type keys, Literals, `'symbols'`, `{ k v }`, `(x, y) & [x > y]`, `(expr)`, or `.op v`.
+       • `a .: b`  (Sliding Window / Zip)  : Dual pairwise/stencil pipeline operator on `Tuple`:
+                                             - `tuple .: [ ... ]` (right operand is a K-hole stream `[ _a, _b, ... ]` with $K \ge 2$):
+                                               applies a sliding window of width $K$ across adjacent elements ($N \to N - K + 1$),
+                                               e.g. discrete derivative `(1, 3, 6, 10) .: [ _b - _a ]` -> `(2, 3, 4)`.
+                                             - `tupleA .: tupleB` (right operand is a `Tuple` value): zips corresponding elements
+                                               into a tuple of pairs up to the shorter length: `(1, 2) .: ("a", "b")` -> `((1, "a"), (2, "b"))`.
+       • `..`      (Fractal Attractor Loop): As a standalone terminal step inside `[...]` (`[ step1, .. ]` or `step1 . ..`),
+                                             tail-recursively feeds the current value back into the start of the enclosing `[...]`
+                                             stream until exited via `.? Break(val)`.
+       • `a . {…}` (Form Router)    : Matches `a` against Type keys, Literals, `'symbol`, `{ k v }`, `(x, y) & [x > y]`, `(expr)`, or `.op v`.
        • `a .? b`  (Positive Gate)  : Triggers on TRUE — filters `a` by `b` (yielding `None`), executes `[...]` on truthy `a`, or exits if `b <: Bypass`.
        • `a .! b`  (Negative Gate)  : Triggers on FALSE/None — asserts `a`, or short-circuits stream with `b` (`& Bypass`).
-       • `a .> b`  (Tap Pipe)       : Executes side-effect `b(a)` on success and passes original `a` forward (inside `[]`, write `. .> b`).
+       • `a .@ b`  (Tap Pipe)       : Executes side-effect `b(a)` on success and passes original `a` forward (inside `[]`, write `.@ b`).
        • `a .~ b`  (Finalize Pipe)  : Guaranteed `defer` — executes cleanup `b` on BOTH normal values and in-flight `& Bypass`,
                                       preserving the original outcome (intermediate steps borrow `Linear` values; `.~` consumes them).
        • `a .& b`  (Enrich Pipe)    : Evaluates `b(a)` and purely intersects result with `a` via `&` without mutating `a`.
        • `a ./ b`  (Strip Pipe)     : Purely subtracts `b` from `a` via `/` without mutating `a`.
+       • `a .^ b`  (XOR/Toggle Pipe): Evaluates `b(a)` and purely applies symmetric difference `^` with `a` without mutating `a`.
        • `a .| {}` (Parallel Pipe)  : Structured concurrency — runs branches in `{}` concurrently on immutable snapshots and merges via `&`;
                                       if any branch emits `Error & Bypass`, sibling branches are automatically cancelled.
-    3. Perceus Value Rebind (`.=`, `+=`, `-=`, `*=`, `/=`, `&=` — Layer 4), Conservation & Linear/Weak Safety:
+    3. Perceus Value Rebind (`.=`, `+=`, `-=`, `*=`, `/=`, `&=`, `|=`, `^=` — Layer 4), Lens Write & Linear/Weak Safety:
        • Every local rebind operator ends with `=` and desugars to a pure immutable rebind of the local `snake_case` binding:
-         `a += b` ==> `a (a + b)`; `a &= { k v }` ==> `a (a & { k v })`; `a.b.c .= v` ==> `a (a & { b.c v })` (Sugar #6).
+         `a += b` ==> `a (a + b)`; `a &= { k v }` ==> `a (a & { k v })`; `a |= b` ==> `a (a | b)`; `a ^= b` ==> `a (a ^ b)`;
+         `a.b.c .= v` ==> `a (a & { b.c v })` (or inverse lens write `a.raw .= (v . !a.lens)` when `lens` is a bijective `[...]` field).
        • Because values are never aliased mutably, Perceus RC performs O(1) in-place memory reuse whenever `RC == 1` and lossless
          Copy-on-Write whenever `RC > 1`, atomically verifying Form conservation invariants (`& [...]`) and firing `& Watch` laws.
        • `Weak(_T)` breaks reference cycles; `Linear` types must be consumed exactly once before scope exit.
     4. Scoped `Bypass` Short-Circuiting:
-       • `Break & Bypass` is caught by its enclosing `[ ... . .. ]` attractor boundary (yielding `Break.value`).
+       • `Break & Bypass` is caught by its enclosing `[ ..., .. ]` attractor boundary (yielding `Break.value`).
        • `Return & Bypass` is caught by its enclosing named function boundary (yielding `Return.value`).
        • Domain outcomes (`None`, `Error & Bypass`) bypass incompatible steps `fn(Param)` and widen the function output to `Out | B`
          until explicitly handled in a Form Router `. { Error [...] }`.
@@ -209,13 +244,13 @@ Each concept has 1 canonical name and replaces legacy overlapping terms:
   - Engineering Laws:
     1. `PascalCase` (Archetype)  : Concrete Type, Form Prototype, Union Variant, or Module (Fixed at runtime;
                                    acronyms follow standard `PascalCase`: `Http`, `Ui`, `Json`, `Db`).
-    2. `snake_case` (Incarnation): Runtime Value, Variable, Field Key, or Function (Pure bind `a b`; local rebind via `.=`, `+=`, `&=`).
+    2. `snake_case` (Incarnation): Runtime Value, Variable, Field Key, or Function (Pure bind `a b`; local rebind via `.=`, `+=`, `&=`, `|=`, `^=`).
     3. `_` Prefix   (Potential)  : Polymorphic Hole accepting inline `&` constraints (Ancestor, Structural, or Stream):
        • `_`           (Anonymous Hole)       : Wildcard `Any`, higher-kinded slot `_F(_)`, or constrained `_ & Vehicle`.
        • `_PascalCase` (Named Type Hole)      : Links positions to the exact same Type (`Pair { a _T, b _T }`).
        • `_snake_case` (Anonymous Param Hole) : Binds positional stream inputs in lexical order of first appearance
                                                 (`[ _a + _b ]`, `[ _acc & _step ]`, `[ (_a & Int) * 2 ]`).
-       • `'symbol'` in AST Routers            : Inside `Meta.rewrite`, a `'symbol'` router key matches `Identifier` AST
+       • `'symbol` in AST Routers             : Inside `Meta.rewrite`, a prefix `'symbol` router key matches `Identifier` AST
                                                 nodes of the same lexical name without hygiene capture.
   - Compiler Guarantees:
     ◦ `E03_UNKNOWN_CONCRETE_TYPE`  : Unbound `PascalCase` identifiers without `_` (`Wrapper { item Elem }` where `Elem`
@@ -238,10 +273,10 @@ A. THE 12 TRIAD & OVERLOAD VARIATIONS (`Name(Tuple) {Form} [Stream]`):
   8. `UserWithAge(Age) { new_age age }`    -> Auto-Projected Parameterized Form (single `Age` projects `age` via Axiom II.3b)
   9. `name { a Int, b Int 0 } [Body]`      -> Named Function with Form slots (callable via `name { a 1 }` or `name(1, 0)`)
  10. `name(args) ReturnType [Body]`        -> Named Function with explicit return type (or parameterless method `name() [Body]`)
- 11. `(args) [Body]`, `[.x]`, `[_a + _b]`  -> Explicit Lambda `(args) [Body]`, Relative Map `[ .+ 1 ]`, or Emergent Fold `[ _a + _b ]`
+ 11. `(args) [Body]`, `[.x]`, `[_a + _b]`  -> Explicit Lambda `(args) [Body]`, Relative Map `[ .+ 1 ]`, or Emergent Fold/Window `[ _a + _b ]`
  12. `name(args) ReturnType` / `(_A) [_B]` -> Abstract Method Contract inside a Trait Form `{}` / Function Type Signature
 
-B. POLYMORPHIC HOLES & CONSTRAINTS (`_`, `_T`, `_a` + `&`):
+B. POLYMOPHIC HOLES & CONSTRAINTS (`_`, `_T`, `_a` + `&`):
   1. Anonymous Hole (`_`):
      - Unconstrained        : `_` (matches `Any` value/type, or kind slot in `_F(_)`)
      - Ancestor Constraint  : `_ & Vehicle` (any Type that inherits from `Vehicle`)
@@ -253,7 +288,7 @@ B. POLYMORPHIC HOLES & CONSTRAINTS (`_`, `_T`, `_a` + `&`):
      - Structural Constraint: `_T & { id String, name String }`
      - Stream Constraint    : `_T & String & [ .byte_len > 0 ]`
   3. Anonymous Parameter Hole (`_a`, `_b`):
-     - Unconstrained        : `[ _a + _b ]` (desugars to positional lambda `(_a, _b) [ _a + _b ]` or emergent fold on `Tuple`)
+     - Unconstrained        : `[ _a + _b ]` (desugars to positional lambda `(_a, _b) [ _a + _b ]`, fold on `.`, or window on `.:`)
      - Ancestor Constraint  : `[ (_a & Vehicle).brand ]`
      - Structural Constraint: `[ (_a & { price Money }).price ]`
      - Stream Constraint    : `[ (_a & Int & [ .> 0 ]) * 2 ]`
@@ -264,47 +299,51 @@ C. THE 7 INTERSECTION (`&`) COMBINATIONS:
   3. `Hole & Constraint`   -> Constrained Hole (`_ & Vehicle`, `_T & Category`, `_ & { id String }`, `_a & Int`)
   4. `Function & Form`     -> Partial Application, Default Override, or Ambient Coeffect Handler (`fn & { Shell MockShell }`)
   5. `StreamA & StreamB`   -> Sequential Pipeline Composition (`trim_str & upper_str`)
-  6. `Entity & Directive`  -> Stage, Memory, Reactive Watch, FFI, or Visibility Attachment (`val & Private`, `fh & Linear`, `rule & Watch`, `Compile & [...]`)
+  6. `Entity & Directive`  -> Stage, Memory, Reactive Watch, FFI, or Visibility Attachment (`val & Private`, `fh & Linear`, `rule & Watch(16ms)`, `Compile & [...]`)
   7. `Type & Bypass`       -> Marks Failure/Empty/Control Union Outcome (`NotFound & Bypass`) for Axiom IV short-circuiting
 
 D. THE 6 SUBTRACTION (`/`) COMBINATIONS (vs Runtime Value Division):
   1. `Form / Form.field`   -> Removes specific ancestor field (`User / User.password_hash`)
-  2. `Form / 'key'`        -> Removes field or `& Watch` observer by key (`UserAndCloud / 'name'`, `Reactor / 'auto_cool'`)
+  2. `Form / 'key`         -> Removes field or `& Watch` observer by prefix symbol key (`UserAndCloud / 'name`, `Reactor / 'auto_cool`)
   3. `Form / AncestorForm` -> Removes entire ancestor slice from Form Lineage (`ElectricCar / Vehicle`)
   4. `Form / TagForm`      -> Removes all members tagged with `TagForm` (`AuthInternal / Private`, `Reactor / Watch`)
   5. `Union / Type`        -> Removes branch from a Union (`Result / Error`)
   6. `map_val / key_val`   -> On runtime `Map`, removes entry key (`config_map / "host"`); on numeric/CSG values, invokes overloaded `/`
 
 E. QUOTES, COMPUTED KEYS & COMPLETE OPERATOR LIST (4 ORTHOGONAL SYMMETRIC LAYERS):
-  - `'symbol'` (Compile-Time Identity): Interned `Gpr(8)` O(1) constant tag (`'draft'`, `'GET'`). Zero allocation, no `{}` interpolation.
+  - `'symbol`  (Compile-Time Identity): Prefix-quoted interned `Gpr(8)` O(1) constant tag (`'draft`, `'GET`). Zero allocation, no closing quote.
   - `"string"` (Runtime UTF-8 Text)   : Multiline `Mem(16)` UTF-8 text (`O(1)` `.byte_len`, lazy `.chars` / `.graphemes`) with `{expr}` interpolation.
   - `r"..."`   (Raw Verbatim String)  : Multiline raw text (`r0"..."0`, `r1"..."1`, `r2"..."2`) with zero escapes.
   - `(K) V`    (Dynamic/Type Key)     : Evaluates `K` as a type hole `Map { (_K) _V }` or dynamic value key `x . { (target_val) [ 10 ] }`.
   - `# ...` & `#\n...\n#`             : Homoiconic line and block comments (attached to AST via `Meta.doc_of`).
-  - Layer 1 — Pure Math, Logic & Type Algebra (no leading `.`, no trailing `=`):
-    `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `a << b`, `a >> b`, `a == b`, `a != b`, `a > b`, `a >= b`, `a < b`, `a <= b`, `a && b`, `a || b`, `a & b`, `a | b`, `!x`, `-x`.
-  - Layer 2 — Tight Path & Relative Operators inside `[...]` (tight leading `.`, no trailing `=`):
-    `a.b`, `a.Parent.field`, `a.0`, `a.-1`, `.field`, `.0`, `.+ b`, `.- b`, `.* b`, `./ b`, `.> b`, `.>= b`, `.< b`, `.<= b`, `.== b`, `.!= b`, `..x`.
-  - Layer 3 — Spaced Dataflow Pipelines (spaced leading `.`, no trailing `=`):
-    • `a . b`  : UFCS, Univalent Auto-Transport & Emergent Map/Fold Dataflow Pipeline (and `. ..` Fractal Attractor Loop).
+  - Layer 1 — Pure Math, Logic, Bijection & Type Algebra (no leading `.`, no trailing `=`):
+    `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b`, `a << b`, `a >> b`, `a == b`, `a != b`, `a > b`, `a >= b`, `a < b`, `a <= b`, `a && b`, `a || b`, `a & b`, `a | b`, `a ^ b`, `[f] <-> [g]`, `!x`, `-x`.
+  - Layer 2 — Tight Path, Lexical Parent & Relative Operators inside `[...]` (tight leading `.` or `..`, no trailing `=`):
+    `a.b`, `a.Parent.field`, `..EnclosingForm.field`, `.._..field`, `a.0`, `a.-1`, `.field`, `.0`, `.+ b`, `.- b`, `.* b`, `./ b`, `.> b`, `.>= b`, `.< b`, `.<= b`, `.== b`, `.!= b`, `..x`.
+  - Layer 3 — Spaced Dataflow Pipelines (spaced leading `.`, or step-initial inside `[...]`, no trailing `=`):
+    • `a . b`  : UFCS, Univalent Auto-Transport & Emergent Map (1-hole) / Fold (2-hole) Dataflow Pipeline.
+    • `a .: b` : Sliding Window / Gradient (`tuple .: [ _b - _a ]`) & Pairwise Tuple Zip (`tupleA .: tupleB`).
+    • `..`     : Fractal Attractor Loop (terminal step inside `[ ..., .. ]` or `a . ..`).
     • `a .& b` : Enrich Pipeline (evaluates `b(a)` and purely merges result with `a` via `&` without mutating `a`).
     • `a ./ b` : Strip Pipeline (purely subtracts `b` from `a` via `/` without mutating `a`).
-    • `a .> b` : Tap Pipeline (executes side-effect `b(a)` on success and passes original `a` forward; inside `[]`, write `. .> b`).
+    • `a .^ b` : Symmetric Difference / Toggle Pipeline (evaluates `b(a)` and purely XORs with `a` via `^` without mutating `a`).
+    • `a .@ b` : Tap Pipeline (executes side-effect `b(a)` on success and passes original `a` forward; inside `[]`, write `.@ b`).
     • `a .~ b` : Finalize / Defer Pipeline (executes cleanup `b` on BOTH success and `& Bypass`, preserving outcome).
     • `a .? b` / `a .! b` : Positive Filter/Branch/Exit Gate (on TRUE) <-> Negative Guard/Assert Gate (on FALSE/None).
     • `a .| {}`: Structured Parallel Pipeline (concurrent fan-out of branches in `{}`, merged via `&`).
-  - Layer 4 — Ergonomic Perceus Value Rebind Operators (always end with `=`):
-    • `a .= b` : Direct or deep path (`corp.departments.0.budget .= 2500`) local value rebind (O(1) in-place when `RC == 1`; COW when `RC > 1`).
-    • `a += b`, `a -= b`, `a *= b`, `a /= b` : Arithmetic value rebind on `snake_case` bindings (`counter += 1`).
-    • `a &= b` : Structural enrichment rebind on `snake_case` bindings (`raw_order &= { amount 25 }`; verifies Form `& [...]` & triggers `& Watch`).
+  - Layer 4 — Ergonomic Perceus Value & Lens Rebind Operators (always end with `=`):
+    • `a .= b` : Direct, deep path (`corp.departments.0.budget .= 2500`), or inverse bijective lens (`acc.balance_usd .= 50.0`) rebind.
+    • `a += b`, `a -= b`, `a *= b`, `a /= b` : Arithmetic value/lens rebind on `snake_case` bindings (`counter += 1`).
+    • `a &= b`, `a |= b`, `a ^= b` : Intersection (`&=`), Union/Accumulate (`|=`), and Symmetric Difference/Toggle (`^=`) rebind.
 
 F. SYNTACTIC SUGAR EQUIVALENCES:
   1. Tagged String Sugar     : `Type"..."`          ==> `Type("...")` (e.g. `Money"199.99"` ==> `Money("199.99")`)
   2. UFCS Pipeline Sugar     : `a . fn(b)`          ==> `fn(a, b)` (and `a.fn(b)` ==> `fn(a, b)`)
   3. Point-Free Relative     : `.field` / `.op v`   ==> `[ .field ]` / `[ .op v ]` ONLY when passed directly as a call argument or Router key
   4. Auto-Generic Open Slot  : `Box { item }`       ==> `Box(_T) { item _T }`
-  5. Anonymous Hole Lambda   : `[ _a + _b ]`        ==> `(_a, _b) [ _a + _b ]` (and on `Tuple` pipe `tuple . [ _a + _b ]` ==> `tuple . fold([ _a + _b ])`)
-  6. Perceus Value Rebind    : `a.p .= v`           ==> `a (a & { p v })` (and `a += b` ==> `a (a + b)`, `a &= b` ==> `a (a & b)` with O(1) reuse when `RC == 1`)
+  5. Anonymous Hole Lambda   : `[ _a + _b ]`        ==> `(_a, _b) [ _a + _b ]` (and `t . [_a + _b]` ==> `fold`, `t .: [_b - _a]` ==> `window(2)`)
+  6. Perceus Value Rebind    : `a.p .= v`           ==> `a (a & { p v })` (and `a += b` ==> `a (a + b)`, `a &= b` ==> `a (a & b)`, `a |= b` ==> `a (a | b)`, `a ^= b` ==> `a (a ^ b)`)
+  7. Bijective Lens Rebind   : `a.lens .= v`        ==> `a.raw .= (v . !a.lens)` (when `lens [...]` is a single-source invertible stream)
 "3
 
 # ==============================================================================

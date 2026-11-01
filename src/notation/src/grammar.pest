@@ -1,0 +1,59 @@
+// ============================================================================
+// Razomy Notation (.rn) v13.0 — Ultra-Lean Unified Node Pest Grammar
+// Every line, inline tag, edge, reset, or leaf is an instance of `unified_node`:
+//   Node ::= Prefix? Key? Params? Overlays? Props? EdgeTail? (Body | InlineVal)?
+// ============================================================================
+
+WHITESPACE = _{ " " | "\t" }
+
+// --- 1. Top-Level Line Structure ---
+document_line = { SOI ~ (comment_line | unified_node)? ~ EOI }
+comment_line  = @{ "#" ~ (" " ~ ANY* | EOI) }
+
+// --- 2. The Universal Node (Prefix? Key? Params? Overlays? Props? Edge? Body/Value?) ---
+unified_node = {
+    node_prefix? ~ key_token? ~ params? ~ overlay_chain? ~ props? ~ edge_tail? ~ (body | inline_val)?
+}
+
+node_prefix   = { ".." | "<->" | "->" }
+params        = { "(" ~ tuple_cells? ~ ")" }
+props         = { "{" ~ form_pairs? ~ "}" }
+body          = { "[" ~ stream_items? ~ "]" }
+edge_tail     = { ("<->" | "->") ~ unified_node }
+overlay_chain = { (("&" | "/") ~ key_token)+ }
+
+// --- 3. Triad Container Items ---
+// Stream `[`: Mixed plain text and recursive child nodes like `b[bold]` or `a{href /}[link]`
+stream_items = ${ (inline_child_node | backtick_lit | quoted_lit | stream_raw_text)+ }
+inline_child_node = ${
+    inline_tag_key ~ props? ~ "[" ~ stream_items? ~ "]"
+}
+inline_tag_key = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "." | "#")*
+}
+
+// Form `{`: Key-Value fields separated by commas, semicolons, or whitespace
+form_pairs = { form_field ~ (("," | ";") ~ form_field)* ~ ("," | ";")? }
+form_field = { key_token ~ params? ~ overlay_chain? ~ (":" | WHITESPACE+)? ~ inline_val? }
+
+// Tuple `(`: Positional array cells or 2D matrix rows separated by semicolons
+tuple_cells = { cell_val ~ ("," ~ cell_val)* ~ (";" ~ tuple_cells)? }
+cell_val    = { inline_val }
+
+// --- 4. Value Literals & Atomic Tokens (Axiom V) ---
+inline_val = _{
+    quoted_lit
+    | backtick_lit
+    | raw_marker
+    | props
+    | params
+    | body
+    | literal_token
+}
+
+quoted_lit       = @{ "\"" ~ ("\\\"" | "\\\\" | (!"\"" ~ ANY))* ~ "\"" }
+backtick_lit     = @{ "`" ~ (!"`" ~ ANY)* ~ "`" }
+raw_marker       = @{ "r" ~ ASCII_DIGIT* ~ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+key_token        = @{ quoted_lit | (!(" " | "\t" | "\r" | "\n" | "[" | "]" | "{" | "}" | "(" | ")" | "," | ";" | "\"") ~ ANY)+ }
+stream_raw_text  = @{ (!("[" | "]" | "`" | "\"") ~ ANY)+ }
+literal_token    = @{ (!("," | ";" | "]" | "}" | ")" | "\r" | "\n") ~ ANY)+ }

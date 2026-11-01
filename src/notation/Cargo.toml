@@ -1,0 +1,24 @@
+[package]
+name = "razomy-notation"
+version = "14.0.0"
+edition = "2021"
+description = "Razomy Notation (.rn) v13.0 — Ultra-Lean Unified Node Parser, HIR, LSP, Formatter, and Multi-Format Codegen/Importers (JSON, JSON5, YAML, Proto, Mermaid, SQL, HTML, Markdown, CSV)"
+license = "MIT"
+
+[lib]
+name = "razomy_notation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rn"
+path = "src/main.rs"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+indexmap = { version = "2.2", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+regex = "1.10"
