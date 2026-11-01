@@ -18,7 +18,9 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
 use crate::analyzer::{AnalysisReport, CompletionItem, Severity};
+use crate::codegen::{transpile, transpile_hir};
 use crate::hir::{is_pascal_case, SourceOrigin};
+use crate::lir::Target;
 use crate::parser::{
     classify_sentence, extract_import, has_pipe_op, normalize_path, parse_code,
     recover_source_for_ide, split_pipeline, ImportDirective, ImportSource, Literal, PipeOp,
@@ -1088,10 +1090,118 @@ impl RazomyLanguageServer {
                                         ]
                                     }
                                 }));
+
+                                // Экспорт выделенного объекта в TypeScript (.ts)
+                                if let Ok(ts_code) = transpile(object_code, Target::TypeScript) {
+                                    let ts_file_path = parent_dir.join(format!("{clean_ident}.ts"));
+                                    let ts_file_uri = path_to_uri(&ts_file_path);
+                                    actions.push(json!({
+                                        "title": format!("Экспортировать '{clean_ident}' в TypeScript ('{clean_ident}.ts')"),
+                                        "kind": "refactor.extract",
+                                        "edit": {
+                                            "documentChanges": [
+                                                {
+                                                    "kind": "create",
+                                                    "uri": ts_file_uri,
+                                                    "options": { "overwrite": true, "ignoreIfExists": false }
+                                                },
+                                                {
+                                                    "textDocument": { "uri": ts_file_uri, "version": null },
+                                                    "edits": [{
+                                                        "range": LspRange::default().to_json(),
+                                                        "newText": ts_code
+                                                    }]
+                                                }
+                                            ]
+                                        }
+                                    }));
+                                }
+
+                                // Экспорт выделенного объекта в C# (.cs)
+                                if let Ok(cs_code) = transpile(object_code, Target::CSharp) {
+                                    let cs_file_path = parent_dir.join(format!("{clean_ident}.cs"));
+                                    let cs_file_uri = path_to_uri(&cs_file_path);
+                                    actions.push(json!({
+                                        "title": format!("Экспортировать '{clean_ident}' в C# ('{clean_ident}.cs')"),
+                                        "kind": "refactor.extract",
+                                        "edit": {
+                                            "documentChanges": [
+                                                {
+                                                    "kind": "create",
+                                                    "uri": cs_file_uri,
+                                                    "options": { "overwrite": true, "ignoreIfExists": false }
+                                                },
+                                                {
+                                                    "textDocument": { "uri": cs_file_uri, "version": null },
+                                                    "edits": [{
+                                                        "range": LspRange::default().to_json(),
+                                                        "newText": cs_code
+                                                    }]
+                                                }
+                                            ]
+                                        }
+                                    }));
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        // --- ЭКСПОРТ ВСЕГО ТЕКУЩЕГО МОДУЛЯ В TYPESCRIPT (.ts) И C# (.cs) ---
+        if let Some(cur_path) = uri_to_path(&doc.uri) {
+            if let (Some(parent_dir), Some(stem)) = (
+                cur_path.parent(),
+                cur_path.file_stem().and_then(|s| s.to_str()),
+            ) {
+                let ts_module_code = transpile_hir(&doc.report.hir, Target::TypeScript);
+                let ts_mod_path = parent_dir.join(format!("{stem}.ts"));
+                let ts_mod_uri = path_to_uri(&ts_mod_path);
+                actions.push(json!({
+                    "title": format!("Экспортировать модуль в TypeScript ('{stem}.ts')"),
+                    "kind": "refactor.extract",
+                    "edit": {
+                        "documentChanges": [
+                            {
+                                "kind": "create",
+                                "uri": ts_mod_uri,
+                                "options": { "overwrite": true, "ignoreIfExists": false }
+                            },
+                            {
+                                "textDocument": { "uri": ts_mod_uri, "version": null },
+                                "edits": [{
+                                    "range": LspRange::default().to_json(),
+                                    "newText": ts_module_code
+                                }]
+                            }
+                        ]
+                    }
+                }));
+
+                let cs_module_code = transpile_hir(&doc.report.hir, Target::CSharp);
+                let cs_mod_path = parent_dir.join(format!("{stem}.cs"));
+                let cs_mod_uri = path_to_uri(&cs_mod_path);
+                actions.push(json!({
+                    "title": format!("Экспортировать модуль в C# ('{stem}.cs')"),
+                    "kind": "refactor.extract",
+                    "edit": {
+                        "documentChanges": [
+                            {
+                                "kind": "create",
+                                "uri": cs_mod_uri,
+                                "options": { "overwrite": true, "ignoreIfExists": false }
+                            },
+                            {
+                                "textDocument": { "uri": cs_mod_uri, "version": null },
+                                "edits": [{
+                                    "range": LspRange::default().to_json(),
+                                    "newText": cs_module_code
+                                }]
+                            }
+                        ]
+                    }
+                }));
             }
         }
 

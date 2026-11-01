@@ -10,8 +10,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use razomy_language::analyzer::{analyze_source_with_path, Severity};
+use razomy_language::codegen::transpile_hir;
 use razomy_language::hir::lower_to_hir;
-use razomy_language::lir::{lower_hir_to_lir, lower_tokens_to_expr, LirStmt};
+use razomy_language::lir::{lower_hir_to_lir, lower_tokens_to_expr, LirStmt, Target};
 use razomy_language::lsp::{format_razomy_source, RazomyLanguageServer};
 use razomy_language::parser::parse_code_with_imports;
 use razomy_language::runtime::{eval_lir_expr, eval_lir_stmts, run_file, Value};
@@ -76,6 +77,45 @@ fn main() -> ExitCode {
             format_file_command(Path::new(file))
         }
 
+        Some("ts" | "typescript") => {
+            let Some(file) = args.get(2) else {
+                eprintln!("Ошибка: не указан файл.\nИспользование: razomy ts <file.rl> [--stdout]");
+                return ExitCode::FAILURE;
+            };
+            let to_stdout = matches!(args.get(3).map(String::as_str), Some("--stdout" | "-o"));
+            export_target_command(Path::new(file), Target::TypeScript, to_stdout)
+        }
+
+        Some("cs" | "csharp" | "c#") => {
+            let Some(file) = args.get(2) else {
+                eprintln!("Ошибка: не указан файл.\nИспользование: razomy cs <file.rl> [--stdout]");
+                return ExitCode::FAILURE;
+            };
+            let to_stdout = matches!(args.get(3).map(String::as_str), Some("--stdout" | "-o"));
+            export_target_command(Path::new(file), Target::CSharp, to_stdout)
+        }
+
+        Some("export" | "build") => {
+            let Some(target_str) = args.get(2).map(String::as_str) else {
+                eprintln!("Ошибка: укажите цель экспорта (ts | cs) и файл.\nИспользование: razomy export <ts|cs> <file.rl> [--stdout]");
+                return ExitCode::FAILURE;
+            };
+            let Some(file) = args.get(3) else {
+                eprintln!("Ошибка: не указан файл.\nИспользование: razomy export <ts|cs> <file.rl> [--stdout]");
+                return ExitCode::FAILURE;
+            };
+            let to_stdout = matches!(args.get(4).map(String::as_str), Some("--stdout" | "-o"));
+            let target = match target_str.to_lowercase().as_str() {
+                "ts" | "typescript" => Target::TypeScript,
+                "cs" | "csharp" | "c#" => Target::CSharp,
+                other => {
+                    eprintln!("Неизвестная цель экспорта: '{other}'. Поддерживаются: ts, cs.");
+                    return ExitCode::FAILURE;
+                }
+            };
+            export_target_command(Path::new(file), target, to_stdout)
+        }
+
         Some("-v" | "--version" | "version") => {
             println!("razomy {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -111,6 +151,9 @@ fn print_help() {
     println!("  razomy debug <file.rl>  — Интерактивная пошаговая отладка LIR");
     println!("  razomy check <file.rl>  — Статический анализ (HIR Laws 1–4, E01..E07)");
     println!("  razomy fmt <file.rl>    — Автоформатирование файла на месте");
+    println!("  razomy ts <file.rl>     — Экспортировать файл в TypeScript (<file.ts>)");
+    println!("  razomy cs <file.rl>     — Экспортировать файл в C# (<file.cs>)");
+    println!("  razomy export <ts|cs> <file.rl> [--stdout] — Транспиляция в TS / C#");
     println!("  razomy lsp              — Запустить Language Server (JSON-RPC 2.0 stdio)");
     println!("  razomy lsp --http [port]— Запустить HTTP LSP сервер для parser.html (по умолч. 8765)");
     println!("  razomy serve [port]     — Запустить веб-студию parser.html + LSP сервер");
@@ -236,6 +279,44 @@ fn format_file_command(path: &Path) -> ExitCode {
     } else {
         println!("Unchanged: {}", path.display());
     }
+    ExitCode::SUCCESS
+}
+
+fn export_target_command(path: &Path, target: Target, to_stdout: bool) -> ExitCode {
+    let src = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) => {
+            eprintln!("[IO Error] Не удалось прочитать '{}': {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let sentences = match parse_code_with_imports(&src, path.parent()) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[Syntax Error]:\n{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let hir = lower_to_hir(&sentences);
+    let generated = transpile_hir(&hir, target);
+
+    if to_stdout {
+        print!("{generated}");
+        return ExitCode::SUCCESS;
+    }
+
+    let ext = match target {
+        Target::TypeScript => "ts",
+        Target::CSharp => "cs",
+    };
+    let out_path = path.with_extension(ext);
+    if let Err(err) = fs::write(&out_path, generated) {
+        eprintln!("[IO Error] Не удалось записать '{}': {err}", out_path.display());
+        return ExitCode::FAILURE;
+    }
+    println!("Exported: {}", out_path.display());
     ExitCode::SUCCESS
 }
 
