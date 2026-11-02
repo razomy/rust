@@ -23,6 +23,7 @@ pub fn import_from(source: &str, format: Format) -> Result<HirDocument, String> 
         Format::Html => from_html(source),
         Format::Markdown => from_markdown(source),
         Format::Csv => from_csv(source),
+        _ => {from_json(source)}
     }
 }
 
@@ -65,29 +66,40 @@ pub fn json_value_to_hir_node(val: &Value) -> HirNode {
         Value::Array(arr) => {
             if arr.is_empty() {
                 return HirNode::Tuple {
+                    schema: None,
+                    is_2d_table: false,
                     rows: vec![],
                     span,
                 };
             }
-            // Check if 2D matrix of primitives -> Tuple 2D Grid
             if arr.iter().all(|r| r.is_array()) {
                 let rows: Vec<Vec<HirNode>> = arr
                     .iter()
                     .filter_map(|r| r.as_array())
                     .map(|r| r.iter().map(json_value_to_hir_node).collect())
                     .collect();
-                return HirNode::Tuple { rows, span };
+                return HirNode::Tuple {
+                    schema: None,
+                    is_2d_table: false,
+                    rows,
+                    span,
+                };
             }
-            // Check if 1D array of primitives -> Tuple 1D or Stream
             if arr.iter().all(|x| !x.is_object() && !x.is_array()) {
                 let row: Vec<HirNode> = arr.iter().map(json_value_to_hir_node).collect();
                 return HirNode::Tuple {
+                    schema: None,
+                    is_2d_table: false,
                     rows: vec![row],
                     span,
                 };
             }
             let items: Vec<HirNode> = arr.iter().map(json_value_to_hir_node).collect();
-            HirNode::Stream { items, span }
+            HirNode::Stream {
+                schema: None,
+                items,
+                span,
+            }
         }
         Value::Object(obj) => {
             let mut map = IndexMap::new();
@@ -108,6 +120,7 @@ pub fn json_value_to_hir_node(val: &Value) -> HirNode {
                 map.insert(unescaped, json_value_to_hir_node(v));
             }
             HirNode::Form {
+                schema: None,
                 map,
                 edges,
                 overlays: vec![],
@@ -192,12 +205,21 @@ pub fn from_proto(source: &str) -> Result<HirDocument, String> {
             ]);
         }
 
-        root_map.insert(msg_name, HirNode::Tuple { rows, span });
+        root_map.insert(
+            msg_name,
+            HirNode::Tuple {
+                schema: None,
+                is_2d_table: true,
+                rows,
+                span,
+            },
+        );
     }
 
     Ok(HirDocument {
         root_mode: ContextMode::Form,
         root: HirNode::Form {
+            schema: None,
             map: root_map,
             edges: vec![],
             overlays: vec![],
@@ -270,6 +292,7 @@ pub fn from_mermaid(source: &str) -> Result<HirDocument, String> {
     root_map.insert(
         "graph".to_string(),
         HirNode::Form {
+            schema: None,
             map: IndexMap::new(),
             edges,
             overlays: vec![],
@@ -280,6 +303,7 @@ pub fn from_mermaid(source: &str) -> Result<HirDocument, String> {
     Ok(HirDocument {
         root_mode: ContextMode::Form,
         root: HirNode::Form {
+            schema: None,
             map: root_map,
             edges: vec![],
             overlays: vec![],
@@ -363,12 +387,21 @@ pub fn from_sql(source: &str) -> Result<HirDocument, String> {
             ]);
         }
 
-        root_map.insert(table_name, HirNode::Tuple { rows, span });
+        root_map.insert(
+            table_name,
+            HirNode::Tuple {
+                schema: None,
+                is_2d_table: true,
+                rows,
+                span,
+            },
+        );
     }
 
     Ok(HirDocument {
         root_mode: ContextMode::Form,
         root: HirNode::Form {
+            schema: None,
             map: root_map,
             edges: vec![],
             overlays: vec![],
@@ -388,6 +421,7 @@ pub fn from_html(source: &str) -> Result<HirDocument, String> {
     Ok(HirDocument {
         root_mode: ContextMode::Stream,
         root: HirNode::Stream {
+            schema: None,
             items,
             span: Span::default(),
         },
@@ -449,6 +483,7 @@ fn parse_html_fragment(html: &str) -> Vec<HirNode> {
                 classes,
                 params: None,
                 overlays: vec![],
+                schema: None,
                 props: if props.is_empty() { None } else { Some(props) },
                 body: Some(body_nodes),
                 span,
@@ -556,14 +591,16 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
             }
             let mut m = IndexMap::new();
             m.insert(
-                "snippet".to_string(),
+                "code".to_string(),
                 HirNode::Raw {
                     lang: lang_tag,
                     content: code_lines.join("\n"),
+                    rank: None,
                     span,
                 },
             );
             items.push(HirNode::Form {
+                schema: None,
                 map: m,
                 edges: vec![],
                 overlays: vec![],
@@ -582,6 +619,7 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
                 HirNode::String(title.to_string(), span),
             );
             items.push(HirNode::Form {
+                schema: None,
                 map: m,
                 edges: vec![],
                 overlays: vec![],
@@ -607,11 +645,13 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
             m.insert(
                 "ul".to_string(),
                 HirNode::Stream {
+                    schema: None,
                     items: list_items,
                     span,
                 },
             );
             items.push(HirNode::Form {
+                schema: None,
                 map: m,
                 edges: vec![],
                 overlays: vec![],
@@ -628,7 +668,6 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
                 if l.starts_with('|') && l.ends_with('|') {
                     let inner = &l[1..l.len() - 1];
                     let cells: Vec<&str> = inner.split('|').map(|c| c.trim()).collect();
-                    // Skip separator row `| --- | --- |`
                     if cells
                         .iter()
                         .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':'))
@@ -647,8 +686,17 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
                 }
             }
             let mut m = IndexMap::new();
-            m.insert("table".to_string(), HirNode::Tuple { rows, span });
+            m.insert(
+                "table".to_string(),
+                HirNode::Tuple {
+                    schema: None,
+                    is_2d_table: true,
+                    rows,
+                    span,
+                },
+            );
             items.push(HirNode::Form {
+                schema: None,
                 map: m,
                 edges: vec![],
                 overlays: vec![],
@@ -668,6 +716,7 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
             },
         );
         items.push(HirNode::Form {
+            schema: None,
             map: m,
             edges: vec![],
             overlays: vec![],
@@ -678,7 +727,11 @@ pub fn from_markdown(source: &str) -> Result<HirDocument, String> {
 
     Ok(HirDocument {
         root_mode: ContextMode::Stream,
-        root: HirNode::Stream { items, span },
+        root: HirNode::Stream {
+            schema: None,
+            items,
+            span,
+        },
         diagnostics: vec![],
         symbols: vec![],
     })
@@ -712,7 +765,12 @@ pub fn from_csv(source: &str) -> Result<HirDocument, String> {
 
     Ok(HirDocument {
         root_mode: ContextMode::Tuple,
-        root: HirNode::Tuple { rows, span },
+        root: HirNode::Tuple {
+            schema: None,
+            is_2d_table: true,
+            rows,
+            span,
+        },
         diagnostics: vec![],
         symbols: vec![],
     })

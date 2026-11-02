@@ -29,6 +29,8 @@ pub enum Format {
     Html,
     Markdown,
     Csv,
+    Scss,
+    Terraform,
 }
 
 impl Format {
@@ -43,6 +45,8 @@ impl Format {
             "html" | "htm" => Some(Format::Html),
             "md" | "markdown" => Some(Format::Markdown),
             "csv" => Some(Format::Csv),
+            "scss" | "css" => Some(Format::Scss),
+            "tf" | "terraform" | "dockerfile" => Some(Format::Terraform),
             _ => None,
         }
     }
@@ -60,6 +64,27 @@ pub fn generate(doc: &HirDocument, format: Format) -> Result<String, String> {
         Format::Html => Ok(to_html(doc)),
         Format::Markdown => Ok(to_markdown(doc)),
         Format::Csv => Ok(to_csv(doc)),
+        Format::Scss => Ok(to_scss(doc)),
+        Format::Terraform => Ok(to_terraform_and_docker(doc)),
+    }
+}
+
+/// Evaluates an explicit Schema Portal (`Key Schema {`, `(`, `[`) into its target string representation.
+pub fn eval_schema_portal(portal: &str, node: &HirNode) -> Option<String> {
+    match portal {
+        "Sql" => Some(render_sql_portal(node)),
+        "Html" => {
+            let mut out = String::new();
+            render_html_compact_node(node, &mut out);
+            Some(out)
+        }
+        "Scss" | "Css" => Some(render_scss_portal_inline(node)),
+        "Md" | "Markdown" => {
+            let mut blocks = Vec::new();
+            render_markdown_node(node, &mut blocks);
+            Some(blocks.join("\n\n"))
+        }
+        _ => None,
     }
 }
 
@@ -114,15 +139,25 @@ fn format_rn_form_entry(key: &str, val: &HirNode, indent: usize, out: &mut Strin
                 format_number(*n)
             ));
         }
+        HirNode::Symbol(s, _) => {
+            out.push_str(&format!("{}{} '{}\n", pad, formatted_key, s));
+        }
+        HirNode::TypedLiteral {
+            type_name, value, ..
+        } => {
+            out.push_str(&format!(
+                "{}{} {}\"{}\"\n",
+                pad,
+                formatted_key,
+                type_name,
+                escape_quotes(value)
+            ));
+        }
         HirNode::String(s, _) => {
             if s.is_empty() {
                 out.push_str(&format!("{}{} \"\"\n", pad, formatted_key));
             } else if s.contains('\n') {
-                out.push_str(&format!("{}{} \"\n", pad, formatted_key));
-                let child_pad = " ".repeat(indent + 1);
-                for line in s.lines() {
-                    out.push_str(&format!("{}{}\n", child_pad, line));
-                }
+                out.push_str(&format!("{}{} \"\n{}\n\"\n", pad, formatted_key, s));
             } else if needs_quotes_in_form_value(s) {
                 out.push_str(&format!(
                     "{}{} \"{}\"\n",
@@ -134,11 +169,22 @@ fn format_rn_form_entry(key: &str, val: &HirNode, indent: usize, out: &mut Strin
                 out.push_str(&format!("{}{} {}\n", pad, formatted_key, s));
             }
         }
-        HirNode::Raw { lang, content, .. } => {
-            out.push_str(&format!("{}{} \"{}\n", pad, formatted_key, lang));
-            let child_pad = " ".repeat(indent + 1);
-            for line in content.lines() {
-                out.push_str(&format!("{}{}\n", child_pad, line));
+        HirNode::Raw {
+            lang,
+            content,
+            rank,
+            ..
+        } => {
+            let r_str = rank.map(|r| r.to_string()).unwrap_or_default();
+            out.push_str(&format!(
+                "{}{} {}{}\"\n{}\n\"{}\n",
+                pad, formatted_key, lang, r_str, content, r_str
+            ));
+        }
+        HirNode::Outliner { text, children, .. } => {
+            format_rn_stream_item(text, indent, out);
+            for c in children {
+                format_rn_stream_item(c, indent + 1, out);
             }
         }
         HirNode::Reference { path, .. } => {
@@ -152,16 +198,17 @@ fn format_rn_form_entry(key: &str, val: &HirNode, indent: usize, out: &mut Strin
                 format_rn_edge(edge)
             ));
         }
-        HirNode::Form { map, edges, .. } => {
+        HirNode::Form {
+            schema, map, edges, ..
+        } => {
             if map.is_empty() && edges.is_empty() {
                 out.push_str(&format!("{}{} {{}}\n", pad, formatted_key));
             } else {
-                // Law 2.1: Context Inertia inside Form (explicit `{` at root, inherited below)
-                if indent == 0 {
-                    out.push_str(&format!("{}{} {{\n", pad, formatted_key));
-                } else {
-                    out.push_str(&format!("{}{}\n", pad, formatted_key));
-                }
+                let schema_part = schema
+                    .as_ref()
+                    .map(|s| format!(" {}", s))
+                    .unwrap_or_default();
+                out.push_str(&format!("{}{}{}{}\n", pad, formatted_key, schema_part, " {"));
                 for (ck, cv) in map {
                     format_rn_form_entry(ck, cv, indent + 1, out);
                 }
@@ -247,16 +294,27 @@ fn format_rn_stream_item(item: &HirNode, indent: usize, out: &mut String) {
                     out.push_str(&format!("{}{} (\n", pad, k));
                     format_rn_tuple_rows(rows, indent + 1, out);
                 }
-                HirNode::Raw { lang, content, .. } => {
-                    out.push_str(&format!("{}{} \"{}\n", pad, k, lang));
-                    let child_pad = " ".repeat(indent + 1);
-                    for l in content.lines() {
-                        out.push_str(&format!("{}{}\n", child_pad, l));
-                    }
+                HirNode::Raw {
+                    lang,
+                    content,
+                    rank,
+                    ..
+                } => {
+                    let r_str = rank.map(|r| r.to_string()).unwrap_or_default();
+                    out.push_str(&format!(
+                        "{}{} {}{}\"\n{}\n\"{}\n",
+                        pad, k, lang, r_str, content, r_str
+                    ));
                 }
                 _ => {
                     format_rn_form_entry(k, v, indent, out);
                 }
+            }
+        }
+        HirNode::Outliner { text, children, .. } => {
+            format_rn_stream_item(text, indent, out);
+            for c in children {
+                format_rn_stream_item(c, indent + 1, out);
             }
         }
         HirNode::Triad {
@@ -268,22 +326,20 @@ fn format_rn_stream_item(item: &HirNode, indent: usize, out: &mut String) {
             ..
         } => {
             let mut header = name.clone();
+            let mut combined_props = Vec::new();
             if let Some(i) = id {
-                header.push('#');
-                header.push_str(i);
+                combined_props.push(format!("id {}", format_rn_key(i)));
             }
-            for c in classes {
-                header.push('.');
-                header.push_str(c);
+            if !classes.is_empty() {
+                combined_props.push(format!("class {}", classes.join(" ")));
             }
             if let Some(p) = props {
-                if !p.is_empty() {
-                    let pairs: Vec<String> = p
-                        .iter()
-                        .map(|(pk, pv)| format!("{} {}", format_rn_key(pk), format_rn_cell(pv)))
-                        .collect();
-                    header.push_str(&format!(" {{ {} }}", pairs.join(", ")));
+                for (pk, pv) in p {
+                    combined_props.push(format!("{} {}", format_rn_key(pk), format_rn_cell(pv)));
                 }
+            }
+            if !combined_props.is_empty() {
+                header.push_str(&format!("{{{}}}", combined_props.join(", ")));
             }
             if let Some(b) = body {
                 if b.len() == 1 && matches!(b[0], HirNode::String(_, _) | HirNode::RichText { .. })
@@ -323,6 +379,10 @@ fn format_rn_cell(node: &HirNode) -> String {
         HirNode::Null(_) => "null".to_string(),
         HirNode::Bool(b, _) => b.to_string(),
         HirNode::Number(n, _) => format_number(*n),
+        HirNode::Symbol(s, _) => format!("'{}", s),
+        HirNode::TypedLiteral {
+            type_name, value, ..
+        } => format!("{}\"{}\"", type_name, escape_quotes(value)),
         HirNode::String(s, _) => {
             if s.contains(',') || s.contains(';') || s.contains('"') {
                 format!("\"{}\"", escape_quotes(s))
@@ -799,7 +859,7 @@ fn sanitize_mermaid_id(s: &str) -> String {
 }
 
 // ============================================================================
-// 6. SQL DDL & DML Codegen (Example 4: Tuple Grid `(` & Edges `->`)
+// 6. SQL DDL, DML & Query Portal Codegen (`users_schema (`, `users_rows (`, `query Sql (`)
 // ============================================================================
 
 pub fn to_sql(doc: &HirDocument) -> String {
@@ -817,7 +877,51 @@ pub fn to_sql(doc: &HirDocument) -> String {
         }
         _ => {}
     }
-    statements.join("\n\n") + "\n"
+    statements.join("\n") + "\n"
+}
+
+fn render_sql_portal(node: &HirNode) -> String {
+    if let HirNode::Tuple { rows, .. } = node {
+        if rows.len() >= 2 {
+            let header: Vec<String> = rows[0]
+                .iter()
+                .map(|c| match c {
+                    HirNode::String(s, _) => s.trim().to_ascii_lowercase(),
+                    other => format_rn_cell(other).trim().to_ascii_lowercase(),
+                })
+                .collect();
+            if header.contains(&"select".to_string()) && header.contains(&"from".to_string()) {
+                let sel_idx = header.iter().position(|h| h == "select").unwrap_or(0);
+                let from_idx = header.iter().position(|h| h == "from").unwrap_or(1);
+                let where_idx = header.iter().position(|h| h == "where");
+
+                let row = &rows[1];
+                let sel_val = row.get(sel_idx).map(raw_cell_text).unwrap_or_else(|| "*".to_string());
+                let from_val = row.get(from_idx).map(raw_cell_text).unwrap_or_default();
+                let mut query = format!("SELECT {} FROM {}", sel_val, from_val);
+                if let Some(wi) = where_idx {
+                    if let Some(w_cell) = row.get(wi) {
+                        let w_str = raw_cell_text(w_cell);
+                        if !w_str.is_empty() {
+                            query.push_str(&format!(" WHERE {}", w_str));
+                        }
+                    }
+                }
+                query.push(';');
+                return query;
+            }
+        }
+    }
+    String::new()
+}
+
+fn raw_cell_text(node: &HirNode) -> String {
+    match node {
+        HirNode::String(s, _) => s.clone(),
+        HirNode::Symbol(s, _) => s.clone(),
+        HirNode::TypedLiteral { value, .. } => value.clone(),
+        other => format_rn_cell(other),
+    }
 }
 
 fn tuple_to_sql_table(table_name: &str, rows: &[Vec<HirNode>]) -> String {
@@ -825,29 +929,55 @@ fn tuple_to_sql_table(table_name: &str, rows: &[Vec<HirNode>]) -> String {
         return format!("CREATE TABLE {} ();", table_name);
     }
 
+    let clean_table_name = table_name
+        .strip_suffix("_schema")
+        .or_else(|| table_name.strip_suffix("_rows"))
+        .unwrap_or(table_name);
+
     let header: Vec<String> = rows[0]
         .iter()
-        .map(|c| format_rn_cell(c).trim().to_ascii_lowercase())
+        .map(|c| raw_cell_text(c).trim().to_ascii_lowercase())
         .collect();
 
-    // Check if this is a DDL Schema table (`col, type, ref, default` — Example 4)
-    let is_ddl_schema = header.contains(&"col".to_string()) && header.contains(&"type".to_string());
+    // Check if this is a DDL Schema table (`column/col, type, constraint/ref, default`)
+    let is_ddl_schema = (header.contains(&"col".to_string())
+        || header.contains(&"column".to_string()))
+        && header.contains(&"type".to_string());
 
     if is_ddl_schema {
-        let col_idx = header.iter().position(|h| h == "col").unwrap_or(0);
+        let col_idx = header
+            .iter()
+            .position(|h| h == "col" || h == "column")
+            .unwrap_or(0);
         let type_idx = header.iter().position(|h| h == "type").unwrap_or(1);
-        let ref_idx = header.iter().position(|h| h == "ref");
+        let ref_idx = header
+            .iter()
+            .position(|h| h == "ref" || h == "constraint");
         let def_idx = header.iter().position(|h| h == "default");
+
+        let max_col_width = rows
+            .iter()
+            .skip(1)
+            .filter_map(|r| r.get(col_idx))
+            .map(|c| raw_cell_text(c).len())
+            .max()
+            .unwrap_or(0);
 
         let mut col_defs = Vec::new();
         for row in rows.iter().skip(1) {
-            let col_name = row.get(col_idx).map(format_rn_cell).unwrap_or_default();
+            let col_name = row.get(col_idx).map(raw_cell_text).unwrap_or_default();
             let col_type = row
                 .get(type_idx)
-                .map(|c| format_rn_cell(c).to_ascii_uppercase())
+                .map(|c| raw_cell_text(c).to_ascii_uppercase())
                 .unwrap_or_else(|| "TEXT".to_string());
 
-            let mut parts = vec![format!("  {} {}", col_name, col_type)];
+            let padded_col = if table_name.ends_with("_schema") {
+                format!("{:<width$}", col_name, width = max_col_width)
+            } else {
+                col_name
+            };
+
+            let mut parts = vec![format!("  {} {}", padded_col, col_type)];
 
             if let Some(ri) = ref_idx {
                 if let Some(ref_cell) = row.get(ri) {
@@ -861,12 +991,17 @@ fn tuple_to_sql_table(table_name: &str, rows: &[Vec<HirNode>]) -> String {
                             }
                         }
                         _ => {
-                            let ref_str = format_rn_cell(ref_cell);
+                            let ref_str = raw_cell_text(ref_cell);
                             match ref_str.to_ascii_lowercase().as_str() {
                                 "pk" | "primary_key" => parts.push("PRIMARY KEY".to_string()),
                                 "not_null" | "notnull" => parts.push("NOT NULL".to_string()),
                                 "unique" => parts.push("UNIQUE".to_string()),
                                 "null" | "" => {}
+                                _ if ref_str.contains('.') => {
+                                    if let Some((ref_table, ref_col)) = ref_str.split_once('.') {
+                                        parts.push(format!("REFERENCES {}({})", ref_table, ref_col));
+                                    }
+                                }
                                 other => parts.push(other.to_ascii_uppercase()),
                             }
                         }
@@ -886,8 +1021,9 @@ fn tuple_to_sql_table(table_name: &str, rows: &[Vec<HirNode>]) -> String {
                         }
                         HirNode::String(s, _) if !s.is_empty() => {
                             if s.ends_with("()") {
-                                // Function call default like `gen_uuid()` (Law 1.2)
                                 parts.push(format!("DEFAULT {}", s));
+                            } else if s == "gen_uuid" {
+                                parts.push("DEFAULT gen_uuid()".to_string());
                             } else {
                                 parts.push(format!("DEFAULT '{}'", s.replace('\'', "''")));
                             }
@@ -902,37 +1038,52 @@ fn tuple_to_sql_table(table_name: &str, rows: &[Vec<HirNode>]) -> String {
 
         format!(
             "CREATE TABLE {} (\n{}\n);",
-            table_name,
+            clean_table_name,
             col_defs.join(",\n")
         )
+    } else if table_name.ends_with("_rows") {
+        // Pure DML `INSERT INTO` rows table (`users_rows (`)
+        let cols: Vec<String> = rows[0].iter().map(raw_cell_text).collect();
+        let mut value_tuples = Vec::new();
+        for row in rows.iter().skip(1) {
+            let vals: Vec<String> = row.iter().map(format_sql_value).collect();
+            value_tuples.push(format!("  ({})", vals.join(", ")));
+        }
+        format!(
+            "INSERT INTO {} ({}) VALUES\n{};",
+            clean_table_name,
+            cols.join(", "),
+            value_tuples.join(",\n")
+        )
     } else {
-        // Relational data table: emit CREATE TABLE + INSERT INTO rows
-        let cols: Vec<String> = rows[0].iter().map(format_rn_cell).collect();
+        let cols: Vec<String> = rows[0].iter().map(raw_cell_text).collect();
         let col_defs: Vec<String> = cols.iter().map(|c| format!("  {} TEXT", c)).collect();
         let mut sql = format!(
             "CREATE TABLE {} (\n{}\n);",
-            table_name,
+            clean_table_name,
             col_defs.join(",\n")
         );
 
         for row in rows.iter().skip(1) {
-            let vals: Vec<String> = row
-                .iter()
-                .map(|cell| match cell {
-                    HirNode::Null(_) => "NULL".to_string(),
-                    HirNode::Bool(b, _) => b.to_string().to_ascii_uppercase(),
-                    HirNode::Number(n, _) => format_number(*n),
-                    other => format!("'{}'", format_rn_cell(other).replace('\'', "''")),
-                })
-                .collect();
+            let vals: Vec<String> = row.iter().map(format_sql_value).collect();
             sql.push_str(&format!(
                 "\nINSERT INTO {} ({}) VALUES ({});",
-                table_name,
+                clean_table_name,
                 cols.join(", "),
                 vals.join(", ")
             ));
         }
         sql
+    }
+}
+
+fn format_sql_value(cell: &HirNode) -> String {
+    match cell {
+        HirNode::Null(_) => "NULL".to_string(),
+        HirNode::Bool(b, _) => b.to_string().to_ascii_uppercase(),
+        HirNode::Number(n, _) => format_number(*n),
+        HirNode::TypedLiteral { value, .. } => format!("'{}'", value.replace('\'', "''")),
+        other => format!("'{}'", raw_cell_text(other).replace('\'', "''")),
     }
 }
 
@@ -1186,13 +1337,32 @@ fn render_markdown_node(node: &HirNode, blocks: &mut Vec<String>) {
         HirNode::Tuple { rows, .. } => {
             blocks.push(render_markdown_table(rows));
         }
+        HirNode::Outliner { text, children, .. } => {
+            let mut lines = vec![format!("- {}", extract_markdown_inline(text))];
+            for c in children {
+                lines.push(format!("  - {}", extract_markdown_inline(c)));
+            }
+            blocks.push(lines.join("\n"));
+        }
         HirNode::Form { map, .. } => {
             for (k, v) in map {
                 match (k.as_str(), v) {
-                    ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", _) => {
-                        let level = k[1..].parse::<usize>().unwrap_or(1);
+                    ("title" | "part" | "h1", _) => {
+                        blocks.push(format!("# {}", extract_markdown_inline(v)));
+                    }
+                    ("subtitle" | "section" | "h2", _) => {
+                        blocks.push(format!("## {}", extract_markdown_inline(v)));
+                    }
+                    ("topic" | "h3", _) => {
+                        blocks.push(format!("### {}", extract_markdown_inline(v)));
+                    }
+                    ("h4" | "h5" | "h6", _) => {
+                        let level = k[1..].parse::<usize>().unwrap_or(4);
                         let hashes = "#".repeat(level);
                         blocks.push(format!("{} {}", hashes, extract_markdown_inline(v)));
+                    }
+                    ("quote", _) => {
+                        blocks.push(format!("> {}", extract_markdown_inline(v)));
                     }
                     ("p", _) => {
                         blocks.push(extract_markdown_inline(v));
@@ -1227,7 +1397,9 @@ fn render_markdown_node(node: &HirNode, blocks: &mut Vec<String>) {
         HirNode::Triad { name, body, .. } => {
             if let Some(b) = body {
                 for item in b {
-                    if name.starts_with('h') && name.len() == 2 {
+                    if name == "title" || name == "part" || name == "h1" {
+                        blocks.push(format!("# {}", extract_markdown_inline(item)));
+                    } else if name.starts_with('h') && name.len() == 2 {
                         let level = name[1..].parse::<usize>().unwrap_or(1);
                         blocks.push(format!(
                             "{} {}",
@@ -1261,23 +1433,34 @@ fn render_markdown_segments(segments: &[StreamSegment]) -> String {
             StreamSegment::Quoted(q) => out.push_str(q),
             StreamSegment::InlineTag {
                 tag,
+                id,
+                classes,
                 attrs,
                 children,
-                ..
             } => {
                 let inner = render_markdown_segments(children);
                 match tag.as_str() {
-                    "b" | "strong" => out.push_str(&format!("**{}**", inner)),
-                    "i" | "em" => out.push_str(&format!("*{}*", inner)),
-                    "code" => out.push_str(&format!("`{}`", inner)),
-                    "a" => {
+                    "b" | "strong" if id.is_none() && classes.is_empty() && attrs.is_empty() => {
+                        out.push_str(&format!("**{}**", inner))
+                    }
+                    "i" | "em" if id.is_none() && classes.is_empty() && attrs.is_empty() => {
+                        out.push_str(&format!("*{}*", inner))
+                    }
+                    "code" if id.is_none() && classes.is_empty() && attrs.is_empty() => {
+                        out.push_str(&format!("`{}`", inner))
+                    }
+                    "a" if id.is_none() && classes.is_empty() && attrs.len() <= 1 => {
                         let href = attrs
                             .get("href")
-                            .map(format_rn_cell)
+                            .map(raw_cell_text)
                             .unwrap_or_else(|| "#".to_string());
                         out.push_str(&format!("[{}]({})", inner, href));
                     }
-                    _ => out.push_str(&inner),
+                    _ => {
+                        // Inline HTML tag fallback (`span{class highlight}[inline]` -> `<span class="highlight">inline</span>`)
+                        let attr_str = build_html_attrs(id.as_deref(), classes, Some(attrs));
+                        out.push_str(&format!("<{}{}>{}</{}>", tag, attr_str, inner, tag));
+                    }
                 }
             }
         }
@@ -1426,4 +1609,240 @@ fn to_snake_case(s: &str) -> String {
         }
     }
     out
+}
+
+// ============================================================================
+// 10. CSS / SCSS Codegen & Portal (`".btn" {`, `styles Scss {`)
+// ============================================================================
+
+pub fn to_scss(doc: &HirDocument) -> String {
+    let mut out = String::new();
+    if let HirNode::Form { map, .. } = &doc.root {
+        for (selector, node) in map {
+            render_scss_rule(selector, node, 0, &mut out);
+        }
+    }
+    out
+}
+
+fn render_scss_rule(selector: &str, node: &HirNode, indent: usize, out: &mut String) {
+    let pad = "  ".repeat(indent);
+    let prop_pad = "  ".repeat(indent + 1);
+    if let HirNode::Form { map, .. } = node {
+        out.push_str(&format!("{}{} {{\n", pad, selector));
+        for (k, v) in map {
+            match v {
+                HirNode::Form { .. } => {
+                    render_scss_rule(k, v, indent + 1, out);
+                }
+                HirNode::Tuple { rows, .. } => {
+                    let vals: Vec<String> = rows
+                        .iter()
+                        .flat_map(|r| r.iter().map(raw_cell_text))
+                        .collect();
+                    out.push_str(&format!("{}{}: {};\n", prop_pad, k, vals.join(" ")));
+                }
+                other => {
+                    out.push_str(&format!("{}{}: {};\n", prop_pad, k, raw_cell_text(other)));
+                }
+            }
+        }
+        out.push_str(&format!("{}}}\n", pad));
+    }
+}
+
+fn render_scss_portal_inline(node: &HirNode) -> String {
+    let mut rules = Vec::new();
+    if let HirNode::Form { map, .. } = node {
+        for (sel, child) in map {
+            collect_flattened_css_rules(sel, child, &mut rules);
+        }
+    }
+    rules.join("\n")
+}
+
+fn collect_flattened_css_rules(selector: &str, node: &HirNode, rules: &mut Vec<String>) {
+    if let HirNode::Form { map, .. } = node {
+        let mut props = Vec::new();
+        let mut nested = Vec::new();
+        for (k, v) in map {
+            match v {
+                HirNode::Form { .. } => {
+                    let sub_sel = if k.starts_with('&') {
+                        format!("{}{}", selector, &k[1..])
+                    } else {
+                        format!("{} {}", selector, k)
+                    };
+                    nested.push((sub_sel, v));
+                }
+                HirNode::Tuple { rows, .. } => {
+                    let vals: Vec<String> = rows
+                        .iter()
+                        .flat_map(|r| r.iter().map(raw_cell_text))
+                        .collect();
+                    props.push(format!("{}: {};", k, vals.join(" ")));
+                }
+                other => {
+                    props.push(format!("{}: {};", k, raw_cell_text(other)));
+                }
+            }
+        }
+        if !props.is_empty() {
+            rules.push(format!("{} {{ {} }}", selector, props.join(" ")));
+        }
+        for (sub_sel, sub_node) in nested {
+            collect_flattened_css_rules(&sub_sel, sub_node, rules);
+        }
+    }
+}
+
+fn render_html_compact_node(node: &HirNode, out: &mut String) {
+    match node {
+        HirNode::String(s, _) => out.push_str(&escape_html(s)),
+        HirNode::RichText { segments, .. } => out.push_str(&render_html_segments(segments)),
+        HirNode::Stream { items, .. } => {
+            for item in items {
+                render_html_compact_node(item, out);
+            }
+        }
+        HirNode::Triad {
+            name,
+            id,
+            classes,
+            props,
+            body,
+            ..
+        } => {
+            let attr_str = build_html_attrs(id.as_deref(), classes, props.as_ref());
+            if let Some(b) = body {
+                out.push_str(&format!("<{}{}>", name, attr_str));
+                for child in b {
+                    render_html_compact_node(child, out);
+                }
+                out.push_str(&format!("</{}>", name));
+            } else {
+                out.push_str(&format!("<{}{} />", name, attr_str));
+            }
+        }
+        HirNode::Form { map, .. } => {
+            for (k, v) in map {
+                let (clean_tag, id_opt, classes) = crate::parser::split_css_shorthand(k);
+                let attr_str = build_html_attrs(id_opt.as_deref(), &classes, None);
+                out.push_str(&format!("<{}{}>", clean_tag, attr_str));
+                render_html_compact_node(v, out);
+                out.push_str(&format!("</{}>", clean_tag));
+            }
+        }
+        _ => {}
+    }
+}
+
+// ============================================================================
+// 11. Docker & Terraform Infrastructure Codegen (`container {`, `resource.*`)
+// ============================================================================
+
+pub fn to_terraform_and_docker(doc: &HirDocument) -> String {
+    let mut sections = Vec::new();
+    if let HirNode::Form { map, .. } = &doc.root {
+        if let Some(HirNode::Form { map: c_map, .. }) = map.get("container") {
+            let mut df = vec![String::from("# Dockerfile:")];
+            for (k, v) in c_map {
+                let upper = k.to_ascii_uppercase();
+                match (upper.as_str(), v) {
+                    ("COPY", HirNode::Tuple { rows, .. }) => {
+                        let args: Vec<String> = rows
+                            .iter()
+                            .flat_map(|r| r.iter().map(raw_cell_text))
+                            .collect();
+                        df.push(format!("COPY {}", args.join(" ")));
+                    }
+                    ("ENV", HirNode::Form { map: env_map, .. }) => {
+                        let pairs: Vec<String> = env_map
+                            .iter()
+                            .map(|(ek, ev)| format!("{}={}", ek, raw_cell_text(ev)))
+                            .collect();
+                        df.push(format!("ENV {}", pairs.join(" ")));
+                    }
+                    ("CMD", HirNode::Tuple { rows, .. }) => {
+                        let args: Vec<String> = rows
+                            .iter()
+                            .flat_map(|r| r.iter().map(|c| format!("\"{}\"", raw_cell_text(c))))
+                            .collect();
+                        df.push(format!("CMD [{}]", args.join(", ")));
+                    }
+                    (_, HirNode::Raw { content, .. }) => {
+                        df.push(format!("{} {}", upper, content));
+                    }
+                    (_, other) => {
+                        df.push(format!("{} {}", upper, raw_cell_text(other)));
+                    }
+                }
+            }
+            sections.push(df.join("\n"));
+        }
+
+        if let Some(HirNode::Form { map: res_types, .. }) = map.get("resource") {
+            let mut tf = vec![String::from("# Terraform (.tf):")];
+            for (res_type, res_instances) in res_types {
+                if let HirNode::Form { map: inst_map, .. } = res_instances {
+                    for (res_name, body_node) in inst_map {
+                        tf.push(format!("resource \"{}\" \"{}\" {{", res_type, res_name));
+                        render_tf_body(body_node, 1, &mut tf);
+                        tf.push(String::from("}"));
+                    }
+                }
+            }
+            sections.push(tf.join("\n"));
+        }
+    }
+    sections.join("\n\n") + "\n"
+}
+
+fn render_tf_body(node: &HirNode, indent: usize, lines: &mut Vec<String>) {
+    let pad = "  ".repeat(indent);
+    if let HirNode::Form { map, .. } = node {
+        let max_scalar_key = map
+            .iter()
+            .filter(|(_, v)| !matches!(v, HirNode::Form { .. }))
+            .map(|(k, _)| k.len())
+            .max()
+            .unwrap_or(0);
+
+        for (k, v) in map {
+            match v {
+                HirNode::Form { .. } => {
+                    lines.push(format!("{}{} {{", pad, k));
+                    render_tf_body(v, indent + 1, lines);
+                    lines.push(format!("{}}}", pad));
+                }
+                HirNode::Bool(b, _) => {
+                    lines.push(format!(
+                        "{}{:<width$} = {}",
+                        pad,
+                        k,
+                        b,
+                        width = max_scalar_key
+                    ));
+                }
+                HirNode::Number(n, _) => {
+                    lines.push(format!(
+                        "{}{:<width$} = {}",
+                        pad,
+                        k,
+                        format_number(*n),
+                        width = max_scalar_key
+                    ));
+                }
+                other => {
+                    lines.push(format!(
+                        "{}{:<width$} = \"{}\"",
+                        pad,
+                        k,
+                        raw_cell_text(other),
+                        width = max_scalar_key
+                    ));
+                }
+            }
+        }
+    }
 }

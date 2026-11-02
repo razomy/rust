@@ -1,5 +1,5 @@
 use razomy_notation::*;
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[test]
 fn test_spec_file_notaion_rl_parses_cleanly() {
@@ -10,101 +10,152 @@ fn test_spec_file_notaion_rl_parses_cleanly() {
         "Unexpected diagnostics in notaion.rl: {:?}",
         doc.diagnostics
     );
+    assert_eq!(doc.root_mode, lexer::ContextMode::Stream);
     let json_val = doc.root.to_canonical_json();
-    assert_eq!(json_val["name"], "Razomy Notation");
-    assert_eq!(json_val["version"], "13.0");
-    assert_eq!(json_val["extension"], ".rn");
-    assert!(json_val["tags"].is_array());
-    assert!(json_val["description"]
-        .as_str()
-        .unwrap()
-        .contains("PART I. THE 5 ONTOLOGICAL AXIOMS"));
+    let arr = json_val.as_array().expect("Root of notaion.rl is a Stream []");
+    assert!(!arr.is_empty());
+
+    // First item in notaion.rl is `meta { ... }`
+    let meta = &arr[0]["meta"];
+    assert_eq!(meta["name"], "Razomy Notation");
+    assert_eq!(meta["version"], "0.1.0");
+    assert_eq!(meta["extension"], ".rn");
+    assert_eq!(meta["schema"], "Md");
+    assert!(meta["tags"].is_array());
+    assert_eq!(meta["tags"][0], "ONTOLOGICAL-DATA");
 }
 
 #[test]
-fn test_v13_unified_node_pest_grammar_recognizes_all_constructs() {
+fn test_unified_node_pest_grammar_recognizes_all_constructs() {
     let samples = [
         "# Top-level comment",
-        "article#main { lang en } [ Hello b[world] ]",
+        "article{id post, class featured, lang en} [",
+        "Button{variant 'primary}(label) [",
         "p [ Fast b[zero-noise] notation with a{href /docs}[links] and `arr[0]` ]",
         "port 8080",
-        "Ingress -> (Auth, Api) { protocol grpc, tls true }",
-        "..resource.aws_s3_bucket.logs { enabled true }",
-        "Prod & .Base / debug { replicas 5 }",
-        "container(node:22-alpine) { workdir /app }",
+        "prod & base / debug {",
+        "query Sql (",
+        "styles Scss {",
+        "created_at Date\"12.12.23\"",
     ];
     for line in samples {
         assert!(
             parser::parse_unified_line_ast(line),
-            "Failed to parse v13 unified_node line: {}",
+            "Failed to parse unified_node line: {}",
             line
         );
     }
 }
 
 #[test]
-fn test_example_1_markdown_replacement_and_codegen() {
-    let rn_src = r#"h1 [ Razomy Guide ]
-p [ Fast b[zero-noise] notation with i[inline] tags and `arr[0]` code. ]
-ul [
- No closing tags
- 1-space indentation
-benchmarks (
- Format, Tokens, Notes
- JSON,   140,    "Verbose, requires quotes"
- RN,     62,     "Compact, zero-noise"
-snippet "ts
- const x = 42;
+fn test_canonical_example_1_plain_text_and_outliner_notes() {
+    let rn_src = r#"how my day?
+ good
+todo list
+ a
+ b
+ c
 "#;
     let doc = parse_rn(rn_src);
-    let md = generate(&doc, Format::Markdown).unwrap();
-    assert!(md.contains("# Razomy Guide"));
-    assert!(md.contains("Fast **zero-noise** notation with *inline* tags and `arr[0]` code."));
-    assert!(md.contains("- No closing tags"));
-    assert!(md.contains("| JSON   | 140    | Verbose, requires quotes |"));
-    assert!(md.contains("```ts\nconst x = 42;\n```"));
-
-    // Roundtrip import from Markdown
-    let imported = import_from(&md, Format::Markdown).unwrap();
-    let rn_out = generate(&imported, Format::Rn).unwrap();
-    assert!(rn_out.contains("h1 [ Razomy Guide ]"));
-    assert!(rn_out.contains("const x = 42;"));
+    assert!(doc.diagnostics.is_empty());
+    let json_val = doc.root.to_canonical_json();
+    let expected = json!([
+        { "text": "how my day?", "children": ["good"] },
+        { "text": "todo list", "children": ["a", "b", "c"] }
+    ]);
+    assert_eq!(json_val, expected);
 }
 
 #[test]
-fn test_example_2_html_dom_bijection() {
-    let rn_src = r#"article#post { lang en } [
+fn test_canonical_example_2_markdown_document_flat_headings_tables_and_col0_code() {
+    let rn_src = r#"title Razomy Guide
+
+Fast b[zero-noise] notation a(/docs)[links], with span{class highlight}[inline] tags and `arr[0]` code.
+
+ul [
+ No closing tags
+ 1-space indentation
+
+benchmarks (
+ Format, Tokens, Notes
+ JSON,   140,    "Verbose, requires quotes"
+ RN,     48,     "Ultra-compact, lean parser"
+
+code ts"
+const x = 42;
+function hello() {
+  return x;
+}
+"
+"#;
+    let doc = parse_rn(rn_src);
+    assert!(doc.diagnostics.is_empty());
+    let md = generate(&doc, Format::Markdown).unwrap();
+
+    let expected_md = r#"# Razomy Guide
+
+Fast **zero-noise** notation [links](/docs), with <span class="highlight">inline</span> tags and `arr[0]` code.
+
+- No closing tags
+- 1-space indentation
+
+| Format | Tokens | Notes                      |
+| ------ | ------ | -------------------------- |
+| JSON   | 140    | Verbose, requires quotes   |
+| RN     | 48     | Ultra-compact, lean parser |
+
+```ts
+const x = 42;
+function hello() {
+  return x;
+}
+```
+"#;
+    assert_eq!(md, expected_md);
+}
+
+#[test]
+fn test_canonical_example_3_html_dom_tree_attached_props() {
+    let rn_src = r#"article{id post, class featured, lang en} [
  h1 [ Why Razomy? ]
  p [ Read the a{href /docs, target _blank}[documentation]. ]
 "#;
     let doc = parse_rn(rn_src);
+    assert!(doc.diagnostics.is_empty());
     let html = generate(&doc, Format::Html).unwrap();
-    assert!(html.contains("<article id=\"post\" lang=\"en\">"));
-    assert!(html.contains("<h1>Why Razomy?</h1>"));
-    assert!(html.contains("<p>Read the <a href=\"/docs\" target=\"_blank\">documentation</a>.</p>"));
+    let expected_html = r#"<article id="post" class="featured" lang="en">
+  <h1>Why Razomy?</h1>
+  <p>Read the <a href="/docs" target="_blank">documentation</a>.</p>
+</article>
+"#;
+    assert_eq!(html, expected_html);
 
     // Import HTML back into RN
     let imported = import_from(&html, Format::Html).unwrap();
     let rn_roundtrip = generate(&imported, Format::Rn).unwrap();
-    assert!(rn_roundtrip.contains("article#post"));
+    assert!(rn_roundtrip.contains("article{id post, class featured, lang en}"));
     assert!(rn_roundtrip.contains("a{href /docs, target _blank}[documentation]"));
 }
 
 #[test]
-fn test_example_3_yaml_json_config_and_context_inertia() {
-    let rn_src = r#"cluster {
- primary
-  database
-   engine postgres
-   port 5432
-   token
-   empty_str ""
-   extra_tags ()
-   steps [
-    1. Check replication lag
-    2. Promote primary node
+fn test_canonical_example_4_json_yaml_config_dot_path_typed_literals_and_col0_strings() {
+    let rn_src = r#"cluster.primary.database {
+ engine postgres
+ port 5432
+ created_at Date"12.12.23"
+ token
+ empty_str ""
+ extra_tags ()
+ welcome_msg 1"
+Line 1 starts at Column 0 (zero ambiguity with parent indentation!).
+  Line 2 has exactly 2 leading spaces of actual text content.
+"1
+ steps [
+  Check replication lag
+  Promote primary node
 "#;
     let doc = parse_rn(rn_src);
+    assert!(doc.diagnostics.is_empty());
     let json_val = doc.root.to_canonical_json();
     let expected = json!({
         "cluster": {
@@ -112,12 +163,14 @@ fn test_example_3_yaml_json_config_and_context_inertia() {
                 "database": {
                     "engine": "postgres",
                     "port": 5432,
+                    "created_at": "12.12.23",
                     "token": null,
                     "empty_str": "",
                     "extra_tags": [],
+                    "welcome_msg": "Line 1 starts at Column 0 (zero ambiguity with parent indentation!).\n  Line 2 has exactly 2 leading spaces of actual text content.",
                     "steps": [
-                        "1. Check replication lag",
-                        "2. Promote primary node"
+                        "Check replication lag",
+                        "Promote primary node"
                     ]
                 }
             }
@@ -125,147 +178,202 @@ fn test_example_3_yaml_json_config_and_context_inertia() {
     });
     assert_eq!(json_val, expected);
 
-    // Export to YAML & JSON5 and import back
+    // Export to YAML and import back
     let yaml_str = generate(&doc, Format::Yaml).unwrap();
     let from_yaml_doc = import_from(&yaml_str, Format::Yaml).unwrap();
     assert_eq!(from_yaml_doc.root.to_canonical_json(), expected);
 }
 
 #[test]
-fn test_example_4_sql_ddl_and_proto_codegen_and_import() {
-    let rn_src = r#"Users (
- col,    type, ref,        default
- id,     uuid, pk,         gen_uuid()
- org_id, uuid, -> Orgs.id, null
- role,   text, not_null,   member
+fn test_canonical_example_5_relational_schema_and_tabular_data_sql() {
+    let rn_src = r#"users_schema (
+ column, type, constraint, default
+ id,     Uuid, 'pk,        gen_uuid
+ org_id, Uuid, Orgs.id,    null
+ role,   Text, 'not_null,  member
+
+users_rows (
+ id,  org_id, role,   created_at
+ u_1, o_10,   admin,  Date"12.12.23"
+ u_2, o_10,   member, Date"13.12.23"
 "#;
     let doc = parse_rn(rn_src);
+    assert!(doc.diagnostics.is_empty());
     let sql = generate(&doc, Format::Sql).unwrap();
-    assert!(sql.contains("CREATE TABLE Users"));
-    assert!(sql.contains("id UUID PRIMARY KEY DEFAULT gen_uuid()"));
-    assert!(sql.contains("org_id UUID REFERENCES Orgs(id) DEFAULT NULL"));
-    assert!(sql.contains("role TEXT NOT NULL DEFAULT 'member'"));
-
-    // Import SQL back into RN
-    let imported_sql = import_from(&sql, Format::Sql).unwrap();
-    let rn_from_sql = generate(&imported_sql, Format::Rn).unwrap();
-    assert!(rn_from_sql.contains("-> Orgs.id"));
-    assert!(rn_from_sql.contains("gen_uuid()"));
-
-    // Generate Protobuf v3 schema from the same table
-    let proto = generate(&doc, Format::Proto).unwrap();
-    assert!(proto.contains("syntax = \"proto3\";"));
-    assert!(proto.contains("message Users"));
-    assert!(proto.contains("string id = 1;"));
+    let expected_sql = r#"CREATE TABLE users (
+  id     UUID PRIMARY KEY DEFAULT gen_uuid(),
+  org_id UUID REFERENCES Orgs(id) DEFAULT NULL,
+  role   TEXT NOT NULL DEFAULT 'member'
+);
+INSERT INTO users (id, org_id, role, created_at) VALUES
+  ('u_1', 'o_10', 'admin', '12.12.23'),
+  ('u_2', 'o_10', 'member', '13.12.23');
+"#;
+    assert_eq!(sql, expected_sql);
 }
 
 #[test]
-fn test_example_5_css_literal_hex_and_leading_dot() {
-    let rn_src = r#"styles {
- .btn {
-  background #111111
-  padding (8px, 16px)
-  &:hover { background #222222 }
+fn test_canonical_example_6_css_scss_styles() {
+    let rn_src = r#"".btn" {
+ background-color #111111
+ padding (8px, 16px)
+ "&:hover" { background-color #222222 }
 "#;
     let doc = parse_rn(rn_src);
-    let json_val = doc.root.to_canonical_json();
-    assert_eq!(json_val["styles"][".btn"]["background"], "#111111");
-    assert_eq!(
-        json_val["styles"][".btn"]["padding"],
-        json!(["8px", "16px"])
-    );
-    assert_eq!(
-        json_val["styles"][".btn"]["&:hover"]["background"],
-        "#222222"
-    );
+    assert!(doc.diagnostics.is_empty());
+    let scss = generate(&doc, Format::Scss).unwrap();
+    let expected_scss = r#".btn {
+  background-color: #111111;
+  padding: 8px 16px;
+  &:hover {
+    background-color: #222222;
+  }
+}
+"#;
+    assert_eq!(scss, expected_scss);
 }
 
 #[test]
-fn test_example_6_dockerfile_parameterized_triad_and_standalone_dot() {
-    let rn_src = r#"container(node:22-alpine) {
+fn test_canonical_example_7_docker_and_terraform_infrastructure() {
+    let rn_src = r#"container {
+ from node:22-alpine
  workdir /app
  copy (., /app)
- run "sh
-  npm ci --omit=dev
+ run sh1"
+npm ci --omit=dev
+"1
  env { NODE_ENV production, PORT 8080 }
  cmd (node, server.js)
-"#;
-    let doc = parse_rn(rn_src);
-    let json_val = doc.root.to_canonical_json();
-    assert_eq!(json_val["container"]["()"], json!(["node:22-alpine"]));
-    assert_eq!(json_val["container"]["copy"], json!([".", "/app"]));
-    assert_eq!(json_val["container"]["run"], "npm ci --omit=dev");
-    assert_eq!(json_val["container"]["env"]["PORT"], 8080);
-}
 
-#[test]
-fn test_example_7_terraform_and_zero_drift_margin_reset() {
-    let rn_src = r#"resource(aws_s3_bucket, logs) {
+resource.aws_s3_bucket.logs {
  bucket my-corp-logs
  acl private
-
-..resource.aws_s3_bucket.logs {
- lifecycle_rule {
+ lifecycle_rule.expiration {
   enabled true
-  expiration { days 90 }
+  days 90
 "#;
     let doc = parse_rn(rn_src);
-    let json_val = doc.root.to_canonical_json();
-    let logs = &json_val["resource"]["aws_s3_bucket"]["logs"];
-    assert_eq!(logs["bucket"], "my-corp-logs");
-    assert_eq!(logs["acl"], "private");
-    assert_eq!(logs["lifecycle_rule"]["enabled"], true);
-    assert_eq!(logs["lifecycle_rule"]["expiration"]["days"], 90);
+    assert!(doc.diagnostics.is_empty());
+    let tf = generate(&doc, Format::Terraform).unwrap();
+    let expected_tf = r#"# Dockerfile:
+FROM node:22-alpine
+WORKDIR /app
+COPY . /app
+RUN npm ci --omit=dev
+ENV NODE_ENV=production PORT=8080
+CMD ["node", "server.js"]
+
+# Terraform (.tf):
+resource "aws_s3_bucket" "logs" {
+  bucket = "my-corp-logs"
+  acl    = "private"
+  lifecycle_rule {
+    expiration {
+      enabled = true
+      days    = 90
+    }
+  }
+}
+"#;
+    assert_eq!(tf, expected_tf);
 }
 
 #[test]
-fn test_example_8_mermaid_hyperedges_and_algebraic_overlays() {
+fn test_canonical_example_8_algebraic_inheritance_merge_xor_and_strip() {
     let rn_src = r#"mesh {
- Ingress -> (Auth, Api) { protocol grpc, tls true }
- Base { timeout 30, retries 3, debug true }
- Prod & .Base / debug {
+ ingress {
+  to (auth, api)
+  protocol grpc
+  tls true
+ base { timeout 30, retries 3, debug true }
+ prod & base / debug {
   replicas 5
+ backup_timeout & base.timeout
+ xor_test & base ^ prod
 "#;
     let doc = parse_rn(rn_src);
     assert!(doc.diagnostics.is_empty());
     let json_val = doc.root.to_canonical_json();
 
-    // Check algebraic overlay `Prod & .Base / debug`
-    let prod = &json_val["mesh"]["Prod"];
-    assert_eq!(prod["timeout"], 30);
-    assert_eq!(prod["retries"], 3);
-    assert_eq!(prod["replicas"], 5);
-    assert!(
-        prod.get("debug").is_none(),
-        "debug key should be omitted by `/ debug`"
+    assert_eq!(
+        json_val["mesh"]["ingress"],
+        json!({ "to": ["auth", "api"], "protocol": "grpc", "tls": true })
     );
-
-    // Check Mermaid flowchart generation
-    let mermaid = generate(&doc, Format::Mermaid).unwrap();
-    assert!(mermaid.contains("Ingress -->|\"protocol: grpc, tls: true\"| Auth"));
-    assert!(mermaid.contains("Ingress -->|\"protocol: grpc, tls: true\"| Api"));
-
-    // Import Mermaid back
-    let imported_mmd = import_from(&mermaid, Format::Mermaid).unwrap();
-    let mmd_json = imported_mmd.root.to_canonical_json();
-    assert!(mmd_json["graph"]["->"].is_array());
+    assert_eq!(
+        json_val["mesh"]["base"],
+        json!({ "timeout": 30, "retries": 3, "debug": true })
+    );
+    assert_eq!(
+        json_val["mesh"]["prod"],
+        json!({ "timeout": 30, "retries": 3, "replicas": 5 })
+    );
+    assert_eq!(json_val["mesh"]["backup_timeout"], 30);
+    // `base ^ prod` retains only keys in base or prod, not both (`debug` from base, `replicas` from prod)
+    assert_eq!(
+        json_val["mesh"]["xor_test"],
+        json!({ "debug": true, "replicas": 5 })
+    );
 }
 
 #[test]
-fn test_safe_auto_typing_and_reserved_key_escaping() {
+fn test_canonical_example_9_multi_schema_component_portals() {
+    let rn_src = r#"UserCard {
+ props {
+  id Uuid
+  theme dark
+
+ query Sql (
+  select, from,  where
+  "*",    users, "id = :id"
+
+ view Html [
+  div{class card} [
+   h2 [ User Profile ]
+   p [ Welcome back! ]
+
+ styles Scss {
+  ".card" {
+   background-color #111111
+   "&:hover" { background-color #222222 }
+"#;
+    let doc = parse_rn(rn_src);
+    assert!(doc.diagnostics.is_empty());
+    let json_val = doc.root.to_canonical_json();
+    let expected = json!({
+        "UserCard": {
+            "props": { "id": "Uuid", "theme": "dark" },
+            "query": "SELECT * FROM users WHERE id = :id;",
+            "view": "<div class=\"card\"><h2>User Profile</h2><p>Welcome back!</p></div>",
+            "styles": ".card { background-color: #111111; }\n.card:hover { background-color: #222222; }"
+        }
+    });
+    assert_eq!(json_val, expected);
+}
+
+#[test]
+fn test_scalar_auto_typing_hex_scientific_symbols_and_empty_cells() {
     let rn_src = r#"config {
  zip_code 01234
- semver 1.2.0
+ semver 0.1.0
  port 8080
  ratio -3.14
-"(())" literal_parens
+ hex_val 0xFF
+ sci_val 1e-5
+ tag 'pk
+ none_val None
+ sparse_row (1, , 3)
 "#;
     let doc = parse_rn(rn_src);
     let json_val = doc.root.to_canonical_json();
     assert_eq!(json_val["config"]["zip_code"], "01234");
-    assert_eq!(json_val["config"]["semver"], "1.2.0");
+    assert_eq!(json_val["config"]["semver"], "0.1.0");
     assert_eq!(json_val["config"]["port"], 8080);
     assert_eq!(json_val["config"]["ratio"], -3.14);
+    assert_eq!(json_val["config"]["hex_val"], 255);
+    assert_eq!(json_val["config"]["sci_val"], 1e-5);
+    assert_eq!(json_val["config"]["tag"], "pk");
+    assert_eq!(json_val["config"]["none_val"], Value::Null);
+    assert_eq!(json_val["config"]["sparse_row"], json!([1, null, 3]));
 }
 
 #[test]

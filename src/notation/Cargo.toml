@@ -1,8 +1,8 @@
 [package]
 name = "razomy-notation"
-version = "14.0.0"
+version = "0.1.0"
 edition = "2021"
-description = "Razomy Notation (.rn) v13.0 — Ultra-Lean Unified Node Parser, HIR, LSP, Formatter, and Multi-Format Codegen/Importers (JSON, JSON5, YAML, Proto, Mermaid, SQL, HTML, Markdown, CSV)"
+description = "Razomy Notation (.rn) v0.1.0 — Layer 0 Universal Stream Root, Symmetric Triad, Schema Portals, Column-0 Strings, Algebraic Composition (&, ^, /), Outliner, LSP, and Multi-Format Codegen/Importers"
 license = "MIT"
 
 [lib]

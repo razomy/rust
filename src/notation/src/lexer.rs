@@ -165,46 +165,20 @@ pub fn pre_lex(source: &str) -> PreLexResult {
             continue;
         }
 
-        // Law 5.1: Ranked Raw Fence (`rN" ... "N`)
-        if let Some((head_prefix, rank, after_open)) = detect_ranked_raw_fence(trimmed) {
+        // Axiom IV: Column-0 Multiline Raw Strings (`(tag)?(N)?"` at end of line, closed by `"(N)?` at Column 0)
+        if let Some((head_prefix, lang_tag, rank_opt)) = detect_col0_raw_open(trimmed) {
             let start_line = idx;
-            let close_marker = format!("\"{}", rank);
+            let close_marker = match rank_opt {
+                Some(r) => format!("\"{}", r),
+                None => "\"".to_string(),
+            };
             let mut content_lines = Vec::new();
-
-            if let Some(pos) = after_open.find(&close_marker) {
-                // Single-line ranked fence
-                let inner = &after_open[..pos];
-                lines.push(LexedLine {
-                    line_idx: start_line,
-                    indent,
-                    head_text: head_prefix,
-                    original_trimmed: trimmed.to_string(),
-                    activation: IndentActivation::Leaf,
-                    raw_payload: Some(RawPayload {
-                        lang: String::new(),
-                        content: inner.to_string(),
-                        rank: Some(rank),
-                    }),
-                    is_comment: false,
-                });
-                idx += 1;
-                continue;
-            }
-
-            if !after_open.is_empty() {
-                content_lines.push(after_open.to_string());
-            }
-
             idx += 1;
             let mut closed = false;
             while idx < total {
                 let cur = raw_lines[idx];
-                if cur.trim_end().ends_with(&close_marker) {
-                    let trimmed_end = cur.trim_end();
-                    let before_close = &trimmed_end[..trimmed_end.len() - close_marker.len()];
-                    if !before_close.trim().is_empty() {
-                        content_lines.push(before_close.to_string());
-                    }
+                // Closing `"(N)?` placed strictly alone on its own line at Column 0
+                if cur.trim_end() == close_marker {
                     closed = true;
                     idx += 1;
                     break;
@@ -219,7 +193,10 @@ pub fn pre_lex(source: &str) -> PreLexResult {
                     col: indent,
                     end_col: line_str.len(),
                     severity: DiagnosticSeverity::Error,
-                    message: format!("Unclosed ranked raw fence r{}\"...\"{}", rank, rank),
+                    message: format!(
+                        "Unclosed Column-0 multiline raw string; expected `{}` at Column 0",
+                        close_marker
+                    ),
                     code: "RN002".to_string(),
                 });
             }
@@ -231,9 +208,9 @@ pub fn pre_lex(source: &str) -> PreLexResult {
                 original_trimmed: trimmed.to_string(),
                 activation: IndentActivation::Leaf,
                 raw_payload: Some(RawPayload {
-                    lang: String::new(),
+                    lang: lang_tag,
                     content: content_lines.join("\n"),
-                    rank: Some(rank),
+                    rank: rank_opt,
                 }),
                 is_comment: false,
             });
@@ -397,46 +374,89 @@ fn peek_next_non_empty_indent(raw_lines: &[&str], start_idx: usize) -> Option<us
     None
 }
 
-/// Detects `rN" ...` ranked raw fence at the start or after a key on a line.
-fn detect_ranked_raw_fence(trimmed: &str) -> Option<(String, usize, String)> {
-    // Either starts with `r<digits>"` or `<key> r<digits>"`
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
+/// Detects Axiom IV Column-0 Multiline Raw String opener `(tag)?(N)?"` at the end of a line.
+/// Examples:
+/// - `code ts"` -> head=`"code"`, lang=`"ts"`, rank=`None`
+/// - `welcome_msg 1"` -> head=`"welcome_msg"`, lang=`""`, rank=`Some(1)`
+/// - `run sh1"` -> head=`"run"`, lang=`"sh"`, rank=`Some(1)`
+/// - `input rn2"` -> head=`"input"`, lang=`"rn"`, rank=`Some(2)`
+/// - `msg "` -> head=`"msg"`, lang=`""`, rank=`None`
+/// Does NOT match closed single-line quotes (`""`, `"hello"`, `Date"12.12.23"`).
+fn detect_col0_raw_open(trimmed: &str) -> Option<(String, String, Option<usize>)> {
+    if !trimmed.ends_with('"') {
+        return None;
+    }
+
+    // Count unescaped quotes outside backticks; if even, the trailing `"` closes an inline string!
+    let chars: Vec<(usize, char)> = trimmed.char_indices().collect();
     let mut in_quotes = false;
     let mut in_backticks = false;
+    let mut last_open_quote_byte = None;
 
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'\\' && in_quotes {
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte_pos, ch) = chars[i];
+        if ch == '\\' && in_quotes {
             i += 2;
             continue;
         }
-        if b == b'"' && !in_backticks {
-            in_quotes = !in_quotes;
-            i += 1;
-            continue;
-        }
-        if b == b'`' && !in_quotes {
+        if ch == '`' && !in_quotes {
             in_backticks = !in_backticks;
-            i += 1;
-            continue;
-        }
-        if !in_quotes && !in_backticks && b == b'r' && (i == 0 || bytes[i - 1] == b' ') {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 1 && j < bytes.len() && bytes[j] == b'"' {
-                if let Ok(rank) = trimmed[i + 1..j].parse::<usize>() {
-                    let prefix = trimmed[..i].trim().to_string();
-                    let after = trimmed[j + 1..].to_string();
-                    return Some((prefix, rank, after));
-                }
+        } else if ch == '"' && !in_backticks {
+            if !in_quotes {
+                in_quotes = true;
+                last_open_quote_byte = Some(byte_pos);
+            } else {
+                in_quotes = false;
+                last_open_quote_byte = None;
             }
         }
         i += 1;
     }
-    None
+
+    let q_byte = last_open_quote_byte?;
+    if q_byte != trimmed.len() - 1 {
+        return None;
+    }
+
+    // Extract the token immediately preceding the trailing `"`
+    let before_quote = &trimmed[..q_byte];
+    let token_start = before_quote
+        .rfind(|c: char| c.is_whitespace())
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+
+    let marker_token = &before_quote[token_start..];
+    let head_prefix = before_quote[..token_start].trim().to_string();
+
+    if marker_token.is_empty() {
+        return Some((head_prefix, String::new(), None));
+    }
+
+    // Split `marker_token` into `(tag)?` and `(N)?`
+    let digit_start = marker_token
+        .find(|c: char| c.is_ascii_digit())
+        .unwrap_or(marker_token.len());
+    let tag_part = &marker_token[..digit_start];
+    let rank_part = &marker_token[digit_start..];
+
+    if !tag_part
+        .chars()
+        .all(|c| c.is_ascii_alphabetic() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    if !rank_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let rank_opt = if rank_part.is_empty() {
+        None
+    } else {
+        rank_part.parse::<usize>().ok()
+    };
+
+    Some((head_prefix, tag_part.to_string(), rank_opt))
 }
 
 /// Detects a trailing unclosed raw quote `"lang` or `"` at the end of a line.

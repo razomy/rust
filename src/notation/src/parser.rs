@@ -1,7 +1,13 @@
-//! Phase 2 Unified Node Parser & HIR Lowering Engine for Razomy Notation (`.rn`) v13.0.
+//! Phase 2 Universal Node Parser & HIR Lowering Engine for Razomy Notation (`.rn`) v0.1.0.
 //!
-//! Implements Axiom I (Unified Node `Prefix? Key? Params? Props? Body? Edge? Value?`)
-//! and Axiom V (AST-Level Auto-Typing & Lexical Simplicity).
+//! Implements the Layer 0 Axiomatic Specification:
+//! - Universal Stream Root `[]` & Unified Triad Grammar:
+//!   `Node ::= Key ({Props})? ((Slots))? (Algebra)* (Schema)? ( " " Payload )?`
+//! - 1-Space Topology, Dot-Path Flattening (`a.b.c`), Outliner Trees
+//! - 1D Lists vs 2D Relational Tables (`(` Tuple Mode)
+//! - Schema Portals (`Key Schema {`, `(`, `[`)
+//! - Algebraic Composition (`&` Deep Merge, `^` Symmetric Difference / XOR, `/` Key Strip)
+//! - Scalar Auto-Typing (`true`/`false`, `null`/`None`, Int/Float/Hex/Sci, `'symbol`, `Type"..."`)
 
 use indexmap::IndexMap;
 use pest::Parser;
@@ -17,6 +23,23 @@ use crate::lexer::{
 #[grammar = "grammar.pest"]
 pub struct RnPestParser;
 
+/// Parsed universal node header:
+/// `Key ({Props})? ((Slots))? (Algebra)* (Schema)? ( " " Payload )?`
+#[derive(Debug, Clone, Default)]
+pub struct ParsedHeader {
+    pub raw_key: String,
+    pub clean_key: String,
+    pub props: Option<IndexMap<String, HirNode>>,
+    pub slots: Option<Vec<HirNode>>,
+    pub overlays: Vec<OverlayOp>,
+    pub schema: Option<String>,
+    pub payload_str: Option<String>,
+}
+
+const FLAT_DOC_TAGS: &[&str] = &[
+    "part", "section", "topic", "title", "subtitle", "quote",
+];
+
 /// Parses a `.rn` source string into a resolved `HirDocument`.
 pub fn parse_rn(source: &str) -> HirDocument {
     let pre = pre_lex(source);
@@ -27,6 +50,7 @@ pub fn parse_rn(source: &str) -> HirDocument {
         return HirDocument {
             root_mode: ContextMode::Stream,
             root: HirNode::Stream {
+                schema: None,
                 items: vec![],
                 span: Span::default(),
             },
@@ -35,7 +59,6 @@ pub fn parse_rn(source: &str) -> HirDocument {
         };
     }
 
-    // Determine root context mode (Law 1.1 Root Bijection Rule)
     let first_non_comment = pre.lines.iter().find(|l| !l.is_comment);
     let mut root_mode = ContextMode::Stream;
 
@@ -44,27 +67,28 @@ pub fn parse_rn(source: &str) -> HirDocument {
             root_mode = ContextMode::Form;
         } else if first.head_text.is_empty() && first.activation == IndentActivation::IndentTuple {
             root_mode = ContextMode::Tuple;
-        } else if first.activation == IndentActivation::IndentForm
-            || is_likely_form_root(&pre.lines)
-        {
+        } else if is_likely_form_root(&pre.lines) {
             root_mode = ContextMode::Form;
         }
     }
 
     let mut cursor = 0;
     let root = if root_mode == ContextMode::Form {
-        // If first line is a bare `{`, skip it and parse its children
         if let Some(first) = first_non_comment {
             if first.head_text.is_empty() && first.activation == IndentActivation::IndentForm {
                 let first_idx = pre.lines.iter().position(|l| !l.is_comment).unwrap_or(0);
                 cursor = first_idx + 1;
-                parse_form_block(&pre.lines, &mut cursor, 0, &mut diagnostics, &mut symbols, "")
-            } else {
-                parse_form_block(&pre.lines, &mut cursor, 0, &mut diagnostics, &mut symbols, "")
             }
-        } else {
-            parse_form_block(&pre.lines, &mut cursor, 0, &mut diagnostics, &mut symbols, "")
         }
+        parse_form_block(
+            &pre.lines,
+            &mut cursor,
+            0,
+            None,
+            &mut diagnostics,
+            &mut symbols,
+            "",
+        )
     } else if root_mode == ContextMode::Tuple {
         if let Some(first) = first_non_comment {
             if first.head_text.is_empty() && first.activation == IndentActivation::IndentTuple {
@@ -72,12 +96,19 @@ pub fn parse_rn(source: &str) -> HirDocument {
                 cursor = first_idx + 1;
             }
         }
-        parse_tuple_block(&pre.lines, &mut cursor, 0, &mut diagnostics)
+        parse_tuple_block(&pre.lines, &mut cursor, 0, None, &mut diagnostics)
     } else {
-        parse_stream_block(&pre.lines, &mut cursor, 0, &mut diagnostics, &mut symbols, "")
+        parse_stream_block(
+            &pre.lines,
+            &mut cursor,
+            0,
+            None,
+            &mut diagnostics,
+            &mut symbols,
+            "",
+        )
     };
 
-    // Resolve Algebraic Overlays (`&` and `/` — Law 4.3)
     let mut resolved_root = root;
     resolve_overlays_in_tree(&mut resolved_root, &mut diagnostics);
 
@@ -89,7 +120,10 @@ pub fn parse_rn(source: &str) -> HirDocument {
     }
 }
 
-/// Heuristic for Law 1.1 / Law 1.2: Determine if top-level document is rooted in Form `{` mode.
+/// Determines whether a root document is a pure data Form `{` or a Universal Stream `[]`.
+/// By the Root Axiom, plain text lines, outliner trees (`IndentInherit`), flat document tags (`part`, `title`),
+/// and top-level markup tags (`article{...} [`, `h1 [`) stay in Stream Root mode.
+/// Pure data/config files (`cluster.primary.database {`, `users_schema (`, `".btn" {`) lower to Form Root.
 fn is_likely_form_root(lines: &[LexedLine]) -> bool {
     let top_lines: Vec<&LexedLine> = lines
         .iter()
@@ -98,34 +132,75 @@ fn is_likely_form_root(lines: &[LexedLine]) -> bool {
     if top_lines.is_empty() {
         return false;
     }
-    // If any top-level line uses `..` margin reset or `{` activation, or all top-level lines are key-value pairs
-    if top_lines.iter().any(|l| {
-        l.activation == IndentActivation::IndentForm || l.head_text.starts_with("..")
+
+    // If any top-level line is an Outliner parent (`IndentInherit`), Stream opener (`IndentStream`),
+    // flat document tag (`part`, `section`, `title`...), or plain prose sentence, it is a Stream root!
+    for l in &top_lines {
+        if l.activation == IndentActivation::IndentInherit
+            || l.activation == IndentActivation::IndentStream
+        {
+            return false;
+        }
+        let first_word = l.head_text.split_whitespace().next().unwrap_or("");
+        if FLAT_DOC_TAGS.contains(&first_word) {
+            return false;
+        }
+        if l.head_text.starts_with("..") {
+            return true;
+        }
+        // Check if single-line stream tag like `h1 [ ... ]` or inline markup `b[...]`
+        if l.original_trimmed.ends_with(']') {
+            let hdr = parse_node_header(&l.head_text, true);
+            if let Some(p) = &hdr.payload_str {
+                if p.starts_with('[') && p.ends_with(']') {
+                    return false;
+                }
+            }
+        }
+        if l.activation == IndentActivation::Leaf && has_unspaced_inline_tag(&l.head_text) {
+            return false;
+        }
+    }
+
+    // Check if top-level lines are structured Form/Tuple blocks (`config {`, `users (`)
+    if top_lines.iter().all(|l| {
+        matches!(
+            l.activation,
+            IndentActivation::IndentForm
+                | IndentActivation::IndentTuple
+                | IndentActivation::IndentRaw(_)
+        )
     }) {
         return true;
     }
-    // Check if first line is an explicit stream tag like `h1 [...]` or `p [...]`
-    let first = top_lines[0];
-    if first.activation == IndentActivation::IndentStream
-        || first.original_trimmed.contains('[')
-    {
-        return false;
-    }
-    // If single named root block with Tuple `(`, e.g., `Users (` -> Form root containing `Users`
-    if top_lines.len() == 1
-        && first.activation == IndentActivation::IndentTuple
-        && !first.head_text.is_empty()
-    {
-        return true;
-    }
-    // Check if top-level lines look like `key value` or `key (`
+
+    // Check if top-level lines are all Form key-value pairs or blocks
     top_lines.iter().all(|l| {
         !l.head_text.is_empty()
             && !l.head_text.starts_with('[')
-            && (l.head_text.contains(' ')
-                || l.activation != IndentActivation::Leaf
-                || is_single_identifier(&l.head_text))
+            && (l.activation == IndentActivation::IndentForm
+                || l.activation == IndentActivation::IndentTuple
+                || is_single_identifier(&l.head_text)
+                || looks_like_key_value_line(&l.head_text))
     })
+}
+
+fn looks_like_key_value_line(s: &str) -> bool {
+    let (key, rest) = extract_first_key_token(s);
+    if key.is_empty() || rest.trim().is_empty() {
+        return false;
+    }
+    // If key ends with punctuation like `?` or `!`, it's prose (`how my day?`), not a Form key
+    if key.ends_with('?') || key.ends_with('!') || key.ends_with(':') {
+        return false;
+    }
+    true
+}
+
+fn has_unspaced_inline_tag(s: &str) -> bool {
+    let segs = parse_stream_segments(s);
+    segs.iter()
+        .any(|seg| matches!(seg, StreamSegment::InlineTag { .. } | StreamSegment::Code(_)))
 }
 
 fn is_single_identifier(s: &str) -> bool {
@@ -134,11 +209,152 @@ fn is_single_identifier(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-/// Parses a block of lines in `{` Form Context.
+/// Parses universal Node header:
+/// `Node ::= Key ({Props})? ((Slots))? (Algebra)* (Schema)? ( " " Payload )?`
+pub fn parse_node_header(head: &str, expect_block_opener: bool) -> ParsedHeader {
+    let trimmed = head.trim();
+    if trimmed.is_empty() {
+        return ParsedHeader::default();
+    }
+
+    let (raw_key, mut rest) = extract_first_key_token(trimmed);
+    let clean_key = unquote_key(&raw_key);
+
+    let mut props = None;
+    let mut slots = None;
+
+    // Attached `{Props}` and `(Slots)` WITHOUT a leading space
+    loop {
+        if rest.starts_with('{') {
+            if let Some((inside_brace, after_brace)) = extract_balanced_delim(rest, '{', '}') {
+                props = extract_inline_form_props(&format!("{{{}}}", inside_brace));
+                rest = after_brace;
+                continue;
+            }
+        }
+        if rest.starts_with('(') {
+            if let Some((inside_parens, after_parens)) = extract_balanced_delim(rest, '(', ')') {
+                slots = Some(parse_tuple_cells(inside_parens, Span::default()));
+                rest = after_parens;
+                continue;
+            }
+        }
+        break;
+    }
+
+    rest = rest.trim_start();
+
+    // Parse optional space-separated `(Algebra)*` (`& Source`, `^ Source`, `/ Key`)
+    let mut overlays = Vec::new();
+    loop {
+        if let Some(after_op) = rest.strip_prefix("& ") {
+            let after_op = after_op.trim_start();
+            let (target, rem) = next_whitespace_token(after_op);
+            if !target.is_empty() {
+                overlays.push(OverlayOp::Merge(target.to_string()));
+                rest = rem.trim_start();
+                continue;
+            }
+        } else if let Some(after_op) = rest.strip_prefix("^ ") {
+            let after_op = after_op.trim_start();
+            let (target, rem) = next_whitespace_token(after_op);
+            if !target.is_empty() {
+                overlays.push(OverlayOp::Xor(target.to_string()));
+                rest = rem.trim_start();
+                continue;
+            }
+        } else if let Some(after_op) = rest.strip_prefix("/ ") {
+            let after_op = after_op.trim_start();
+            let (target, rem) = next_whitespace_token(after_op);
+            if !target.is_empty() {
+                let clean_strip = target.strip_prefix('\'').unwrap_or(target);
+                overlays.push(OverlayOp::Omit(clean_strip.to_string()));
+                rest = rem.trim_start();
+                continue;
+            }
+        }
+        break;
+    }
+
+    // Legacy support: if `{Props}` was placed after a space on a block opener line (`article#post { lang en } [`)
+    if expect_block_opener && props.is_none() && rest.starts_with('{') {
+        if let Some((inside_brace, after_brace)) = extract_balanced_delim(rest, '{', '}') {
+            if after_brace.trim().is_empty() {
+                props = extract_inline_form_props(&format!("{{{}}}", inside_brace));
+                rest = "";
+            }
+        }
+    }
+
+    // Check optional `Schema` (`PascalCase` adapter placed AFTER `Key`/`Algebra` and BEFORE `{`, `(`, `[`)
+    // Axiom V: "An optional `PascalCase` token placed AFTER `Key` (and `Algebra`) and BEFORE `{`, `(`, `[`
+    // binds a schema adapter to that subtree (`styles Scss {`, `query Sql (`, `view Html [`).
+    // Without a trailing bracket (`id Uuid`, `name Razomy Notation`), a `PascalCase` token is a scalar value in `.rn`."
+    let mut schema = None;
+    let mut payload_str = None;
+
+    if !rest.is_empty() {
+        let (first_tok, after_first) = next_whitespace_token(rest);
+        let after_first_trimmed = after_first.trim_start();
+
+        if is_pascal_case_schema(first_tok) {
+            if expect_block_opener && after_first_trimmed.is_empty() {
+                // Block mode portal: `query Sql (`, `styles Scss {`, `view Html [`
+                schema = Some(first_tok.to_string());
+            } else if !expect_block_opener
+                && (after_first_trimmed.starts_with('{')
+                    || after_first_trimmed.starts_with('(')
+                    || after_first_trimmed.starts_with('['))
+            {
+                // Inline mode portal: `styles Scss { ... }`, `view Html [ ... ]`
+                schema = Some(first_tok.to_string());
+                payload_str = Some(after_first_trimmed.to_string());
+            } else {
+                // Scalar value in `.rn` (`id Uuid`, `name Razomy Notation`)
+                payload_str = Some(rest.to_string());
+            }
+        } else {
+            payload_str = Some(rest.to_string());
+        }
+    }
+
+    ParsedHeader {
+        raw_key,
+        clean_key,
+        props,
+        slots,
+        overlays,
+        schema,
+        payload_str,
+    }
+}
+
+pub fn is_pascal_case_schema(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn next_whitespace_token(s: &str) -> (&str, &str) {
+    for (idx, ch) in s.char_indices() {
+        if ch.is_whitespace() {
+            return (&s[..idx], &s[idx..]);
+        }
+    }
+    (s, "")
+}
+
+/// Parses a block of lines in `{` Form Mode.
 fn parse_form_block(
     lines: &[LexedLine],
     cursor: &mut usize,
     min_indent: usize,
+    schema: Option<String>,
     diagnostics: &mut Vec<Diagnostic>,
     symbols: &mut Vec<SymbolInfo>,
     parent_path: &str,
@@ -165,13 +381,13 @@ fn parse_form_block(
             continue;
         }
 
-        // Law 3.3: Topological Margin Reset (`..target` at Column 0)
+        // Legacy `..target` margin reset support
         if line.indent == 0 && line.head_text.starts_with("..") {
             let reset_str = &line.head_text[2..];
-            let (target_path, line_overlays, inline_tail) = parse_header_components(reset_str);
+            let hdr = parse_node_header(reset_str, true);
             symbols.push(SymbolInfo {
-                name: target_path.clone(),
-                full_path: target_path.clone(),
+                name: hdr.clean_key.clone(),
+                full_path: hdr.clean_key.clone(),
                 kind: SymbolKind::MarginReset,
                 span,
             });
@@ -180,22 +396,23 @@ fn parse_form_block(
             let child_node = build_activated_child(
                 &line.activation,
                 &line.raw_payload,
-                inline_tail.as_deref(),
+                hdr.schema.clone(),
+                hdr.props.clone(),
                 lines,
                 cursor,
                 cur_indent + 1,
                 ContextMode::Form,
                 diagnostics,
                 symbols,
-                &target_path,
+                &hdr.clean_key,
                 span,
             );
-            let child_with_overlays = attach_overlays(child_node, line_overlays);
-            merge_into_path(&mut map, &target_path, child_with_overlays);
+            let child_with_overlays = attach_overlays(child_node, hdr.overlays);
+            merge_into_path(&mut map, &hdr.clean_key, child_with_overlays);
             continue;
         }
 
-        // Law 4.1: Standalone Edge Expression in Form (`Ingress -> (Auth, Api) { ... }`)
+        // Standalone Hypergraph Edge (`Ingress -> (Auth, Api) { ... }`)
         if is_standalone_edge_line(&line.head_text) {
             if let Some(edge) = parse_edge_str(&line.head_text, span) {
                 symbols.push(SymbolInfo {
@@ -210,30 +427,31 @@ fn parse_form_block(
             }
         }
 
-        // Raw Block with key (`snippet "ts` or `description r3"..."3`)
+        // Column-0 Multiline & Raw String (`welcome_msg 1"` or `run sh1"`)
         if let Some(raw) = &line.raw_payload {
-            let key = if line.head_text.is_empty() {
+            let hdr = parse_node_header(&line.head_text, true);
+            let key = if hdr.clean_key.is_empty() {
                 "\"".to_string()
             } else {
-                unquote_key(&line.head_text)
+                hdr.clean_key
             };
             let raw_node = HirNode::Raw {
                 lang: raw.lang.clone(),
                 content: raw.content.clone(),
+                rank: raw.rank,
                 span,
             };
-            insert_folded_key(&mut map, &key, None, vec![], raw_node, span);
+            insert_folded_key(&mut map, &key, hdr.slots, hdr.overlays, raw_node, span);
             *cursor += 1;
             continue;
         }
 
-        // Check if this Form line has indented children or is a leaf pair
+        // Block opener (`{`, `(`, `[` or inherited indentation)
         if line.activation != IndentActivation::Leaf {
-            let (raw_key, params_opt, line_overlays, inline_tail) =
-                parse_key_and_header(&line.head_text);
-            let full_sym_path = join_path(parent_path, &raw_key);
+            let hdr = parse_node_header(&line.head_text, true);
+            let full_sym_path = join_path(parent_path, &hdr.clean_key);
             symbols.push(SymbolInfo {
-                name: raw_key.clone(),
+                name: hdr.clean_key.clone(),
                 full_path: full_sym_path.clone(),
                 kind: if line.activation == IndentActivation::IndentTuple {
                     SymbolKind::TupleTable
@@ -247,7 +465,8 @@ fn parse_form_block(
             let child_node = build_activated_child(
                 &line.activation,
                 &line.raw_payload,
-                inline_tail.as_deref(),
+                hdr.schema.clone(),
+                hdr.props.clone(),
                 lines,
                 cursor,
                 cur_indent + 1,
@@ -258,10 +477,16 @@ fn parse_form_block(
                 span,
             );
 
-            let child_with_overlays = attach_overlays(child_node, line_overlays);
-            insert_folded_key(&mut map, &raw_key, params_opt, vec![], child_with_overlays, span);
+            let child_with_overlays = attach_overlays(child_node, hdr.overlays);
+            insert_folded_key(
+                &mut map,
+                &hdr.raw_key,
+                hdr.slots,
+                vec![],
+                child_with_overlays,
+                span,
+            );
         } else {
-            // Leaf Form Pair (`key value`, `key`, `key { a 1 }`, `key(a, b) { ... }`)
             parse_and_insert_form_leaf(
                 &line.head_text,
                 &mut map,
@@ -276,6 +501,7 @@ fn parse_form_block(
     }
 
     HirNode::Form {
+        schema,
         map,
         edges,
         overlays,
@@ -287,11 +513,12 @@ fn parse_form_block(
     }
 }
 
-/// Parses a block of lines in `[` Stream Context (Law 1.1).
+/// Parses a block of lines in `[` Stream Mode (Universal Stream Root, Outliner, Markup & Data Blocks).
 fn parse_stream_block(
     lines: &[LexedLine],
     cursor: &mut usize,
     min_indent: usize,
+    schema: Option<String>,
     diagnostics: &mut Vec<Diagnostic>,
     symbols: &mut Vec<SymbolInfo>,
     parent_path: &str,
@@ -316,22 +543,25 @@ fn parse_stream_block(
             continue;
         }
 
-        // Raw Block inside Stream (`snippet "ts`)
+        // Column-0 Multiline String inside Stream (`code ts"`, `input rn2"`)
         if let Some(raw) = &line.raw_payload {
+            let hdr = parse_node_header(&line.head_text, true);
             let raw_node = HirNode::Raw {
                 lang: raw.lang.clone(),
                 content: raw.content.clone(),
+                rank: raw.rank,
                 span,
             };
-            if line.head_text.is_empty() {
+            if hdr.clean_key.is_empty() {
                 items.push(raw_node);
             } else {
                 let mut m = IndexMap::new();
-                m.insert(unquote_key(&line.head_text), raw_node);
+                m.insert(hdr.clean_key, raw_node);
                 items.push(HirNode::Form {
+                    schema: hdr.schema,
                     map: m,
                     edges: vec![],
-                    overlays: vec![],
+                    overlays: hdr.overlays,
                     span,
                 });
             }
@@ -339,11 +569,35 @@ fn parse_stream_block(
             continue;
         }
 
-        // Indented block tag / table / form inside Stream (`ul [`, `benchmarks (`, `article#post { lang en } [`)
+        // Outliner: Indenting (`+1 space`) beneath a plain text line implicitly nests a child Stream under that line!
+        if line.activation == IndentActivation::IndentInherit {
+            let text_node = parse_stream_text_or_richtext(&line.head_text, span);
+            *cursor += 1;
+            let child_stream = parse_stream_block(
+                lines,
+                cursor,
+                cur_indent + 1,
+                None,
+                diagnostics,
+                symbols,
+                parent_path,
+            );
+            let children = match child_stream {
+                HirNode::Stream { items: c, .. } => c,
+                other => vec![other],
+            };
+            items.push(HirNode::Outliner {
+                text: Box::new(text_node),
+                children,
+                span,
+            });
+            continue;
+        }
+
+        // Structured Node opening a block (`[`, `{`, `(` at the end of the line)
         if line.activation != IndentActivation::Leaf {
-            let (raw_key, params_opt, line_overlays, inline_tail) =
-                parse_key_and_header(&line.head_text);
-            let (clean_tag, id_opt, classes) = split_css_shorthand(&raw_key);
+            let hdr = parse_node_header(&line.head_text, true);
+            let (clean_tag, id_opt, classes) = split_css_shorthand(&hdr.clean_key);
             let full_sym_path = join_path(parent_path, &clean_tag);
             symbols.push(SymbolInfo {
                 name: clean_tag.clone(),
@@ -353,13 +607,10 @@ fn parse_stream_block(
             });
             *cursor += 1;
 
-            let inline_props = inline_tail
-                .as_deref()
-                .and_then(extract_inline_form_props);
-
             let child_node = build_activated_child(
                 &line.activation,
                 &line.raw_payload,
+                hdr.schema.clone(),
                 None,
                 lines,
                 cursor,
@@ -371,7 +622,11 @@ fn parse_stream_block(
                 span,
             );
 
-            if id_opt.is_some() || !classes.is_empty() || inline_props.is_some() || params_opt.is_some() {
+            if id_opt.is_some()
+                || !classes.is_empty()
+                || hdr.props.is_some()
+                || hdr.slots.is_some()
+            {
                 let body_vec = match child_node {
                     HirNode::Stream { items: b, .. } => Some(b),
                     other => Some(vec![other]),
@@ -380,17 +635,19 @@ fn parse_stream_block(
                     name: clean_tag,
                     id: id_opt,
                     classes,
-                    params: params_opt,
-                    overlays: line_overlays,
-                    props: inline_props,
+                    params: hdr.slots,
+                    overlays: hdr.overlays,
+                    schema: hdr.schema,
+                    props: hdr.props,
                     body: body_vec,
                     span,
                 });
             } else {
                 let mut m = IndexMap::new();
-                let child_with_overlays = attach_overlays(child_node, line_overlays);
-                m.insert(clean_tag, child_with_overlays);
+                let child_with_overlays = attach_overlays(child_node, hdr.overlays);
+                insert_folded_key(&mut m, &hdr.raw_key, None, vec![], child_with_overlays, span);
                 items.push(HirNode::Form {
+                    schema: None,
                     map: m,
                     edges: vec![],
                     overlays: vec![],
@@ -400,30 +657,31 @@ fn parse_stream_block(
             continue;
         }
 
-        // Single-line block tag in Stream: e.g., `h1 [ Razomy Guide ]` or `article#id { a 1 } [ hello ]`
-        if let Some(triad_node) = try_parse_single_line_stream_tag(&line.head_text, span, symbols, parent_path) {
+        // Flat document tags in Stream (`title Razomy Guide`, `part ...`, `section ...`, `topic ...`, `subtitle ...`, `quote ...`)
+        if let Some(flat_node) = try_parse_flat_doc_tag(&line.head_text, span, symbols, parent_path)
+        {
+            items.push(flat_node);
+            *cursor += 1;
+            continue;
+        }
+
+        // Single-line structured Node in Stream (`h1 [ Why Razomy? ]`, `p [ Read ... ]`, `env { A 1, B 2 }`)
+        if let Some(triad_node) =
+            try_parse_single_line_stream_tag(&line.head_text, span, symbols, parent_path)
+        {
             items.push(triad_node);
             *cursor += 1;
             continue;
         }
 
-        // Ordinary Stream Leaf line (prose with optional unspaced inline tags `b[bold]`)
-        let segs = parse_stream_segments(&line.head_text);
-        if segs.len() == 1 {
-            if let StreamSegment::Text(t) = &segs[0] {
-                items.push(HirNode::String(t.clone(), span));
-                *cursor += 1;
-                continue;
-            }
-        }
-        items.push(HirNode::RichText {
-            segments: segs,
-            span,
-        });
+        // Plain text / inline markup line in Stream
+        let node = parse_stream_text_or_richtext(&line.head_text, span);
+        items.push(node);
         *cursor += 1;
     }
 
     HirNode::Stream {
+        schema,
         items,
         span: Span {
             line: start_line,
@@ -433,15 +691,69 @@ fn parse_stream_block(
     }
 }
 
-/// Parses a block of lines in `(` Tuple Context (Law 1.3).
+fn parse_stream_text_or_richtext(text: &str, span: Span) -> HirNode {
+    let segs = parse_stream_segments(text);
+    if segs.len() == 1 {
+        if let StreamSegment::Text(t) = &segs[0] {
+            return HirNode::String(t.clone(), span);
+        }
+    }
+    HirNode::RichText {
+        segments: segs,
+        span,
+    }
+}
+
+fn try_parse_flat_doc_tag(
+    line_text: &str,
+    span: Span,
+    symbols: &mut Vec<SymbolInfo>,
+    parent_path: &str,
+) -> Option<HirNode> {
+    let (first_word, rest) = next_whitespace_token(line_text.trim());
+    if !FLAT_DOC_TAGS.contains(&first_word) {
+        return None;
+    }
+    let rest_trimmed = rest.trim();
+    if rest_trimmed.is_empty() {
+        return None;
+    }
+    // If it already uses `[ ... ]`, let `try_parse_single_line_stream_tag` handle it
+    if rest_trimmed.starts_with('[') && rest_trimmed.ends_with(']') {
+        return None;
+    }
+
+    symbols.push(SymbolInfo {
+        name: first_word.to_string(),
+        full_path: join_path(parent_path, first_word),
+        kind: SymbolKind::StreamTag,
+        span,
+    });
+
+    let body_node = parse_stream_text_or_richtext(rest_trimmed, span);
+    let mut m = IndexMap::new();
+    m.insert(first_word.to_string(), body_node);
+    Some(HirNode::Form {
+        schema: None,
+        map: m,
+        edges: vec![],
+        overlays: vec![],
+        span,
+    })
+}
+
+/// Parses a block of lines in `(` Tuple Mode (1D Lists & 2D Relational Tables).
 fn parse_tuple_block(
     lines: &[LexedLine],
     cursor: &mut usize,
     min_indent: usize,
+    schema: Option<String>,
     _diagnostics: &mut Vec<Diagnostic>,
 ) -> HirNode {
     let start_line = lines.get(*cursor).map(|l| l.line_idx).unwrap_or(0);
     let mut rows: Vec<Vec<HirNode>> = Vec::new();
+    let mut is_2d_table = false;
+    let mut first_line_checked = false;
 
     while *cursor < lines.len() {
         let line = &lines[*cursor];
@@ -458,12 +770,37 @@ fn parse_tuple_block(
             end_col: line.indent + line.original_trimmed.len(),
         };
 
-        let parsed_rows = parse_tuple_line_rows(&line.head_text, span);
-        rows.extend(parsed_rows);
+        if !first_line_checked {
+            first_line_checked = true;
+            // 2D Table: Block `(` where the first indented line contains at least one top-level comma defining header columns
+            // 1D List: Block `(` where the first indented line contains NO top-level commas outside quotes/brackets
+            let top_commas = split_top_level_delims(&line.head_text, &[',']);
+            is_2d_table = top_commas.len() > 1;
+        }
+
+        if is_2d_table {
+            let parsed_rows = parse_tuple_line_rows(&line.head_text, span);
+            rows.extend(parsed_rows);
+        } else {
+            // 1D List: strictly one item per line
+            let cell = parse_single_tuple_cell(&line.head_text, span);
+            rows.push(vec![cell]);
+        }
         *cursor += 1;
     }
 
+    // If trailing comma was used for a single-column table (`col,`), strip the empty trailing header cell
+    if is_2d_table {
+        if let Some(header) = rows.first_mut() {
+            if header.len() > 1 && matches!(header.last(), Some(HirNode::Null(_))) {
+                header.pop();
+            }
+        }
+    }
+
     HirNode::Tuple {
+        schema,
+        is_2d_table,
         rows,
         span: Span {
             line: start_line,
@@ -477,7 +814,8 @@ fn parse_tuple_block(
 fn build_activated_child(
     activation: &IndentActivation,
     raw_payload: &Option<crate::lexer::RawPayload>,
-    inline_tail: Option<&str>,
+    schema: Option<String>,
+    inline_props: Option<IndexMap<String, HirNode>>,
     lines: &[LexedLine],
     cursor: &mut usize,
     child_min_indent: usize,
@@ -496,9 +834,11 @@ fn build_activated_child(
                 .as_ref()
                 .map(|r| r.content.clone())
                 .unwrap_or_default();
+            let rank = raw_payload.as_ref().and_then(|r| r.rank);
             return HirNode::Raw {
                 lang: lang.clone(),
                 content,
+                rank,
                 span,
             };
         }
@@ -506,60 +846,39 @@ fn build_activated_child(
     };
 
     let mut block_node = match target_mode {
-        ContextMode::Form => {
-            parse_form_block(lines, cursor, child_min_indent, diagnostics, symbols, current_path)
+        ContextMode::Form => parse_form_block(
+            lines,
+            cursor,
+            child_min_indent,
+            schema,
+            diagnostics,
+            symbols,
+            current_path,
+        ),
+        ContextMode::Stream => parse_stream_block(
+            lines,
+            cursor,
+            child_min_indent,
+            schema,
+            diagnostics,
+            symbols,
+            current_path,
+        ),
+        ContextMode::Tuple => {
+            parse_tuple_block(lines, cursor, child_min_indent, schema, diagnostics)
         }
-        ContextMode::Stream => {
-            parse_stream_block(lines, cursor, child_min_indent, diagnostics, symbols, current_path)
-        }
-        ContextMode::Tuple => parse_tuple_block(lines, cursor, child_min_indent, diagnostics),
         ContextMode::Raw => HirNode::Null(span),
     };
 
-    // Merge inline `{ ... }` tail if present alongside block children
-    if let Some(tail_str) = inline_tail {
-        if let Some(inline_props) = extract_inline_form_props(tail_str) {
-            if let HirNode::Form { map, .. } = &mut block_node {
-                for (k, v) in inline_props {
-                    map.insert(k, v);
-                }
+    if let Some(props) = inline_props {
+        if let HirNode::Form { map, .. } = &mut block_node {
+            for (k, v) in props {
+                map.insert(k, v);
             }
         }
     }
 
     block_node
-}
-
-/// Splits a header line into `(key_path, optional_params, overlay_ops, optional_inline_tail)`.
-fn parse_key_and_header(
-    head: &str,
-) -> (
-    String,
-    Option<Vec<HirNode>>,
-    Vec<OverlayOp>,
-    Option<String>,
-) {
-    let trimmed = head.trim();
-    if trimmed.is_empty() {
-        return (String::new(), None, vec![], None);
-    }
-
-    // Extract key token (may be quoted or followed immediately by `(params)`)
-    let (key_part, rest_after_key) = extract_first_key_token(trimmed);
-    let mut rest = rest_after_key.trim_start();
-
-    // Law 3.4: Unspaced `name(a, b)` in Key position attaches positional parameters to `name`
-    let mut params_opt = None;
-    if !rest_after_key.starts_with(' ') && rest.starts_with('(') {
-        if let Some((inside_parens, after_parens)) = extract_balanced_delim(rest, '(', ')') {
-            let row = parse_tuple_cells(inside_parens, Span::default());
-            params_opt = Some(row);
-            rest = after_parens.trim_start();
-        }
-    }
-
-    let (_, overlays, inline_tail) = parse_header_components(rest);
-    (unquote_key(&key_part), params_opt, overlays, inline_tail)
 }
 
 fn extract_first_key_token(s: &str) -> (String, &str) {
@@ -586,60 +905,13 @@ fn extract_first_key_token(s: &str) -> (String, &str) {
     (s.to_string(), "")
 }
 
-/// Extracts `(leading_path, overlay_chain, inline_tail)` from a header or margin reset string.
-fn parse_header_components(s: &str) -> (String, Vec<OverlayOp>, Option<String>) {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return (String::new(), vec![], None);
-    }
-
-    // Check for inline `{...}` or `[...]` tail
-    let mut main_part = trimmed;
-    let mut inline_tail = None;
-    if let Some(brace_pos) = find_top_level_char(trimmed, '{') {
-        main_part = trimmed[..brace_pos].trim();
-        inline_tail = Some(trimmed[brace_pos..].trim().to_string());
-    } else if let Some(bracket_pos) = find_top_level_char(trimmed, '[') {
-        main_part = trimmed[..bracket_pos].trim();
-        inline_tail = Some(trimmed[bracket_pos..].trim().to_string());
-    }
-
-    let tokens: Vec<&str> = main_part.split_whitespace().collect();
-    if tokens.is_empty() {
-        return (String::new(), vec![], inline_tail);
-    }
-
-    let mut first_path = String::new();
-    let mut idx = 0;
-    if tokens[0] != "&" && tokens[0] != "/" {
-        first_path = tokens[0].to_string();
-        idx = 1;
-    }
-
-    let mut overlays = Vec::new();
-    while idx + 1 < tokens.len() {
-        match tokens[idx] {
-            "&" => {
-                overlays.push(OverlayOp::Merge(tokens[idx + 1].to_string()));
-                idx += 2;
-            }
-            "/" => {
-                overlays.push(OverlayOp::Omit(tokens[idx + 1].to_string()));
-                idx += 2;
-            }
-            _ => break,
-        }
-    }
-
-    (first_path, overlays, inline_tail)
-}
-
 fn attach_overlays(node: HirNode, mut new_overlays: Vec<OverlayOp>) -> HirNode {
     if new_overlays.is_empty() {
         return node;
     }
     match node {
         HirNode::Form {
+            schema,
             map,
             edges,
             mut overlays,
@@ -647,6 +919,7 @@ fn attach_overlays(node: HirNode, mut new_overlays: Vec<OverlayOp>) -> HirNode {
         } => {
             new_overlays.append(&mut overlays);
             HirNode::Form {
+                schema,
                 map,
                 edges,
                 overlays: new_overlays,
@@ -657,8 +930,8 @@ fn attach_overlays(node: HirNode, mut new_overlays: Vec<OverlayOp>) -> HirNode {
     }
 }
 
-/// Inserts a key into a Form map, handling Law 3.3 (Dotted Path Folding `a.b.c`)
-/// and Law 3.4 (Multi-Block Parameter Folding `resource(aws_s3, logs)` & CSS `#id.class`).
+/// Inserts a key into a Form map, handling Dot-Path Flattening (`a.b.c {` -> `{ a { b { c { ... } } } }`)
+/// and attached positional Slots.
 fn insert_folded_key(
     map: &mut IndexMap<String, HirNode>,
     raw_key: &str,
@@ -671,7 +944,8 @@ fn insert_folded_key(
         value_node = attach_overlays(value_node, overlays);
     }
 
-    // If parameterized key `resource(aws_s3_bucket, logs)` in Form (Law 3.4)
+    let clean_key = unquote_key(raw_key);
+
     if let Some(params) = params_opt {
         let param_keys: Vec<String> = params
             .iter()
@@ -682,22 +956,25 @@ fn insert_folded_key(
             .collect();
 
         if !param_keys.is_empty() {
-            // Fold parameters as nested sub-keys so `..resource.aws_s3_bucket.logs` can target it (Example 7)
-            // and also store `"()"` on the leaf if only 1 parameter is used (Example 6 `container(node:22-alpine)`).
             if param_keys.len() == 1 {
-                if let HirNode::Form { map: inner_map, .. } = &mut value_node {
+                if let HirNode::Form {
+                    map: inner_map, ..
+                } = &mut value_node
+                {
                     inner_map.insert(
                         "()".to_string(),
                         HirNode::Tuple {
+                            schema: None,
+                            is_2d_table: false,
                             rows: vec![params],
                             span,
                         },
                     );
                 }
-                map.insert(raw_key.to_string(), value_node);
+                map.insert(clean_key, value_node);
                 return;
             } else {
-                let mut full_chain = vec![raw_key.to_string()];
+                let mut full_chain = vec![clean_key];
                 full_chain.extend(param_keys);
                 insert_path_slice(map, &full_chain, value_node, span);
                 return;
@@ -705,25 +982,24 @@ fn insert_folded_key(
         }
     }
 
-    // Law 3.3: Path Folding (`a.b.c`)
-    // Leading dot (`.btn`), standalone dot (`.`), or quoted key (`"a.b"`) is a literal token!
+    // Dot-Path Flattening (`a.b.c`): unquoted dotted keys expand into nested Forms
     if should_fold_dotted_key(raw_key) {
-        let parts: Vec<String> = raw_key.split('.').map(|s| s.to_string()).collect();
+        let parts: Vec<String> = clean_key.split('.').map(|s| s.to_string()).collect();
         insert_path_slice(map, &parts, value_node, span);
     } else {
-        map.insert(raw_key.to_string(), value_node);
+        map.insert(clean_key, value_node);
     }
 }
 
-fn should_fold_dotted_key(key: &str) -> bool {
-    if key.starts_with('.') || key.starts_with('"') || !key.contains('.') {
+fn should_fold_dotted_key(raw_key: &str) -> bool {
+    let t = raw_key.trim();
+    if t.starts_with('.') || t.starts_with('"') || t.starts_with('\'') || !t.contains('.') {
         return false;
     }
-    // Do not fold CSS tag#id.class if `#` is present
-    if key.contains('#') {
+    if t.contains('#') {
         return false;
     }
-    key.split('.').all(|seg| !seg.is_empty())
+    t.split('.').all(|seg| !seg.is_empty())
 }
 
 fn insert_path_slice(
@@ -747,6 +1023,7 @@ fn insert_path_slice(
     let head = &parts[0];
     let rest = &parts[1..];
     let entry = map.entry(head.clone()).or_insert_with(|| HirNode::Form {
+        schema: None,
         map: IndexMap::new(),
         edges: vec![],
         overlays: vec![],
@@ -757,7 +1034,6 @@ fn insert_path_slice(
     }
 }
 
-/// Law 3.3: Merge & Append Semantics when re-entering an existing node via `..target`.
 fn merge_into_path(map: &mut IndexMap<String, HirNode>, target_path: &str, new_node: HirNode) {
     let parts: Vec<String> = target_path
         .split('.')
@@ -808,7 +1084,19 @@ pub fn deep_merge_nodes(target: &mut HirNode, source: HirNode) {
     }
 }
 
-/// Parses a single leaf line in Form `{` context and inserts into `map`.
+/// Symmetric Difference (`^` XOR): retains only keys present in `target` or `source`, but not both.
+pub fn xor_merge_nodes(target: &mut HirNode, source: HirNode) {
+    if let (HirNode::Form { map: t_map, .. }, HirNode::Form { map: s_map, .. }) = (target, source) {
+        for (k, v) in s_map {
+            if t_map.contains_key(&k) {
+                t_map.shift_remove(&k);
+            } else {
+                t_map.insert(k, v);
+            }
+        }
+    }
+}
+
 fn parse_and_insert_form_leaf(
     line_text: &str,
     map: &mut IndexMap<String, HirNode>,
@@ -823,7 +1111,6 @@ fn parse_and_insert_form_leaf(
         return;
     }
 
-    // If the line contains top-level `,` or `;` outside brackets/quotes, split into multiple pairs (Law 3.2)
     let statements = split_top_level_delims(trimmed, &[',', ';']);
     if statements.len() > 1 {
         for stmt in statements {
@@ -851,34 +1138,40 @@ fn parse_and_insert_single_form_pair(
     symbols: &mut Vec<SymbolInfo>,
     parent_path: &str,
 ) {
-    let (raw_key, rest_after_key) = extract_first_key_token(pair_str);
-    let clean_key = unquote_key(&raw_key);
-    let mut rest = rest_after_key;
-
-    // Check unspaced `name(a, b)` in Key position (Law 1.2 & Law 3.4)
-    let mut params_opt = None;
-    if !rest.starts_with(' ') && rest.starts_with('(') {
-        if let Some((inside_parens, after_parens)) = extract_balanced_delim(rest, '(', ')') {
-            params_opt = Some(parse_tuple_cells(inside_parens, span));
-            rest = after_parens;
-        }
+    let hdr = parse_node_header(pair_str, false);
+    if hdr.clean_key.is_empty() {
+        return;
     }
 
-    let val_str = rest.trim();
-    let full_sym_path = join_path(parent_path, &clean_key);
+    let full_sym_path = join_path(parent_path, &hdr.clean_key);
     symbols.push(SymbolInfo {
-        name: clean_key.clone(),
-        full_path: full_sym_path.clone(),
+        name: hdr.clean_key.clone(),
+        full_path: full_sym_path,
         kind: SymbolKind::FormKey,
         span,
     });
 
-    // Law 1.2: A bare key with no value and no indented children evaluates to `null`
+    let val_str = hdr.payload_str.as_deref().unwrap_or("").trim();
+
+    // Omitting `{}` with `& Source` clones the merged result directly (`backup_timeout & base.timeout`)
     if val_str.is_empty() {
+        if !hdr.overlays.is_empty() {
+            let empty_form = HirNode::Form {
+                schema: hdr.schema,
+                map: IndexMap::new(),
+                edges: vec![],
+                overlays: hdr.overlays,
+                span,
+            };
+            insert_folded_key(&mut *map, &hdr.raw_key, hdr.slots, vec![], empty_form, span);
+            return;
+        }
+
+        // Inside a data Form, a bare `Key` with no payload and no `& Source` evaluates to `null`
         insert_folded_key(
             map,
-            &clean_key,
-            params_opt,
+            &hdr.raw_key,
+            hdr.slots,
             vec![],
             HirNode::Null(span),
             span,
@@ -886,45 +1179,52 @@ fn parse_and_insert_single_form_pair(
         return;
     }
 
-    // Check if value starts with inline `{ ... }` block (e.g., `&:hover { background #222222 }`)
+    // Inline `{ ... }` Form value (`env { NODE_ENV production, PORT 8080 }` or `"&:hover" { background-color #222222 }`)
     if val_str.starts_with('{') && val_str.ends_with('}') && val_str.len() >= 2 {
         if val_str == "{}" {
-            // Law 1.2: Closed inline `{}` evaluates to empty Object `{}`
             let empty_form = HirNode::Form {
+                schema: hdr.schema,
                 map: IndexMap::new(),
                 edges: vec![],
-                overlays: vec![],
+                overlays: hdr.overlays,
                 span,
             };
-            insert_folded_key(map, &clean_key, params_opt, vec![], empty_form, span);
+            insert_folded_key(map, &hdr.raw_key, hdr.slots, vec![], empty_form, span);
             return;
         }
         if let Some(inline_map) = extract_inline_form_props(val_str) {
             let form_node = HirNode::Form {
+                schema: hdr.schema,
                 map: inline_map,
                 edges: vec![],
-                overlays: vec![],
+                overlays: hdr.overlays,
                 span,
             };
-            insert_folded_key(map, &clean_key, params_opt, vec![], form_node, span);
+            insert_folded_key(map, &hdr.raw_key, hdr.slots, vec![], form_node, span);
             return;
         }
     }
 
-    // Parse value expression
     let val_node = parse_form_value_expr(val_str, span);
-    insert_folded_key(map, &clean_key, params_opt, vec![], val_node, span);
+    insert_folded_key(map, &hdr.raw_key, hdr.slots, hdr.overlays, val_node, span);
 }
 
-/// Law 1.2: Safe Auto-Typing & Atomic Empty Literals in Form Value position.
+/// Scalar Auto-Typing in `{}` and `()`:
+/// - `true`, `false` -> `Bool`
+/// - `null`, `None` -> `Null`
+/// - `8080`, `-3.14`, `0xFF`, `1e-5` -> `Number` (multi-dot tokens like `0.1.0` fall back to Unquoted String)
+/// - `'pk`, `'not_null`, `'GET` -> `Symbol`
+/// - `Type"..."` -> `TypedLiteral` (`Date"2026-03-30"`)
+/// - `"..."` -> Quoted UTF-8 String
+/// - Unquoted String -> Everything else
 pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
     let v = val_str.trim();
 
-    // Atomic Empty Literals (Law 1.2)
     match v {
         "\"\"" => return HirNode::String(String::new(), span),
         "{}" => {
             return HirNode::Form {
+                schema: None,
                 map: IndexMap::new(),
                 edges: vec![],
                 overlays: vec![],
@@ -933,34 +1233,43 @@ pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
         }
         "()" => {
             return HirNode::Tuple {
+                schema: None,
+                is_2d_table: false,
                 rows: vec![],
                 span,
             }
         }
         "[]" => {
             return HirNode::Stream {
+                schema: None,
                 items: vec![],
                 span,
             }
         }
         "true" => return HirNode::Bool(true, span),
         "false" => return HirNode::Bool(false, span),
-        "null" => return HirNode::Null(span),
+        "null" | "None" => return HirNode::Null(span),
         _ => {}
     }
 
-    // Spaced `name (a, b)` inside `{` assigns the array `["a", "b"]` as the value (Law 3.4)
+    // Inline Tuple `(a, b, c)`
     if v.starts_with('(') && v.ends_with(')') {
         let inner = &v[1..v.len() - 1];
         let rows = parse_tuple_line_rows(inner, span);
-        return HirNode::Tuple { rows, span };
+        return HirNode::Tuple {
+            schema: None,
+            is_2d_table: false,
+            rows,
+            span,
+        };
     }
 
-    // Inline `[ ... ]` stream value
+    // Inline Stream `[ text ]` (single leading space after `[` and single trailing space before `]` are trimmed)
     if v.starts_with('[') && v.ends_with(']') {
-        let inner = v[1..v.len() - 1].trim();
+        let inner = trim_inline_stream_spaces(&v[1..v.len() - 1]);
         let segs = parse_stream_segments(inner);
         return HirNode::Stream {
+            schema: None,
             items: vec![HirNode::RichText {
                 segments: segs,
                 span,
@@ -969,7 +1278,7 @@ pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
         };
     }
 
-    // Unary or Binary Edge in value position (`-> Orgs.id` or `A -> B` — Law 4.1)
+    // Edge in value position (`-> Orgs.id` or `A -> B`)
     if v.starts_with("-> ") || v.starts_with("<-> ") || v.contains(" -> ") || v.contains(" <-> ")
     {
         if let Some(edge) = parse_edge_str(v, span) {
@@ -977,7 +1286,23 @@ pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
         }
     }
 
-    // Law 4.2: Named Ancestor Lineage `.` and `..` as Value References
+    // Symbol (`'pk`, `'not_null`, `'GET` — prefix-quoted O(1) interned tag with NO closing quote)
+    if let Some(sym) = v.strip_prefix('\'') {
+        if !sym.is_empty() && !sym.contains(' ') && !sym.ends_with('\'') {
+            return HirNode::Symbol(sym.to_string(), span);
+        }
+    }
+
+    // Typed Literal (`Date"2026-03-30"`, `Money"199.99"`, `Url"https://razomy.org"`)
+    if let Some((type_name, inner_val)) = parse_typed_literal(v) {
+        return HirNode::TypedLiteral {
+            type_name,
+            value: inner_val,
+            span,
+        };
+    }
+
+    // Lineage Reference (`.sibling` or `..Ancestor`)
     if is_valid_ref_path(v) {
         return HirNode::Reference {
             path: v.to_string(),
@@ -985,14 +1310,12 @@ pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
         };
     }
 
-    // Law 1.2: Safe Auto-Typing for Strict Numbers (no leading zeros like `0123`, no multi-dots like `1.2.0`)
-    if is_strict_number(v) {
-        if let Ok(num) = v.parse::<f64>() {
-            return HirNode::Number(num, span);
-        }
+    // Number (`8080`, `-3.14`, `0xFF`, `1e-5`)
+    if let Some(num) = parse_scalar_number(v) {
+        return HirNode::Number(num, span);
     }
 
-    // Quoted string `"..."`
+    // Quoted UTF-8 String `"..."`
     if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
         return HirNode::String(unquote_string(v), span);
     }
@@ -1002,13 +1325,60 @@ pub fn parse_form_value_expr(val_str: &str, span: Span) -> HirNode {
         return HirNode::String(v[1..v.len() - 1].to_string(), span);
     }
 
-    // Default: unquoted literal string (`The Matrix`, `postgres`, `gen_uuid()`, `#111111`)
+    // Default: Unquoted String (`Razomy Notation`, `postgres`, `node:22-alpine`, `/app`, `8px`, `#111111`, `Orgs.id`)
     HirNode::String(v.to_string(), span)
 }
 
-/// Law 5.2 (AST Auto-Typing): Fast O(N) check for strict numbers (`8080`, `-3.14`).
-/// Rejects leading zeros (`0123`) and multi-dot version strings (`1.2.0`).
+/// Parses Typed Literal `Type"..."` where `Type` is an identifier attached directly to `"..."` without spaces.
+pub fn parse_typed_literal(s: &str) -> Option<(String, String)> {
+    let q_pos = s.find('"')?;
+    if q_pos == 0 || !s.ends_with('"') || s.len() < q_pos + 2 {
+        return None;
+    }
+    let type_part = &s[..q_pos];
+    let mut chars = type_part.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let quoted_part = &s[q_pos..];
+    Some((type_part.to_string(), unquote_string(quoted_part)))
+}
+
+/// Parses scalar numbers (`8080`, `-3.14`, `0xFF`, `1e-5`).
+/// Rejects leading zeros (`01234`) and multi-dot tokens (`0.1.0`, `1.2.0`).
+pub fn parse_scalar_number(s: &str) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    // Hexadecimal integer (`0xFF`, `-0xFF`)
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok().map(|v| v as f64);
+    }
+    if let Some(hex) = s.strip_prefix("-0x").or_else(|| s.strip_prefix("-0X")) {
+        return i64::from_str_radix(hex, 16).ok().map(|v| -(v as f64));
+    }
+
+    if is_strict_number(s) {
+        return s.parse::<f64>().ok();
+    }
+    None
+}
+
+/// Checks decimal integers, floats, and scientific notation (`8080`, `-3.14`, `1e-5`).
+/// Rejects leading zeros (`0123`) and multi-dot version strings (`0.1.0`).
 pub fn is_strict_number(s: &str) -> bool {
+    if s.starts_with("0x") || s.starts_with("0X") || s.starts_with("-0x") || s.starts_with("-0X") {
+        let hex = s
+            .trim_start_matches('-')
+            .trim_start_matches("0x")
+            .trim_start_matches("0X");
+        return !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return false;
@@ -1022,8 +1392,8 @@ pub fn is_strict_number(s: &str) -> bool {
     }
     if bytes[i] == b'0' {
         i += 1;
-        // Leading zero followed by another digit (e.g. `0123`) is a String, not a Number
-        if i < bytes.len() && bytes[i] != b'.' {
+        // Leading zero followed by another digit (`0123`) is an Unquoted String, not a Number
+        if i < bytes.len() && bytes[i] != b'.' && bytes[i] != b'e' && bytes[i] != b'E' {
             return false;
         }
     } else if bytes[i].is_ascii_digit() {
@@ -1034,23 +1404,34 @@ pub fn is_strict_number(s: &str) -> bool {
         return false;
     }
 
-    if i < bytes.len() {
-        if bytes[i] != b'.' {
-            return false;
-        }
+    // Optional fractional part `.14`
+    if i < bytes.len() && bytes[i] == b'.' {
         i += 1;
-        if i == bytes.len() {
+        if i == bytes.len() || !bytes[i].is_ascii_digit() {
             return false;
         }
         while i < bytes.len() && bytes[i].is_ascii_digit() {
             i += 1;
         }
     }
+
+    // Optional exponent part `e-5` / `E+10`
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            i += 1;
+        }
+        if i == bytes.len() || !bytes[i].is_ascii_digit() {
+            return false;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+
     i == bytes.len()
 }
 
-/// Checks Axiom IV Lineage Reference: Leading `.` or `..` immediately followed by an identifier.
-/// Standalone `.` or `..` remains a literal string.
 pub fn is_valid_ref_path(s: &str) -> bool {
     let rest = if let Some(r) = s.strip_prefix("..") {
         r
@@ -1073,26 +1454,28 @@ pub fn is_valid_ref_path(s: &str) -> bool {
     })
 }
 
-/// Parses a single line using the v13.0 `unified_node` Pest grammar rule.
+/// Parses a single line using the `unified_node` Pest grammar rule.
 pub fn parse_unified_line_ast(line: &str) -> bool {
-    RnPestParser::parse(Rule::document_line, line).is_ok()
+    if RnPestParser::parse(Rule::document_line, line).is_ok() {
+        return true;
+    }
+    // Also accept legacy margin reset or hyperedge lines
+    let t = line.trim();
+    t.starts_with("..") || t.contains(" -> ") || t.contains(" <-> ")
 }
 
 fn is_standalone_edge_line(s: &str) -> bool {
     let trimmed = s.trim();
-    // Ensure `->` or `<->` appears outside quotes/parens as a space-delimited operator
     trimmed.starts_with("-> ")
         || trimmed.starts_with("<-> ")
         || find_top_level_substring(trimmed, " -> ").is_some()
         || find_top_level_substring(trimmed, " <-> ").is_some()
 }
 
-/// Parses a hypergraph edge expression (`Ingress -> (Auth, Api) { protocol grpc }` or `-> Orgs.id`).
 pub fn parse_edge_str(s: &str, span: Span) -> Option<HirEdge> {
     let mut main_part = s.trim();
     let mut metadata = None;
 
-    // Check trailing `{ ... }` metadata
     if main_part.ends_with('}') {
         if let Some(brace_pos) = find_top_level_char(main_part, '{') {
             let meta_str = &main_part[brace_pos..];
@@ -1125,7 +1508,6 @@ pub fn parse_edge_str(s: &str, span: Span) -> Option<HirEdge> {
         });
     }
 
-    // Split chain of ` -> ` and ` <-> `
     let mut current = main_part;
     loop {
         let next_dir = find_top_level_substring(current, " -> ");
@@ -1182,7 +1564,13 @@ fn parse_edge_endpoint(ep_str: &str, span: Span) -> HirEndpoint {
     }
 }
 
-/// Parses a single-line stream block tag such as `h1 [ Razomy Guide ]` or `article#post { lang en } [ Hello ]`.
+/// Trims a single leading space after `[` and a single trailing space before `]`.
+pub fn trim_inline_stream_spaces(s: &str) -> &str {
+    let s1 = s.strip_prefix(' ').unwrap_or(s);
+    s1.strip_suffix(' ').unwrap_or(s1)
+}
+
+/// Parses a single-line stream block tag such as `h1 [ Why Razomy? ]` or `article{id post} [ Hello ]`.
 fn try_parse_single_line_stream_tag(
     line_text: &str,
     span: Span,
@@ -1194,16 +1582,40 @@ fn try_parse_single_line_stream_tag(
         return None;
     }
 
-    // Must start with a tag identifier followed by space before `[` or `{` (Law 1.1 Block Tag vs Inline Tag)
-    let (first_tok, rest) = extract_first_key_token(trimmed);
-    if first_tok.is_empty() || !rest.starts_with(' ') {
+    let (first_tok, rest_after_key) = extract_first_key_token(trimmed);
+    if first_tok.is_empty() {
+        return None;
+    }
+
+    let mut rest = rest_after_key;
+    let mut props_opt = None;
+    let mut slots_opt = None;
+
+    // Attached `{Props}` / `(Slots)` without space
+    loop {
+        if rest.starts_with('{') {
+            let (inside_brace, after_brace) = extract_balanced_delim(rest, '{', '}')?;
+            props_opt = extract_inline_form_props(&format!("{{{}}}", inside_brace));
+            rest = after_brace;
+            continue;
+        }
+        if rest.starts_with('(') {
+            let (inside_parens, after_parens) = extract_balanced_delim(rest, '(', ')')?;
+            slots_opt = Some(parse_tuple_cells(inside_parens, span));
+            rest = after_parens;
+            continue;
+        }
+        break;
+    }
+
+    // Must have space before payload `[` (otherwise `b[bold]` is an inline tag inside a prose flow!)
+    if !rest.starts_with(' ') {
         return None;
     }
     let rest_trimmed = rest.trim_start();
-    let mut props_opt = None;
     let bracket_part;
 
-    if rest_trimmed.starts_with('{') {
+    if props_opt.is_none() && rest_trimmed.starts_with('{') {
         let (inside_brace, after_brace) = extract_balanced_delim(rest_trimmed, '{', '}')?;
         props_opt = extract_inline_form_props(&format!("{{{}}}", inside_brace));
         bracket_part = after_brace.trim();
@@ -1216,8 +1628,14 @@ fn try_parse_single_line_stream_tag(
     if !bracket_part.starts_with('[') || !bracket_part.ends_with(']') {
         return None;
     }
-    let inner_stream_str = bracket_part[1..bracket_part.len() - 1].trim();
-    let (clean_tag, id_opt, classes) = split_css_shorthand(&first_tok);
+    let ( inside_bracket, after_bracket ) = extract_balanced_delim(bracket_part, '[', ']')?;
+    if !after_bracket.trim().is_empty() {
+        return None;
+    }
+
+    // Whitespace rule: In inline `[ text ]`, a single leading space after `[` and a single trailing space before `]` are trimmed.
+    let inner_stream_str = trim_inline_stream_spaces(inside_bracket);
+    let (clean_tag, id_opt, classes) = split_css_shorthand(&unquote_key(&first_tok));
 
     symbols.push(SymbolInfo {
         name: clean_tag.clone(),
@@ -1243,13 +1661,14 @@ fn try_parse_single_line_stream_tag(
         }
     };
 
-    if id_opt.is_some() || !classes.is_empty() || props_opt.is_some() {
+    if id_opt.is_some() || !classes.is_empty() || props_opt.is_some() || slots_opt.is_some() {
         Some(HirNode::Triad {
             name: clean_tag,
             id: id_opt,
             classes,
-            params: None,
+            params: slots_opt,
             overlays: vec![],
+            schema: None,
             props: props_opt,
             body: Some(vec![body_node]),
             span,
@@ -1258,6 +1677,7 @@ fn try_parse_single_line_stream_tag(
         let mut m = IndexMap::new();
         m.insert(clean_tag, body_node);
         Some(HirNode::Form {
+            schema: None,
             map: m,
             edges: vec![],
             overlays: vec![],
@@ -1266,20 +1686,30 @@ fn try_parse_single_line_stream_tag(
     }
 }
 
-/// Parses inline stream segments (`Text`, `` `Code` ``, `"Quoted"`, and unspaced `tag{attr}[inner]`).
+/// Parses inline stream segments (`Text`, `` `Code` ``, `"Quoted"`, `\[`/`\]` escapes, and unspaced `Identifier{Props}[inner]`).
 pub fn parse_stream_segments(input: &str) -> Vec<StreamSegment> {
     let mut segments = Vec::new();
     let chars: Vec<(usize, char)> = input.char_indices().collect();
     let mut i = 0;
-    let mut text_start = 0;
+    let mut text_buf = String::new();
 
     while i < chars.len() {
         let (byte_pos, ch) = chars[i];
 
+        // Backslash escape (`\[`, `\]`, `\\`)
+        if ch == '\\' && i + 1 < chars.len() {
+            let next_ch = chars[i + 1].1;
+            if next_ch == '[' || next_ch == ']' || next_ch == '\\' || next_ch == '`' || next_ch == '"' {
+                text_buf.push(next_ch);
+                i += 2;
+                continue;
+            }
+        }
+
         // 1. Backtick shield `` `...` ``
         if ch == '`' {
-            if byte_pos > text_start {
-                segments.push(StreamSegment::Text(input[text_start..byte_pos].to_string()));
+            if !text_buf.is_empty() {
+                segments.push(StreamSegment::Text(std::mem::take(&mut text_buf)));
             }
             let mut j = i + 1;
             while j < chars.len() && chars[j].1 != '`' {
@@ -1289,19 +1719,14 @@ pub fn parse_stream_segments(input: &str) -> Vec<StreamSegment> {
                 let code_content = &input[byte_pos + 1..chars[j].0];
                 segments.push(StreamSegment::Code(code_content.to_string()));
                 i = j + 1;
-                text_start = if i < chars.len() {
-                    chars[i].0
-                } else {
-                    input.len()
-                };
                 continue;
             }
         }
 
         // 2. Quoted shield `"..."`
         if ch == '"' {
-            if byte_pos > text_start {
-                segments.push(StreamSegment::Text(input[text_start..byte_pos].to_string()));
+            if !text_buf.is_empty() {
+                segments.push(StreamSegment::Text(std::mem::take(&mut text_buf)));
             }
             let mut j = i + 1;
             while j < chars.len() {
@@ -1318,39 +1743,29 @@ pub fn parse_stream_segments(input: &str) -> Vec<StreamSegment> {
                 let end_b = chars[j].0 + 1;
                 segments.push(StreamSegment::Quoted(input[byte_pos..end_b].to_string()));
                 i = j + 1;
-                text_start = if i < chars.len() {
-                    chars[i].0
-                } else {
-                    input.len()
-                };
                 continue;
             }
         }
 
-        // 3. Law 1.1 Inline Tag (Unspaced Rule): `b[bold]` or `a{href /docs}[link]`
-        // Must start at word boundary and attach `{` or `[` WITHOUT space
-        let at_word_boundary = i == 0 || chars[i - 1].1.is_whitespace();
+        // 3. Inline Tags: `Identifier[` or `Identifier{Props}[` (with NO space before `[` or `{`)
+        let at_word_boundary = i == 0 || chars[i - 1].1.is_whitespace() || chars[i - 1].1 == '(';
         if at_word_boundary && (ch.is_ascii_alphabetic() || ch == '_') {
             if let Some((tag_seg, next_char_idx)) = try_consume_inline_tag(input, &chars, i) {
-                if byte_pos > text_start {
-                    segments.push(StreamSegment::Text(input[text_start..byte_pos].to_string()));
+                if !text_buf.is_empty() {
+                    segments.push(StreamSegment::Text(std::mem::take(&mut text_buf)));
                 }
                 segments.push(tag_seg);
                 i = next_char_idx;
-                text_start = if i < chars.len() {
-                    chars[i].0
-                } else {
-                    input.len()
-                };
                 continue;
             }
         }
 
+        text_buf.push(ch);
         i += 1;
     }
 
-    if text_start < input.len() {
-        segments.push(StreamSegment::Text(input[text_start..].to_string()));
+    if !text_buf.is_empty() {
+        segments.push(StreamSegment::Text(text_buf));
     }
 
     if segments.is_empty() {
@@ -1379,22 +1794,70 @@ fn try_consume_inline_tag(
     }
 
     let raw_tag = &input[start_byte..chars[j].0];
-    let (clean_tag, id_opt, classes) = split_css_shorthand(raw_tag);
+    let (clean_tag, mut id_opt, mut classes) = split_css_shorthand(raw_tag);
 
     let mut attrs = IndexMap::new();
-    // Optional unspaced `{attrs}` before `[`
-    if chars[j].1 == '{' {
-        let brace_start_byte = chars[j].0;
-        let (inside_brace, after_brace_str) =
-            extract_balanced_delim(&input[brace_start_byte..], '{', '}')?;
-        if let Some(parsed_attrs) = extract_inline_form_props(&format!("{{{}}}", inside_brace)) {
-            attrs = parsed_attrs;
+    // Optional unspaced `{Props}` and/or `(Slots)` before `[` (`span{class hi}[text]`, `a(/docs)[links]`)
+    loop {
+        if j >= chars.len() {
+            break;
         }
-        let consumed_bytes = input[brace_start_byte..].len() - after_brace_str.len();
-        let target_byte = brace_start_byte + consumed_bytes;
-        while j < chars.len() && chars[j].0 < target_byte {
-            j += 1;
+        if chars[j].1 == '{' {
+            let brace_start_byte = chars[j].0;
+            let (inside_brace, after_brace_str) =
+                extract_balanced_delim(&input[brace_start_byte..], '{', '}')?;
+            if let Some(mut parsed_attrs) =
+                extract_inline_form_props(&format!("{{{}}}", inside_brace))
+            {
+                if id_opt.is_none() {
+                    if let Some(HirNode::String(id_str, _)) = parsed_attrs.shift_remove("id") {
+                        id_opt = Some(id_str);
+                    }
+                }
+                if classes.is_empty() {
+                    if let Some(HirNode::String(cls_str, _)) = parsed_attrs.shift_remove("class") {
+                        classes.extend(cls_str.split_whitespace().map(|s| s.to_string()));
+                    }
+                }
+                for (k, v) in parsed_attrs {
+                    attrs.insert(k, v);
+                }
+            }
+            let consumed_bytes = input[brace_start_byte..].len() - after_brace_str.len();
+            let target_byte = brace_start_byte + consumed_bytes;
+            while j < chars.len() && chars[j].0 < target_byte {
+                j += 1;
+            }
+            continue;
         }
+        if chars[j].1 == '(' {
+            let paren_start_byte = chars[j].0;
+            let (inside_paren, after_paren_str) =
+                extract_balanced_delim(&input[paren_start_byte..], '(', ')')?;
+            let slot_cells = parse_tuple_cells(inside_paren, Span::default());
+            if let Some(first_slot) = slot_cells.first() {
+                if clean_tag == "a" && !attrs.contains_key("href") {
+                    attrs.insert("href".to_string(), first_slot.clone());
+                } else {
+                    attrs.insert(
+                        "()".to_string(),
+                        HirNode::Tuple {
+                            schema: None,
+                            is_2d_table: false,
+                            rows: vec![slot_cells],
+                            span: Span::default(),
+                        },
+                    );
+                }
+            }
+            let consumed_bytes = input[paren_start_byte..].len() - after_paren_str.len();
+            let target_byte = paren_start_byte + consumed_bytes;
+            while j < chars.len() && chars[j].0 < target_byte {
+                j += 1;
+            }
+            continue;
+        }
+        break;
     }
 
     if j >= chars.len() || chars[j].1 != '[' {
@@ -1404,7 +1867,8 @@ fn try_consume_inline_tag(
     let bracket_start_byte = chars[j].0;
     let (inside_bracket, after_bracket_str) =
         extract_balanced_delim(&input[bracket_start_byte..], '[', ']')?;
-    let children = parse_stream_segments(inside_bracket);
+    let trimmed_inner = trim_inline_stream_spaces(inside_bracket);
+    let children = parse_stream_segments(trimmed_inner);
 
     let consumed_bytes = input[bracket_start_byte..].len() - after_bracket_str.len();
     let end_byte = bracket_start_byte + consumed_bytes;
@@ -1425,7 +1889,7 @@ fn try_consume_inline_tag(
     ))
 }
 
-/// Parses `;` and `,` separated cells in a Tuple line (Law 1.3 & Law 3.2).
+/// Parses `;` and `,` separated cells in a Tuple line.
 pub fn parse_tuple_line_rows(line_text: &str, span: Span) -> Vec<Vec<HirNode>> {
     let trimmed = line_text.trim();
     if trimmed.is_empty() {
@@ -1443,54 +1907,67 @@ pub fn parse_tuple_cells(row_str: &str, span: Span) -> Vec<HirNode> {
     let raw_cells = split_top_level_delims(row_str, &[',']);
     raw_cells
         .into_iter()
-        .map(|cell| {
-            let c = cell.trim();
-            if c.is_empty() {
-                return HirNode::String(String::new(), span);
-            }
-            // Quoted cell `"Verbose, requires quotes"`
-            if c.starts_with('"') && c.ends_with('"') && c.len() >= 2 {
-                return HirNode::String(unquote_string(c), span);
-            }
-            // Backtick cell
-            if c.starts_with('`') && c.ends_with('`') && c.len() >= 2 {
-                return HirNode::String(c[1..c.len() - 1].to_string(), span);
-            }
-            // Law 4.1: Edge expression inside Tuple cell (`-> Orgs.id` or `Ingest -> Transform -> Load`)
-            if c.starts_with("-> ")
-                || c.starts_with("<-> ")
-                || c.contains(" -> ")
-                || c.contains(" <-> ")
-            {
-                if let Some(edge) = parse_edge_str(c, span) {
-                    return HirNode::Edge(edge);
-                }
-            }
-            // Law 4.2: Lineage reference `.sibling` or `..Ancestor` (standalone `.` is literal string!)
-            if is_valid_ref_path(c) {
-                return HirNode::Reference {
-                    path: c.to_string(),
-                    span,
-                };
-            }
-            match c {
-                "true" => HirNode::Bool(true, span),
-                "false" => HirNode::Bool(false, span),
-                "null" => HirNode::Null(span),
-                _ if is_strict_number(c) => {
-                    if let Ok(n) = c.parse::<f64>() {
-                        HirNode::Number(n, span)
-                    } else {
-                        HirNode::String(c.to_string(), span)
-                    }
-                }
-                _ => HirNode::String(c.to_string(), span),
-            }
-        })
+        .map(|cell| parse_single_tuple_cell(cell, span))
         .collect()
 }
 
-/// Splits CSS shorthand `tag#id.class1.class2` into `(tag, Option<id>, Vec<class>)` (Law 3.4).
+pub fn parse_single_tuple_cell(cell: &str, span: Span) -> HirNode {
+    let c = cell.trim();
+    // An empty cell `, ,` in `()` evaluates to `null` / `None`
+    if c.is_empty() {
+        return HirNode::Null(span);
+    }
+    if c == "\"\"" {
+        return HirNode::String(String::new(), span);
+    }
+    if c.starts_with('"') && c.ends_with('"') && c.len() >= 2 {
+        return HirNode::String(unquote_string(c), span);
+    }
+    if c.starts_with('`') && c.ends_with('`') && c.len() >= 2 {
+        return HirNode::String(c[1..c.len() - 1].to_string(), span);
+    }
+    if let Some((type_name, inner_val)) = parse_typed_literal(c) {
+        return HirNode::TypedLiteral {
+            type_name,
+            value: inner_val,
+            span,
+        };
+    }
+    if let Some(sym) = c.strip_prefix('\'') {
+        if !sym.is_empty() && !sym.contains(' ') && !sym.ends_with('\'') {
+            return HirNode::Symbol(sym.to_string(), span);
+        }
+    }
+    if c.starts_with("-> ")
+        || c.starts_with("<-> ")
+        || c.contains(" -> ")
+        || c.contains(" <-> ")
+    {
+        if let Some(edge) = parse_edge_str(c, span) {
+            return HirNode::Edge(edge);
+        }
+    }
+    if is_valid_ref_path(c) {
+        return HirNode::Reference {
+            path: c.to_string(),
+            span,
+        };
+    }
+    match c {
+        "true" => HirNode::Bool(true, span),
+        "false" => HirNode::Bool(false, span),
+        "null" | "None" => HirNode::Null(span),
+        _ => {
+            if let Some(n) = parse_scalar_number(c) {
+                HirNode::Number(n, span)
+            } else {
+                HirNode::String(c.to_string(), span)
+            }
+        }
+    }
+}
+
+/// Splits CSS shorthand `tag#id.class1.class2` into `(tag, Option<id>, Vec<class>)`.
 pub fn split_css_shorthand(raw: &str) -> (String, Option<String>, Vec<String>) {
     if raw.starts_with('.') || raw.starts_with('#') || raw.starts_with('"') {
         return (raw.to_string(), None, vec![]);
@@ -1503,7 +1980,7 @@ pub fn split_css_shorthand(raw: &str) -> (String, Option<String>, Vec<String>) {
     let mut id_opt = None;
     let mut classes = Vec::new();
 
-    let mut mode = 't'; // 't' = tag, '#' = id, '.' = class
+    let mut mode = 't';
     let mut buf = String::new();
 
     for ch in raw.chars() {
@@ -1560,12 +2037,11 @@ fn extract_inline_form_props(tail_str: &str) -> Option<IndexMap<String, HirNode>
     Some(map)
 }
 
-/// Resolves Left-Associative Algebraic Overlays (`&` deep merge and `/` key omission — Law 4.3)
+/// Resolves Algebraic Composition (`&` Deep Merge, `^` Symmetric Difference / XOR, `/` Key Strip)
 /// across all Form scopes in the document, enforcing strict DAG acyclicity.
 fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic>) {
     match node {
         HirNode::Form { map, .. } => {
-            // First recursively resolve children
             let keys: Vec<String> = map.keys().cloned().collect();
             for k in &keys {
                 if let Some(child) = map.get_mut(k) {
@@ -1573,7 +2049,6 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                 }
             }
 
-            // Detect cycles in `&` reference graph within this Form map
             for k in &keys {
                 let mut visited = HashSet::new();
                 if has_overlay_cycle(k, map, &mut visited) {
@@ -1584,7 +2059,7 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                         end_col: span.end_col,
                         severity: DiagnosticSeverity::Error,
                         message: format!(
-                            "Cyclic algebraic overlay `&` detected involving `{}` (Law 4.3 requires a strict DAG)",
+                            "Cyclic algebraic overlay `&` detected involving `{}` (requires a strict DAG)",
                             k
                         ),
                         code: "RN004".to_string(),
@@ -1592,7 +2067,6 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                     continue;
                 }
 
-                // Evaluate left-to-right overlay chain: `((Prod & .Base) / debug) & .Overrides`
                 let overlays_to_apply = match map.get(k) {
                     Some(HirNode::Form { overlays, .. }) if !overlays.is_empty() => {
                         overlays.clone()
@@ -1601,7 +2075,32 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                 };
 
                 let own_node = map.get(k).unwrap().clone();
+                let is_empty_clone_form = match &own_node {
+                    HirNode::Form {
+                        map: m, edges: e, ..
+                    } => m.is_empty() && e.is_empty(),
+                    _ => false,
+                };
+
+                // Omitting `{}` clones the merged result directly (`backup_timeout & base.timeout`)
+                if is_empty_clone_form && overlays_to_apply.len() == 1 {
+                    if let OverlayOp::Merge(ref_path) = &overlays_to_apply[0] {
+                        let target_key = ref_path.trim_start_matches('.');
+                        if let Some(base_node) = lookup_in_map(map, target_key) {
+                            let cloned = base_node.clone();
+                            if !matches!(cloned, HirNode::Form { .. }) {
+                                map.insert(k.clone(), cloned);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 let mut acc = HirNode::Form {
+                    schema: match &own_node {
+                        HirNode::Form { schema, .. } => schema.clone(),
+                        _ => None,
+                    },
                     map: IndexMap::new(),
                     edges: vec![],
                     overlays: vec![],
@@ -1629,16 +2128,23 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                                 });
                             }
                         }
+                        OverlayOp::Xor(ref_path) => {
+                            let target_key = ref_path.trim_start_matches('.');
+                            if let Some(base_node) = lookup_in_map(map, target_key) {
+                                xor_merge_nodes(&mut acc, base_node.clone());
+                            }
+                        }
                         OverlayOp::Omit(omit_key) => {
                             if let HirNode::Form { map: acc_map, .. } = &mut acc {
-                                remove_dotted_key(acc_map, &omit_key);
+                                let clean_omit = omit_key.trim_start_matches('\'');
+                                remove_dotted_key(acc_map, clean_omit);
                             }
                         }
                     }
                 }
 
-                // Finally deep-merge the node's own explicit properties on top
                 if let HirNode::Form {
+                    schema: own_schema,
                     map: own_map,
                     edges: own_edges,
                     span: own_span,
@@ -1648,6 +2154,7 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
                     deep_merge_nodes(
                         &mut acc,
                         HirNode::Form {
+                            schema: own_schema,
                             map: own_map,
                             edges: own_edges,
                             overlays: vec![],
@@ -1661,6 +2168,11 @@ fn resolve_overlays_in_tree(node: &mut HirNode, diagnostics: &mut Vec<Diagnostic
         HirNode::Stream { items, .. } => {
             for item in items {
                 resolve_overlays_in_tree(item, diagnostics);
+            }
+        }
+        HirNode::Outliner { children, .. } => {
+            for child in children {
+                resolve_overlays_in_tree(child, diagnostics);
             }
         }
         HirNode::Triad { body, .. } => {
@@ -1684,11 +2196,14 @@ fn has_overlay_cycle(
     }
     if let Some(HirNode::Form { overlays, .. }) = map.get(current_key) {
         for op in overlays {
-            if let OverlayOp::Merge(ref_path) = op {
-                let target = ref_path.trim_start_matches('.');
-                if has_overlay_cycle(target, map, visited) {
-                    return true;
+            match op {
+                OverlayOp::Merge(ref_path) | OverlayOp::Xor(ref_path) => {
+                    let target = ref_path.trim_start_matches('.');
+                    if has_overlay_cycle(target, map, visited) {
+                        return true;
+                    }
                 }
+                OverlayOp::Omit(_) => {}
             }
         }
     }

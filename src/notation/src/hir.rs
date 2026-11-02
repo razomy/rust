@@ -1,8 +1,11 @@
-//! High-Level Intermediate Representation (HIR) for Razomy Notation (`.rn`) v12.0.
+//! High-Level Intermediate Representation (HIR) for Razomy Notation (`.rn`) v0.1.0.
 //!
-//! Captures both the rich ontological AST (Triad nodes, Inline Markup, 2D Tuple Grids,
-//! Hypergraph Edges `->`, Lineage References `.` / `..`, and Algebraic Overlays `&` / `/`)
-//! AND lowers deterministically into Canonical JSON Value (Law 3.5 Bijection) or resolved HIR.
+//! Captures the universal Layer 0 AST:
+//! - Universal Stream Root `[]`, Form `{}`, Tuple `()` (1D List & 2D Relational Table)
+//! - Outliner trees (`{ "text": ..., "children": [...] }`)
+//! - Symbols (`'pk`), Typed Literals (`Date"2026-03-30"`), Column-0 Strings (`(tag)?(N)?"`)
+//! - Algebraic Composition (`&` Deep Merge, `^` Symmetric Difference / XOR, `/` Key Strip)
+//! - Schema Portals (`Key Schema {` — `Sql`, `Html`, `Scss`, `Md`, etc.)
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -16,12 +19,14 @@ pub struct Span {
     pub end_col: usize,
 }
 
-/// Algebraic Overlay Operator (`&` Deep Merge or `/` Key Omission — Law 4.3).
+/// Algebraic Composition Operator (`&` Deep Merge, `^` Symmetric Difference, `/` Key Strip).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverlayOp {
-    /// `& .Base` or `& ..Ancestor.Base`
+    /// `& Source` (Identifier or Dot-Path)
     Merge(String),
-    /// `/ debug` or `/ a.b`
+    /// `^ Source` (Symmetric Difference / XOR)
+    Xor(String),
+    /// `/ Key` or `/ 'key` or `/ a.b` (Key Strip)
     Omit(String),
 }
 
@@ -66,62 +71,82 @@ pub enum StreamSegment {
 /// High-Level Intermediate Representation (HIR) Node for `.rn`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HirNode {
-    /// `null` literal or bare key with no value (Law 1.2)
+    /// `null` / `None`, bare key in data Form `{}`, or empty cell `, ,` in Tuple `()`
     Null(Span),
     /// `true` or `false`
     Bool(bool, Span),
-    /// Strict number (`8080`, `-3.14` — Law 1.2)
+    /// Number (`8080`, `-3.14`, `0xFF`, `1e-5`)
     Number(f64, Span),
     /// String literal or unquoted leaf text
     String(String, Span),
-    /// Raw block (`key "lang` or `rN"..."N` — Law 5.1)
+    /// Prefix-quoted Symbol (`'pk`, `'not_null`, `'GET` — serializes to string `"pk"` in JSON)
+    Symbol(String, Span),
+    /// Typed Literal (`Date"2026-03-30"`, `Money"199.99"`, `Url"https://razomy.org"`)
+    TypedLiteral {
+        type_name: String,
+        value: String,
+        span: Span,
+    },
+    /// Column-0 Multiline & Raw String (`(tag)?(N)?"` ... `"(N)?`)
     Raw {
         lang: String,
         content: String,
+        rank: Option<usize>,
         span: Span,
     },
-    /// Lineage Reference (`.sibling` or `..Ancestor.field` — Law 4.2)
+    /// Lineage Reference or Cloned Source (`& config.default_port`)
     Reference {
         path: String,
         span: Span,
     },
-    /// First-class Edge or Hyperedge (`A -> B { ... }` or `-> Orgs.id` — Law 4.1)
+    /// First-class Edge or Hyperedge (`A -> B { ... }`)
     Edge(HirEdge),
-    /// Stream `[` node — ordered list of prose lines, inline markup, or child blocks (Law 1.1)
+    /// Outliner node: plain text line with indented child Stream items beneath it
+    Outliner {
+        text: Box<HirNode>,
+        children: Vec<HirNode>,
+        span: Span,
+    },
+    /// Stream `[` node — ordered list of plain text, outliner trees, markup tags, and data blocks
     Stream {
+        schema: Option<String>,
         items: Vec<HirNode>,
         span: Span,
     },
-    /// Inline rich text line containing mixed prose and inline tags (`p [ Fast b[zero-noise] ]`)
+    /// Inline rich text line containing mixed prose and inline tags (`Fast b[zero-noise]`)
     RichText {
         segments: Vec<StreamSegment>,
         span: Span,
     },
-    /// Form `{` node — ordered key-value map with optional algebraic overlays (Law 1.2)
+    /// Form `{` node — key-value map with optional Schema Portal and Algebraic Composition
     Form {
+        schema: Option<String>,
         map: IndexMap<String, HirNode>,
         edges: Vec<HirEdge>,
         overlays: Vec<OverlayOp>,
         span: Span,
     },
-    /// Tuple `(` node — 1D positional array or 2D relational grid/table (Law 1.3)
+    /// Tuple `(` node — 1D List or 2D Relational Table
     Tuple {
-        /// If rows.len() == 1, represents a 1D array; if rows.len() > 1 and multi-column, a 2D table
+        schema: Option<String>,
+        /// True if the first indented line contained a top-level comma defining header columns
+        is_2d_table: bool,
         rows: Vec<Vec<HirNode>>,
         span: Span,
     },
-    /// Composite Triad Node (`Name(Params) & .Base {Props} [Body]` — Law 3.4 & Law 3.5)
+    /// Universal Triad Node (`Key{Props}(Slots) & Algebra Schema Payload`)
     Triad {
         name: String,
         id: Option<String>,
         classes: Vec<String>,
         params: Option<Vec<HirNode>>,
         overlays: Vec<OverlayOp>,
+        schema: Option<String>,
         props: Option<IndexMap<String, HirNode>>,
         body: Option<Vec<HirNode>>,
         span: Span,
     },
-    /// Homoiconic Comment (`# ...` — Law 5.2)
+    /// Homoiconic Comment (`# ...`)
     Comment(String, Span),
 }
 
@@ -160,9 +185,12 @@ impl HirNode {
             | HirNode::Bool(_, s)
             | HirNode::Number(_, s)
             | HirNode::String(_, s)
+            | HirNode::Symbol(_, s)
             | HirNode::Comment(_, s) => *s,
-            HirNode::Raw { span, .. }
+            HirNode::TypedLiteral { span, .. }
+            | HirNode::Raw { span, .. }
             | HirNode::Reference { span, .. }
+            | HirNode::Outliner { span, .. }
             | HirNode::Stream { span, .. }
             | HirNode::RichText { span, .. }
             | HirNode::Form { span, .. }
@@ -172,8 +200,7 @@ impl HirNode {
         }
     }
 
-    /// Converts an `HirNode` to a Canonical `serde_json::Value` following Law 3.5
-    /// (Lossless Bijection & Reserved Key Escaping `"()"`, `"[]"`, `"->"`).
+    /// Evaluates Schema Portals (`Key Schema {`, `(`, `[`) or lowers directly to Canonical `serde_json::Value`.
     pub fn to_canonical_json(&self) -> serde_json::Value {
         use serde_json::{Map, Number, Value};
 
@@ -190,12 +217,30 @@ impl HirNode {
                 }
             }
             HirNode::String(s, _) => Value::String(s.clone()),
+            HirNode::Symbol(s, _) => Value::String(s.clone()),
+            HirNode::TypedLiteral { value, .. } => Value::String(value.clone()),
             HirNode::Raw { content, .. } => Value::String(content.clone()),
             HirNode::Reference { path, .. } => Value::String(path.clone()),
             HirNode::Comment(_, _) => Value::Null,
             HirNode::Edge(edge) => edge_to_json(edge),
             HirNode::RichText { segments, .. } => Value::String(render_segments_plain(segments)),
-            HirNode::Stream { items, .. } => {
+            HirNode::Outliner { text, children, .. } => {
+                let mut obj = Map::new();
+                obj.insert("text".to_string(), text.to_canonical_json());
+                let child_arr: Vec<Value> = children
+                    .iter()
+                    .filter(|c| !matches!(c, HirNode::Comment(_, _)))
+                    .map(|c| c.to_canonical_json())
+                    .collect();
+                obj.insert("children".to_string(), Value::Array(child_arr));
+                Value::Object(obj)
+            }
+            HirNode::Stream { schema, items, .. } => {
+                if let Some(portal) = schema {
+                    if let Some(rendered) = crate::codegen::eval_schema_portal(portal, self) {
+                        return Value::String(rendered);
+                    }
+                }
                 let arr: Vec<Value> = items
                     .iter()
                     .filter(|i| !matches!(i, HirNode::Comment(_, _)))
@@ -203,25 +248,66 @@ impl HirNode {
                     .collect();
                 Value::Array(arr)
             }
-            HirNode::Tuple { rows, .. } => {
+            HirNode::Tuple {
+                schema,
+                is_2d_table,
+                rows,
+                ..
+            } => {
+                if let Some(portal) = schema {
+                    if let Some(rendered) = crate::codegen::eval_schema_portal(portal, self) {
+                        return Value::String(rendered);
+                    }
+                }
                 if rows.is_empty() {
                     Value::Array(vec![])
-                } else if rows.len() == 1 {
-                    // 1D array
+                } else if !is_2d_table && rows.len() == 1 {
                     Value::Array(rows[0].iter().map(|c| c.to_canonical_json()).collect())
-                } else if rows.iter().all(|r| r.len() == 1) {
-                    // Multiline single-column `(` creates a 1D array (Law 1.3)
+                } else if !is_2d_table && rows.iter().all(|r| r.len() == 1) {
                     Value::Array(rows.iter().map(|r| r[0].to_canonical_json()).collect())
+                } else if *is_2d_table && rows.len() >= 2 {
+                    // 2D Table: First indented line defines header columns; subsequent lines map to records or arrays
+                    let headers: Vec<String> = rows[0]
+                        .iter()
+                        .map(|h| match h.to_canonical_json() {
+                            Value::String(s) => s,
+                            other => other.to_string(),
+                        })
+                        .collect();
+                    let records: Vec<Value> = rows
+                        .iter()
+                        .skip(1)
+                        .map(|r| {
+                            let mut row_obj = Map::new();
+                            for (i, col_name) in headers.iter().enumerate() {
+                                let cell_val = r
+                                    .get(i)
+                                    .map(|c| c.to_canonical_json())
+                                    .unwrap_or(Value::Null);
+                                row_obj.insert(col_name.clone(), cell_val);
+                            }
+                            Value::Object(row_obj)
+                        })
+                        .collect();
+                    Value::Array(records)
                 } else {
-                    // 2D relational grid
                     Value::Array(
                         rows.iter()
-                            .map(|r| Value::Array(r.iter().map(|c| c.to_canonical_json()).collect()))
+                            .map(|r| {
+                                Value::Array(r.iter().map(|c| c.to_canonical_json()).collect())
+                            })
                             .collect(),
                     )
                 }
             }
-            HirNode::Form { map, edges, .. } => {
+            HirNode::Form {
+                schema, map, edges, ..
+            } => {
+                if let Some(portal) = schema {
+                    if let Some(rendered) = crate::codegen::eval_schema_portal(portal, self) {
+                        return Value::String(rendered);
+                    }
+                }
                 let mut obj = Map::new();
                 for (k, v) in map {
                     if matches!(v, HirNode::Comment(_, _)) {
@@ -241,10 +327,18 @@ impl HirNode {
                 id,
                 classes,
                 params,
+                schema,
                 props,
                 body,
                 ..
             } => {
+                if let Some(portal) = schema {
+                    if let Some(rendered) = crate::codegen::eval_schema_portal(portal, self) {
+                        let mut wrapper = Map::new();
+                        wrapper.insert(name.clone(), Value::String(rendered));
+                        return Value::Object(wrapper);
+                    }
+                }
                 let has_params = params.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
                 let has_props = props.as_ref().map(|p| !p.is_empty()).unwrap_or(false)
                     || id.is_some()
@@ -274,7 +368,6 @@ impl HirNode {
                 }
 
                 let value_part = if !has_params && !has_props && has_body {
-                    // Only `[Body]` -> lowers directly to `[...]` or single string
                     let b = body.as_ref().unwrap();
                     if b.len() == 1 {
                         b[0].to_canonical_json()
