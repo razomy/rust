@@ -1,136 +1,132 @@
 name "Razomy Notation"
-version "14.0"
+version "16.4"
 extension ".rn"
 tags (
-  "ONTOLOGICAL-DATA"
-  "TEXT-FIRST"
-  "INDENT-TOPOLOGICAL"
-  "ULTRA-LEAN-UNIFIED-NODE"
-  "RECURSIVE-TRIAD"
-  "ZERO-DRIFT-ANCHORS"
-  "JSON-MD-CSV-HTML-DSL-UNIFIED"
-  "CANONICAL-AST-LOWERING"
-)
+ "ONTOLOGICAL-DATA"
+ "RL-ISOMORPHIC"
+ "SCHEMA-AGNOSTIC-CORE"
+ "SCHEMA-PORTALS"
+ "SYMMETRIC-TRIAD"
+ "INDENT-TOPOLOGICAL"
+ "COLUMN-ZERO-STRINGS"
 description r3"
 ================================================================================
-PART I. THE 5 ONTOLOGICAL AXIOMS & LEAN ENGINEERING LAWS OF (.rn)
+PART I. AXIOMATIC SPECIFICATION (FROM ROOT TO LEAVES)
 ================================================================================
-Razomy partitions computing into two isomorphic projections:
-• Razomy Language (.rl) — Ontology of Action (Code, Pipelines & Execution).
-• Razomy Notation (.rn) — Ontology of Being (Data, Prose, Markup & Topology).
 
-The v13.0 architecture is founded on ONE universal primitive:
-Every line, inline tag, edge, reset, or leaf is an instance of the UNIFIED NODE:
-  Node ::= Prefix? Key? Params? Props? Body? (Arrow Node)? Value?
-
+0. THE ROOT AXIOM (ONE UNIVERSAL NODE GRAMMAR)
 --------------------------------------------------------------------------------
-AXIOM I. THE UNIFIED RECURSIVE TRIAD (`[` STREAM <-> `{` FORM <-> `(` TUPLE)
---------------------------------------------------------------------------------
-• Philosophical Axiom (Fractal Semiotic Invariance):
-  A document is a fractal tree of nodes. A node may express Firstness (Stream `[`),
-  Secondness (Tuple `(`), or Thirdness (Form `{`). Inline markup is not a separate
-  Markdown engine; an inline tag `b[bold]` is structurally and syntactically
-  identical to a root block node `b [bold]`.
+The root of an (.rn) or (.rl) file is an implicit Form `{}` at indentation level 0.
+Every statement in a Form `{}` or Stream `[]` is a single canonical Node
+(whereas Tuple `()` elements are bare `Payload` / `Value` items without a `Key`):
 
-• Engineering Laws:
-  - Law 1.1 (The Unified Node Structure):
-    Every construct in .rn matches the exact sequence:
-      [Prefix] [Key] [(Params)] [{Props}] [[Body]] [-> Edge] [Value]
-    All components are optional.
-    * Block tag:  `article#main { lang en } [ ... ]`
-    * Inline tag: `b[bold]` or `a{href /docs}[documentation]`
-    * Field pair: `port 8080` (Key + Value)
-    * Edge:       `Ingress -> Auth` (Key + Arrow + Node)
-    * Reset:      `..target { ... }` (Prefix + Key + Props)
-  - Law 1.2 (`[` Stream Context — Ordered Prose & Inline Elements):
-    * Free text flows without quotes. 
-    * When an unquoted token immediately touches `[` without a preceding space
-      (`b[text]`, `span.highlight[text]`), it recursively parses as an inline Child Node.
-    * Backticks (`` `arr[0]` ``) and double quotes (`"text"`) shield text from parser brackets.
-  - Law 1.3 (`{` Form Context — Key-Value Maps & Declarations):
-    * The first token is the Key; the trailing token/block is the Value.
-    * Atomic empty values: Bare key with no value = `null`; `""` = empty string;
-      `{}` = empty object; `()` = empty array.
-    * Separators: Commas `,` or semicolons `;` allow inline multi-field declarations.
-  - Law 1.4 (`(` Tuple Context — Positional Grids & Matrices):
-    * Comma-separated values form 1D arrays or 2D tables (CSV replacement).
-    * Delimiters inside values are shielded using quotes (`"A, B"`) or backticks.
+  Key (& Source (/ Key)*)* (Schema)? ({Props})? ( {Form} | (Tuple) | [Stream] | Value )?
 
---------------------------------------------------------------------------------
-AXIOM II. CONTEXT INERTIA & TOPOLOGICAL PROPAGATION
---------------------------------------------------------------------------------
-• Philosophical Axiom (Cognitive Economy):
-  A container's active mode (`[`, `{`, `(`) automatically propagates down through
-  indented children until explicitly transformed by an inner bracket.
+  • Key       : Identifier (`[a-zA-Z_][a-zA-Z0-9_]*`), Dot-Path (`a.b.c`), or `"quoted"`.
+  • Algebra   : Optional inheritance `& Source` and key stripping `/ Key` (see Rule 4).
+  • Schema    : Optional `PascalCase` adapter before `{`, `(`, or `[` (`Sql`, `Html`, `Scss`).
+  • {Props}   : Optional inline metadata Form attached to `Key` (`div{id main} [...]`).
+  • Payload   : One of the 3 structural modes (`{}`, `()`, `[]`), a scalar `Value`, or empty.
 
-• Engineering Laws:
-  - Law 2.1 (Mode Inheritance):
-    Inside `{`, indented children automatically parse as Key-Value Form pairs.
-    Inside `[`, indented children automatically parse as Stream text lines.
-    Inside `(`, indented children automatically parse as Tuple rows.
-  - Law 2.2 (Trailing Bracket Activation):
-    A trailing `[`, `{`, or `(` at the end of a line before `Indent + 1` explicitly
-    switches the active mode for all nested children.
 
+1. TOPOLOGY AXIOM (INLINE VS. BLOCK — ONE RULE FOR ALL BRACKETS)
 --------------------------------------------------------------------------------
-AXIOM III. INDENT TOPOLOGY, AUTO-CLOSE & ZERO-DRIFT RESET
---------------------------------------------------------------------------------
-• Philosophical Axiom (Infinite Depth with Bounded Width):
-  Physical screen indentation must not drift indefinitely to the right. 
+1.1. Inline Mode (Same-Line Close):
+     If `{`, `(`, or `[` opens and closes on the same line, elements in `{}` and `()` are
+     separated by `,` (surrounding spaces are ignored). Example: `env { A 1, B 2 }`, `pt (10, 20)`.
 
-• Engineering Laws:
-  - Law 3.1 (Canonical 1-Space Indentation):
-    An indent step of 1 space attaches children to the preceding node. Dedenting
-    automatically closes open scopes without closing tags.
-  - Law 3.2 (Topological Reset via Prefix `..`):
-    Writing `..target_node` at Column 0 teleports the parsing cursor into that node
-    within the active root, resetting indentation back to column 1 while preserving
-    its deep logical path in the AST.
-  - Law 3.3 (Lossless JSON Bijection):
-    Single-bracket nodes lower to their native JSON equivalent (`{}`, `[]`).
-    Composite nodes `Name(P){K}[B]` lower to `{ "()": P, "[]": B, ...K }`.
+1.2. Block Mode (End-of-Line Open, Auto-Close on Dedent):
+     If `{`, `(`, or `[` is the LAST token on a line, it opens an indented block:
+     • 1 leading space (` `) = 1 indentation level.
+     • Dedenting automatically closes the block. Explicit closing brackets and trailing
+       end-of-line commas are NEVER used.
 
---------------------------------------------------------------------------------
-AXIOM IV. FIRST-CLASS HYPERGRAPHS & OVERLAYS (`->`, `&`, `/`)
---------------------------------------------------------------------------------
-• Philosophical Axiom (Reality is a Hypergraph):
-  Relationships and overlays are native structural syntax, not string annotations.
+1.3. Dot-Path Flattening (`a.b.c`):
+     A dotted key `a.b.c {` expands into `{ a { b { c { ... } } } }` using only a SINGLE
+     1-space indent on the next line.
 
-• Engineering Laws:
-  - Law 4.1 (Edges):
-    Arrows `->` and `<->` connect endpoints into first-class graph edges.
-  - Law 4.2 (Overlays):
-    In Form declarations, `& .Ref` deep-merges properties from a target node;
-    `/ key` removes keys from an inherited structure.
 
+2. THE 3 STRUCTURAL MODES (`{}` FORM, `()` TUPLE, `[]` STREAM)
 --------------------------------------------------------------------------------
-AXIOM V. LEXICAL SIMPLICITY & AST-LEVEL TYPING
---------------------------------------------------------------------------------
-• Philosophical Axiom (Parser Lightness, Compiler Intelligence):
-  The parser is a lightweight structural recognizer (LL(1) / PEG). Semantic typing
-  belongs in the AST Lowering Phase, keeping the grammar tiny and blazingly fast.
+2.1. `{` Form Mode (Key-Value Map):
+     • Maps `Key Payload` statements separated by `\n` (block) or `,` (inline).
+     • Bare `Key` with no payload and no `& Source` = `null`.
+     • Empty `{}` = empty map.
 
-• Engineering Laws:
-  - Law 5.1 (Raw Canvas `key "lang` & `rN" ... "N`):
-    Indented raw blocks and ranked fences capture unescaped source code verbatim.
-  - Law 5.2 (AST Auto-Typing):
-    Grammar emits atomic text tokens. The AST builder transparently coerces:
-    * `true` / `false`  -> Boolean
-    * `null`            -> Null
-    * `8080`, `-3.14`   -> Strict Number (tokens with leading zeros remain String)
-    * Bare strings      -> String
+2.2. `(` Tuple Mode (1D Lists & 2D Tables):
+     • Empty `()` = empty list.
+     • 1D List  : Inline `(a, b, c)` OR block `(\n` where indented lines contain NO top-level
+                  commas outside quotes/brackets (one item per line, like `tags (` above).
+     • 2D Table : Block `(\n` where indented lines contain top-level `,`-separated cells
+                  (surrounding spaces around `,` are ignored; each line is a row).
+
+2.3. `[` Stream Mode (Free Text & Markup Trees):
+     • Empty `[]` = empty stream/list.
+     • Whitespace : In inline `[ text ]`, a single leading space after `[` and a single
+                    trailing space before `]` are automatically trimmed.
+     • Escaping   : Raw text flows without quotes. Literal brackets are escaped via code spans
+                    `` `arr[0]` `` or quotes `"[raw]"`, where outer quotes are stripped on unescape.
+     • Inline Tags: Inside a text flow, child nodes attach WITHOUT a space before `{` or `[`:
+                    `b[bold]`, `span{class hi}[text]`, `a{href "/docs"}[link]`.
+     • Block Mode : Inside a multiline `[\n`, any indented line ending with `[`, `{`, or `(`
+                    opens a nested child node; plain lines become a list of text/paragraph items.
+
+
+3. SCHEMA PORTALS & MULTI-FORMAT COMPOSITION
+--------------------------------------------------------------------------------
+3.1. Anonymous by Default:
+     Nodes without a Schema (`styles { ... }`) parse into raw, format-agnostic AST.
+
+3.2. Explicit Schema Portal:
+     A `PascalCase` token immediately preceding `{`, `(`, or `[` binds a schema adapter
+     to that subtree (`styles Scss {`, `query Sql (`, `view Html [`).
+     Note: A `PascalCase` token at the end of a line (`id Uuid`) is a scalar Value, not a Portal.
+
+3.3. File-Level Schema:
+     Compound extensions (`*.css.rn`, `*.sql.rn`) bind a root Schema Portal to the whole file.
+
+
+4. ALGEBRAIC COMPOSITION (`&` MERGE & `/` STRIP)
+--------------------------------------------------------------------------------
+4.1. Deep Merge (`&`):
+     `Target & Source { ... }` deep-merges all fields from `Source` into `Target`.
+     Multiple sources merge left-to-right (`Target & S1 & S2`). Omitting `{}` clones the merged result.
+
+4.2. Key Strip (`/`):
+     `Target & Source / key { ... }` removes `key` (or dotted `a.b`) from the inherited Form.
+     Multiple keys can be stripped sequentially: `Target & Source / key1 / key2`.
+
+
+5. LEXICON, SCALARS & COLUMN-0 STRINGS
+--------------------------------------------------------------------------------
+5.1. Comments:
+     `#` outside quotes starts a comment until the end of the line (`# text`).
+
+5.2. Scalar Auto-Typing (in `{}` and `()`):
+     • `true`, `false`            -> Boolean
+     • `null` (or bare key)       -> Null
+     • `8080`, `-3.14`            -> Number
+     • `'pk`, `'not_null`         -> Symbol (prefix-quoted tag)
+     • Identifier / Dot-Ref       -> Bare String (`postgres`, `u_1`, `_blank`, `Uuid`, `Orgs.id`)
+     • `"..."`                    -> Quoted String (required for special chars: `".btn"`, `"/app"`, `"#fff"`)
+
+5.3. Column-0 Multiline & Raw Strings (`(tag)?(N)?"`):
+     • Opening `(tag)?(N)?"` at the end of a line (`"`, `ts"`, `sh"`, `r3"`) suspends indentation
+       until a matching `"(N)?` (`"`, `"3`) at Column 0 on its own line.
+     • Content starts strictly at Column 0 (every leading space is 100% literal text).
+     • The first `\n` after the opening quote and the last `\n` before the closing quote are stripped.
 
 
 ================================================================================
-PART II. CATALOG OF CANONICAL EXAMPLES
+PART II. CANONICAL EXAMPLES (VERIFYING EVERY AXIOM)
 ================================================================================
 
 --------------------------------------------------------------------------------
-EXAMPLE 1. MARKDOWN DOCUMENT (Stream `[` + Table `(` + Raw `"`)
+EXAMPLE 1. MARKDOWN DOCUMENT (Rules 2.2, 2.3, 5.3)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
   h1 [ Razomy Guide ]
-  p [ Fast b[zero-noise] notation with i[inline] tags and `arr[0]` code. ]
+  p [ Fast b[zero-noise] notation with span{class highlight}[inline] tags and `arr[0]` code. ]
   ul [
    No closing tags
    1-space indentation
@@ -138,13 +134,17 @@ EXAMPLE 1. MARKDOWN DOCUMENT (Stream `[` + Table `(` + Raw `"`)
    Format, Tokens, Notes
    JSON,   140,    "Verbose, requires quotes"
    RN,     48,     "Ultra-compact, lean parser"
-  snippet "ts
-   const x = 42;
+  snippet ts"
+const x = 42;
+function hello() {
+  return x;
+}
+"
 
-• Original Markdown (.md):
+• Lowered Markdown (.md):
   # Razomy Guide
 
-  Fast **zero-noise** notation with *inline* tags and `arr[0]` code.
+  Fast **zero-noise** notation with <span class="highlight">inline</span> tags and `arr[0]` code.
 
   - No closing tags
   - 1-space indentation
@@ -156,79 +156,99 @@ EXAMPLE 1. MARKDOWN DOCUMENT (Stream `[` + Table `(` + Raw `"`)
 
   ```ts
   const x = 42;
+  function hello() {
+    return x;
+  }
   ```
 
 --------------------------------------------------------------------------------
-EXAMPLE 2. HTML DOM & COMPONENT TREE (Stream `[` + Form `{`)
+EXAMPLE 2. HTML DOM TREE (Rule 0 Props `{}` + Rule 2.3 Stream `[`)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
-  article#post { lang en } [
+  article{id post, class featured, lang en} [
    h1 [ Why Razomy? ]
-   p [ Read the a{href /docs, target _blank}[documentation]. ]
+   p [ Read the a{href "/docs", target _blank}[documentation]. ]
 
-• Original HTML (.html):
-  <article id="post" lang="en">
+• Lowered HTML (.html):
+  <article id="post" class="featured" lang="en">
     <h1>Why Razomy?</h1>
     <p>Read the <a href="/docs" target="_blank">documentation</a>.</p>
   </article>
 
 --------------------------------------------------------------------------------
-EXAMPLE 3. YAML / JSON CONFIGURATION (Form `{` & Inertia)
+EXAMPLE 3. JSON / YAML CONFIG (Rules 1.3 Dot-Path, 2.1 Form, 2.3 Block Stream, 5.3 Col-0)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
-  cluster {
-   primary
-    database
-     engine postgres
-     port 5432
-     token
-     empty_str ""
-     extra_tags ()
-     steps [
-      1. Check replication lag
-      2. Promote primary node
+  cluster.primary.database {
+   engine postgres
+   port 5432
+   token
+   empty_str ""
+   extra_tags ()
+   welcome_msg "
+Line 1 starts at Column 0 (zero ambiguity with parent indentation!).
+  Line 2 has exactly 2 leading spaces of actual text content.
+"
+   steps [
+    1. Check replication lag
+    2. Promote primary node
 
-• Original YAML (.yaml):
-  cluster:
-    primary:
-      database:
-        engine: "postgres"
-        port: 5432
-        token: null
-        empty_str: ""
-        extra_tags: []
-        steps:
-          - "1. Check replication lag"
-          - "2. Promote primary node"
+• Lowered JSON (.json):
+  {
+    "cluster": {
+      "primary": {
+        "database": {
+          "engine": "postgres",
+          "port": 5432,
+          "token": null,
+          "empty_str": "",
+          "extra_tags": [],
+          "welcome_msg": "Line 1 starts at Column 0 (zero ambiguity with parent indentation!).\n  Line 2 has exactly 2 leading spaces of actual text content.",
+          "steps": [
+            "1. Check replication lag",
+            "2. Promote primary node"
+          ]
+        }
+      }
+    }
+  }
 
 --------------------------------------------------------------------------------
-EXAMPLE 4. CSV + SQL DDL SCHEMA (Tuple `(` & Edges `->`)
+EXAMPLE 4. RELATIONAL SCHEMA & TABULAR DATA (Rule 2.2 2D Tuple & Rule 5.2)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
-  Users (
-   col,    type, ref,        default
-   id,     uuid, pk,         gen_uuid()
-   org_id, uuid, -> Orgs.id, null
-   role,   text, not_null,   member
+  users_schema (
+   column, type, constraint, default
+   id,     Uuid, 'pk,        gen_uuid
+   org_id, Uuid, Orgs.id,    null
+   role,   Text, 'not_null,  member
 
-• Original SQL (.sql):
-  CREATE TABLE Users (
+  users_rows (
+   id,  org_id, role
+   u_1, o_10,   admin
+   u_2, o_10,   member
+
+• Lowered SQL (.sql):
+  CREATE TABLE users (
     id     UUID PRIMARY KEY DEFAULT gen_uuid(),
     org_id UUID REFERENCES Orgs(id) DEFAULT NULL,
     role   TEXT NOT NULL DEFAULT 'member'
   );
+  INSERT INTO users (id, org_id, role) VALUES
+    ('u_1', 'o_10', 'admin'),
+    ('u_2', 'o_10', 'member');
 
 --------------------------------------------------------------------------------
-EXAMPLE 5. CSS / SCSS STYLESHEET (Form `{` & Literal `#hex`)
+EXAMPLE 5. CSS / SCSS STYLES (Rule 2.1 Form & Rule 5.2 Quoted Selectors)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
   styles {
-   .btn {
-    background #111111
-    padding (8px, 16px)
-    &:hover { background #222222 }
+   ".btn" {
+    background "#111111"
+    padding ("8px", "16px")
+    "&:hover" { background "#222222" }
 
-• Original SCSS (.scss):
+• Lowered SCSS (.scss):
   .btn {
     background: #111111;
     padding: 8px 16px;
@@ -238,18 +258,28 @@ EXAMPLE 5. CSS / SCSS STYLESHEET (Form `{` & Literal `#hex`)
   }
 
 --------------------------------------------------------------------------------
-EXAMPLE 6. DOCKERFILE REPLACEMENT (Parameterized Node & Commands)
+EXAMPLE 6. DOCKER & TERRAFORM INFRASTRUCTURE (Rules 1.3, 2.1, 5.3)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
-  container(node:22-alpine) {
-   workdir /app
-   copy (., /app)
-   run "sh
-    npm ci --omit=dev
+  container {
+   from "node:22-alpine"
+   workdir "/app"
+   copy (".", "/app")
+   run sh"
+npm ci --omit=dev
+"
    env { NODE_ENV production, PORT 8080 }
-   cmd (node, server.js)
+   cmd (node, "server.js")
 
-• Original Dockerfile:
+  resource.aws_s3_bucket.logs {
+   bucket "my-corp-logs"
+   acl private
+   lifecycle_rule.expiration {
+    enabled true
+    days 90
+
+• Lowered Dockerfile & Terraform (.tf):
+  # Dockerfile:
   FROM node:22-alpine
   WORKDIR /app
   COPY . /app
@@ -257,53 +287,60 @@ EXAMPLE 6. DOCKERFILE REPLACEMENT (Parameterized Node & Commands)
   ENV NODE_ENV=production PORT=8080
   CMD ["node", "server.js"]
 
---------------------------------------------------------------------------------
-EXAMPLE 7. TERRAFORM (HCL) + ZERO-DRIFT MARGIN RESET (`..target`)
---------------------------------------------------------------------------------
-• Razomy Notation (.rn):
-  resource(aws_s3_bucket, logs) {
-   bucket my-corp-logs
-   acl private
-
-  ..resource.aws_s3_bucket.logs {
-   lifecycle_rule {
-    enabled true
-    expiration { days 90 }
-
-• Original Terraform (.tf):
+  # Terraform (.tf):
   resource "aws_s3_bucket" "logs" {
     bucket = "my-corp-logs"
     acl    = "private"
-
     lifecycle_rule {
-      enabled = true
       expiration {
-        days = 90
+        enabled = true
+        days    = 90
       }
     }
   }
 
 --------------------------------------------------------------------------------
-EXAMPLE 8. MERMAID / GRAPHVIZ + OVERLAYS (`->`, `&`, `/`)
+EXAMPLE 7. ALGEBRAIC INHERITANCE (Rule 4.1 `&` Merge & Rule 4.2 `/` Strip)
 --------------------------------------------------------------------------------
 • Razomy Notation (.rn):
   mesh {
-   Ingress -> (Auth, Api) { protocol grpc, tls true }
-   Base { timeout 30, retries 3, debug true }
-   Prod & .Base / debug {
+   ingress {
+    to (auth, api)
+    protocol grpc
+    tls true
+   base { timeout 30, retries 3, debug true }
+   prod & base / debug {
     replicas 5
 
-• Original Graphviz DOT + YAML Anchors:
-  # Graphviz DOT:
-  digraph mesh {
-    Ingress -> {Auth Api} [protocol="grpc", tls=true];
+• Lowered Output (Resolved JSON):
+  {
+    "mesh": {
+      "ingress": { "to": ["auth", "api"], "protocol": "grpc", "tls": true },
+      "base":    { "timeout": 30, "retries": 3, "debug": true },
+      "prod":    { "timeout": 30, "retries": 3, "replicas": 5 }
+    }
   }
-  # YAML Overlay:
-  Base: &base
-    timeout: 30
-    retries: 3
-    debug: true
-  Prod:
-    <<: *base
-    replicas: 5
+
+--------------------------------------------------------------------------------
+EXAMPLE 8. MULTI-SCHEMA COMPONENT PORTALS (Rule 3.2 Nested `PascalCase` Portals)
+--------------------------------------------------------------------------------
+• Razomy Notation (.rn):
+  UserCard {
+   props {
+    id Uuid
+    theme dark
+
+   query Sql (
+    select, from,  where
+    "*",    users, "id = :id"
+
+   view Html [
+    div{class card} [
+     h2 [ User Profile ]
+     p [ Welcome back! ]
+
+   styles Scss {
+    ".card" {
+     background "#111111"
+     "&:hover" { background "#222222" }
 "3
