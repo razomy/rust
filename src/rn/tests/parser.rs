@@ -1,9 +1,9 @@
-use razomy_notation::*;
+use razomy_rn::*;
 use serde_json::{json, Value};
 
 #[test]
 fn test_spec_file_notaion_rl_parses_cleanly() {
-    let spec_src = include_str!("../notaion.rl");
+    let spec_src = include_str!("../specification.rn");
     let doc = parse_rn(spec_src);
     assert!(
         doc.diagnostics.is_empty(),
@@ -12,10 +12,10 @@ fn test_spec_file_notaion_rl_parses_cleanly() {
     );
     assert_eq!(doc.root_mode, lexer::ContextMode::Stream);
     let json_val = doc.root.to_canonical_json();
-    let arr = json_val.as_array().expect("Root of notaion.rl is a Stream []");
+    let arr = json_val.as_array().expect("Root of specification.rn is a Stream []");
     assert!(!arr.is_empty());
 
-    // First item in notaion.rl is `meta { ... }`
+    // First item in specification.rn is `meta { ... }`
     let meta = &arr[0]["meta"];
     assert_eq!(meta["name"], "Razomy Notation");
     assert_eq!(meta["version"], "0.1.0");
@@ -31,7 +31,7 @@ fn test_unified_node_pest_grammar_recognizes_all_constructs() {
         "# Top-level comment",
         "article{id post, class featured, lang en} [",
         "Button{variant 'primary}(label) [",
-        "p [ Fast b[zero-noise] notation with a{href /docs}[links] and `arr[0]` ]",
+        "p [ Fast b[zero-noise] rn with a{href /docs}[links] and `arr[0]` ]",
         "port 8080",
         "prod & base / debug {",
         "query Sql (",
@@ -70,7 +70,7 @@ todo list
 fn test_canonical_example_2_markdown_document_flat_headings_tables_and_col0_code() {
     let rn_src = r#"title Razomy Guide
 
-Fast b[zero-noise] notation a(/docs)[links], with span{class highlight}[inline] tags and `arr[0]` code.
+Fast b[zero-noise] rn a(/docs)[links], with span{class highlight}[inline] tags and `arr[0]` code.
 
 ul [
  No closing tags
@@ -94,7 +94,7 @@ function hello() {
 
     let expected_md = r#"# Razomy Guide
 
-Fast **zero-noise** notation [links](/docs), with <span class="highlight">inline</span> tags and `arr[0]` code.
+Fast **zero-noise** rn [links](/docs), with <span class="highlight">inline</span> tags and `arr[0]` code.
 
 - No closing tags
 - 1-space indentation

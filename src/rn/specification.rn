@@ -135,7 +135,7 @@ example {
  input rn2"
 title Razomy Guide
 
-Fast b[zero-noise] notation a(/docs)[links], with span{class highlight}[inline] tags and `arr[0]` code.
+Fast b[zero-noise] rn a(/docs)[links], with span{class highlight}[inline] tags and `arr[0]` code.
 
 ul [
  No closing tags
@@ -156,7 +156,7 @@ function hello() {
  output md"
 # Razomy Guide
 
-Fast **zero-noise** notation with <span class="highlight">inline</span> tags and `arr[0]` code.
+Fast **zero-noise** rn with <span class="highlight">inline</span> tags and `arr[0]` code.
 
 - No closing tags
 - 1-space indentation

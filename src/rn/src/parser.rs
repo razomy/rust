@@ -1368,7 +1368,7 @@ pub fn parse_scalar_number(s: &str) -> Option<f64> {
     None
 }
 
-/// Checks decimal integers, floats, and scientific notation (`8080`, `-3.14`, `1e-5`).
+/// Checks decimal integers, floats, and scientific rn (`8080`, `-3.14`, `1e-5`).
 /// Rejects leading zeros (`0123`) and multi-dot version strings (`0.1.0`).
 pub fn is_strict_number(s: &str) -> bool {
     if s.starts_with("0x") || s.starts_with("0X") || s.starts_with("-0x") || s.starts_with("-0X") {

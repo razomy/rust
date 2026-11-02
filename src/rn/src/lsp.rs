@@ -250,7 +250,7 @@ impl LspServer {
                                 "documentFormattingProvider": true
                             },
                             "serverInfo": {
-                                "name": "razomy-notation-lsp",
+                                "name": "razomy-rn-lsp",
                                 "version": "13.0.0"
                             }
                         }

@@ -1,12 +1,12 @@
 [package]
-name = "razomy-notation"
+name = "razomy-rn"
 version = "0.1.0"
 edition = "2021"
 description = "Razomy Notation (.rn) v0.1.0 — Layer 0 Universal Stream Root, Symmetric Triad, Schema Portals, Column-0 Strings, Algebraic Composition (&, ^, /), Outliner, LSP, and Multi-Format Codegen/Importers"
 license = "MIT"
 
 [lib]
-name = "razomy_notation"
+name = "razomy_rn"
 path = "src/lib.rs"
 
 [[bin]]

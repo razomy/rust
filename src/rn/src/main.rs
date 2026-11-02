@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process;
 
-use razomy_notation::{generate, import_from, parse_rn, Format, LspServer};
+use razomy_rn::{generate, import_from, parse_rn, Format, LspServer};
 
 #[derive(Parser)]
 #[command(

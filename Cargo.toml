@@ -2,6 +2,6 @@
 resolver = "2"
 members = [
     "src/language",
-    "src/notation",
+    "src/rn",
     "src/cli",
 ]
